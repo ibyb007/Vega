@@ -170,6 +170,7 @@ const DownloadedDetails = ({ navigation, route }: DownloadedDetailsProps) => {
         title: candidate.episodeName || candidate.title,
         link: candidate.filePath,
         sourceLink: candidate.sourceLink,
+        skip: candidate.skip,
       })),
       linkIndex: playableItems.findIndex(candidate => candidate.id === item.id),
       type: item.type || (playableItems.length > 1 ? 'series' : 'movie'),

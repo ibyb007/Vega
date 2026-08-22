@@ -215,7 +215,7 @@ export default function Info({route, navigation}: Props): React.JSX.Element {
     } as never);
   }, [displayTitle, searchNavigation]);
 
-  if (error) {
+  if (error && !info) {
     return (
       <View
         style={{
@@ -342,7 +342,7 @@ export default function Info({route, navigation}: Props): React.JSX.Element {
               <RefreshControl
                 colors={[detailColors.primary]}
                 progressBackgroundColor={detailColors.surfaceContainer}
-                refreshing={refreshing || isRefetching}
+                refreshing={refreshing}
                 onRefresh={handleRefresh}
               />
             }

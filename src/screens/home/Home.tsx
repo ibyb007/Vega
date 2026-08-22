@@ -33,6 +33,7 @@ const Home = ({}: Props) => {
   const colors = useM3Colors();
   const [statusBarScrimVisible, setStatusBarScrimVisible] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   // Memoize static values
   const disableDrawer = useMemo(
@@ -89,6 +90,7 @@ const Home = ({}: Props) => {
 
   // Optimized refresh handler
   const handleRefresh = useCallback(async () => {
+    setManualRefreshing(true);
     try {
       // Clear hero cache to get a new random hero on refresh
       clearHeroCache(provider?.value);
@@ -100,6 +102,8 @@ const Home = ({}: Props) => {
       ]);
     } catch (refreshError) {
       console.error('Error refreshing home data:', refreshError);
+    } finally {
+      setManualRefreshing(false);
     }
   }, [refetch, provider?.value]);
 
@@ -157,9 +161,9 @@ const Home = ({}: Props) => {
     ));
   }, [homeData]);
 
-  // Memoized error message
+  // Memoized error message - only show if there is no cached data and an error occurred
   const errorComponent = useMemo(() => {
-    if (!error && (isLoading || homeData.length > 0)) {
+    if (homeData.length > 0 || isLoading || !error) {
       return null;
     }
 
@@ -219,7 +223,7 @@ const Home = ({}: Props) => {
                   colors={[colors.primary]}
                   tintColor={colors.primary}
                   progressBackgroundColor={colors.surfaceContainer}
-                  refreshing={isRefetching}
+                  refreshing={manualRefreshing}
                   onRefresh={handleRefresh}
                 />
               }>

@@ -3,7 +3,7 @@ import { View, TouchableOpacity, ToastAndroid } from 'react-native';
 import { ifExists } from '../lib/file/ifExists';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Octicons from '@expo/vector-icons/Octicons';
-import { Stream } from '../lib/providers/types';
+import { Stream, SkipInterval } from '../lib/providers/types';
 import Svg, { Circle, Path } from 'react-native-svg';
 import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
 import useContentStore from '../lib/zustand/contentStore';
@@ -130,6 +130,7 @@ type PendingDownload = {
   fileType: string;
   headers?: Record<string, string>;
   subtitles?: Array<{ url: string; language: string; format?: string }>;
+  skip?: SkipInterval[];
   deleteDownload: () => void;
 };
 
@@ -150,6 +151,7 @@ const DownloadComponent = ({
   synopsis,
   infoUrl,
   quickDownload,
+  skip,
 }: {
   link: string;
   downloadId: string;
@@ -167,6 +169,7 @@ const DownloadComponent = ({
   synopsis?: string;
   infoUrl?: string;
   quickDownload?: boolean;
+  skip?: SkipInterval[];
 }) => {
   const colors = useM3Colors();
   const primary = colors.primary;
@@ -353,6 +356,15 @@ const DownloadComponent = ({
   };
 
   const downloadSingleVideoStream = async (server: Stream) => {
+    const resolvedSkip =
+      server.skip && server.skip.length > 0
+        ? server.skip
+        : (server as any)?.skips && (server as any).skips.length > 0
+          ? (server as any).skips
+          : skip && skip.length > 0
+            ? skip
+            : undefined;
+
     await startDownloadWithLocation({
       downloadId,
       title: title,
@@ -372,6 +384,7 @@ const DownloadComponent = ({
       fileName: fileName,
       fileType: server.type,
       headers: server?.headers,
+      skip: resolvedSkip,
       subtitles: server.subtitles?.map(subtitle => ({
         url: subtitle.uri,
         language: subtitle.language || 'Unknown',

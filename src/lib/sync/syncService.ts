@@ -120,6 +120,7 @@ const toSyncedDownload = (item: DownloadItem): SyncedDownload => {
     totalBytes: item.totalBytes,
     completedAt: item.completedAt || item.updatedAt,
     updatedAt: item.updatedAt,
+    skip: item.skip,
   };
   download.mediaKey = getDownloadMediaKey(download);
   return download;

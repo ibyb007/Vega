@@ -6,6 +6,7 @@ import {
   downloadsStorage,
   type DownloadPayload,
 } from '../storage/DownloadsStorage';
+import type {SkipInterval} from '../providers/types';
 
 export const DOWNLOADS_STORAGE_KEY = 'vega-downloads-storage';
 export const DOWNLOADS_SCHEMA_VERSION = 1;
@@ -75,6 +76,7 @@ export interface DownloadItem {
   updatedAt: number;
   completedAt?: number;
   legacy?: boolean;
+  skip?: SkipInterval[];
 }
 
 export type DownloadMediaInput = Pick<
@@ -96,6 +98,7 @@ export type DownloadMediaInput = Pick<
   | 'sourceLink'
   | 'subtitles'
   | 'displayFileName'
+  | 'skip'
 >;
 
 export type DownloadInput = Pick<

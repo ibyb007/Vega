@@ -11,6 +11,8 @@ import useDownloadsStore, {
   DownloadSourceType,
 } from './zustand/downloadsStore';
 
+import type {SkipInterval} from './providers/types';
+
 const getSourceType = (url: string, fileType: string): DownloadSourceType => {
   if (fileType === 'torrent' || url.startsWith('magnet:')) {
     return 'torrent';
@@ -42,6 +44,7 @@ export const downloadManager = async ({
   fileType,
   headers,
   subtitles,
+  skip,
 }: {
   downloadId: string;
   title: string;
@@ -63,6 +66,7 @@ export const downloadManager = async ({
   fileType: string;
   headers?: Record<string, string>;
   subtitles?: DownloadSubtitle[];
+  skip?: SkipInterval[];
   deleteDownload: () => void;
 }): Promise<void> => {
   const store = useDownloadsStore.getState();
@@ -96,6 +100,7 @@ export const downloadManager = async ({
     infoUrl,
     sourceLink,
     subtitles,
+    skip,
     displayFileName: getDownloadFileName(fileName, outputFileType),
   };
   const existingFile = await ifExists(fileName);

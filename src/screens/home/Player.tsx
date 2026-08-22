@@ -59,6 +59,7 @@ import { syncFromSharedFolder } from '../../lib/sync/syncService';
 import { useM3Colors } from '../../theme/M3PaletteContext';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import useLocalVideoStore from '../../lib/zustand/localVideoStore';
+import useDownloadsStore from '../../lib/zustand/downloadsStore';
 import CastRemotePlayer from '../../components/CastRemotePlayer';
 import {
   getEpisodeIdentity,
@@ -95,6 +96,33 @@ const readCachedProgress = (link?: string) => {
     };
   } catch {
     return { position: 0, duration: 0 };
+  }
+};
+
+const getCachedSkips = (keys: (string | undefined)[]): SkipInterval[] => {
+  for (const key of keys) {
+    if (!key) continue;
+    try {
+      const cached = cacheStorage.getString(`skips_${key}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {}
+  }
+  return [];
+};
+
+const cacheSkips = (keys: (string | undefined)[], skips: SkipInterval[]) => {
+  if (!skips || skips.length === 0) return;
+  const serialized = JSON.stringify(skips);
+  for (const key of keys) {
+    if (!key) continue;
+    try {
+      cacheStorage.setString(`skips_${key}`, serialized);
+    } catch {}
   }
 };
 
@@ -667,7 +695,9 @@ const Player = ({ route }: Props): React.JSX.Element => {
     [handleProgress],
   );
 
-  // Combined skip intervals from episode, direct links, and stream
+  const downloads = useDownloadsStore(state => state.downloads);
+
+  // Combined skip intervals from episode, direct links, stream, downloads, and cache
   const combinedSkips: SkipInterval[] = useMemo(() => {
     const list: SkipInterval[] = [];
     const addSkips = (items?: SkipInterval[]) => {
@@ -715,8 +745,64 @@ const Player = ({ route }: Props): React.JSX.Element => {
       }
     }
 
-    return list.sort((a, b) => a.from - b.from);
-  }, [activeEpisode, selectedStream, (route.params as any)?.linkList]);
+    // Check downloadsStore for matching download item with skip intervals
+    const allDownloadsList = Object.values(downloads);
+    const matchedDownload = allDownloadsList.find(
+      d =>
+        (activeEpisode?.id && d.id === activeEpisode.id) ||
+        (activeEpisode?.link &&
+          (d.filePath === activeEpisode.link ||
+            d.url === activeEpisode.link ||
+            d.sourceLink === activeEpisode.link)) ||
+        (activeEpisode?.sourceLink &&
+          (d.sourceLink === activeEpisode.sourceLink ||
+            d.url === activeEpisode.sourceLink ||
+            d.filePath === activeEpisode.sourceLink)) ||
+        (selectedStream?.link &&
+          (d.filePath === selectedStream.link ||
+            d.url === selectedStream.link)),
+    );
+    if (matchedDownload?.skip) {
+      addSkips(matchedDownload.skip);
+    }
+
+    // Check cacheStorage if no skips found yet
+    if (list.length === 0) {
+      const episodeKey = getEpisodeIdentity(activeEpisode);
+      const cached = getCachedSkips([
+        activeEpisode?.link,
+        activeEpisode?.sourceLink,
+        activeEpisodeKey,
+        episodeKey ? `${continueWatchingId}:${episodeKey}` : undefined,
+      ]);
+      addSkips(cached);
+    }
+
+    const sorted = list.sort((a, b) => a.from - b.from);
+
+    // Save to cache for future offline / download playback if skips exist
+    if (sorted.length > 0) {
+      const episodeKey = getEpisodeIdentity(activeEpisode);
+      cacheSkips(
+        [
+          activeEpisode?.link,
+          activeEpisode?.sourceLink,
+          activeEpisodeKey,
+          episodeKey ? `${continueWatchingId}:${episodeKey}` : undefined,
+        ],
+        sorted,
+      );
+    }
+
+    return sorted;
+  }, [
+    activeEpisode,
+    activeEpisodeKey,
+    continueWatchingId,
+    downloads,
+    selectedStream,
+    (route.params as any)?.linkList,
+  ]);
 
   // Currently active skip interval based on playback position
   const activeSkip = useMemo(() => {

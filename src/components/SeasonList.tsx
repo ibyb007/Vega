@@ -683,6 +683,7 @@ const SeasonList: React.FC<SeasonListProps> = ({
               background={poster.background}
               synopsis={synopsis}
               infoUrl={routeParams.link}
+              skip={item.skip || (item as any)?.skips}
               quickDownload={
                 quickDownload ||
                 activeSeason?.quickDownload ||
@@ -824,6 +825,7 @@ const SeasonList: React.FC<SeasonListProps> = ({
               background={poster.background}
               synopsis={synopsis}
               infoUrl={routeParams.link}
+              skip={item.skip || (item as any)?.skips}
               quickDownload={
                 quickDownload ||
                 activeSeason?.quickDownload ||
