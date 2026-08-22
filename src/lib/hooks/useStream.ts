@@ -499,8 +499,12 @@ export const useStream = ({
       }
     });
 
-    setExternalSubs(mergedSubs);
-  }, [streamData, activeEpisodeKey, routeParams]);
+    setExternalSubs(prev => {
+      const prevKey = prev.map((s: any) => s.uri || '').join('|');
+      const nextKey = mergedSubs.map((s: any) => s.uri || '').join('|');
+      return prevKey === nextKey ? prev : mergedSubs;
+    });
+  }, [streamData, activeEpisodeKey]);
 
   // Handle errors
   useEffect(() => {
@@ -539,7 +543,23 @@ export const useStream = ({
   };
 };
 
-const trackListKey = (tracks: any[]): string =>
+const audioTrackListKey = (tracks: any[]): string =>
+  tracks
+    .map(
+      track =>
+        `${track.index}-${track.title}-${track.language}-${track.selected}`,
+    )
+    .join('|');
+
+const textTrackListKey = (tracks: any[]): string =>
+  tracks
+    .map(
+      track =>
+        `${track.index}-${track.title}-${track.language}-${track.uri}-${track.selected}`,
+    )
+    .join('|');
+
+const videoTrackListKey = (tracks: any[]): string =>
   tracks
     .map(
       track =>
@@ -550,8 +570,19 @@ const trackListKey = (tracks: any[]): string =>
 // Hook for managing video tracks and settings
 export const useVideoSettings = () => {
   const [audioTracks, setAudioTracks] = useState<any[]>([]);
-  const [textTracks, setTextTracks] = useState<any[]>([]);
+  const [textTracks, _setTextTracks] = useState<any[]>([]);
   const [videoTracks, setVideoTracks] = useState<any[]>([]);
+
+  const setTextTracks = useCallback((tracksOrFn: any) => {
+    _setTextTracks(previous => {
+      const next =
+        typeof tracksOrFn === 'function' ? tracksOrFn(previous) : tracksOrFn;
+      if (!Array.isArray(next)) return next;
+      return textTrackListKey(previous) === textTrackListKey(next)
+        ? previous
+        : next;
+    });
+  }, []);
 
   const [loadedVideoSize, setLoadedVideoSize] = useState<{
     width: number;
@@ -581,7 +612,11 @@ export const useVideoSettings = () => {
     const uniqueTracks = Array.from(uniqueMap.values());
     const selectedIndex = uniqueTracks.findIndex(track => track.selected);
 
-    setAudioTracks(uniqueTracks);
+    setAudioTracks(previous =>
+      audioTrackListKey(previous) === audioTrackListKey(uniqueTracks)
+        ? previous
+        : uniqueTracks,
+    );
     if (selectedIndex !== -1) {
       setSelectedAudioTrackIndex(selectedIndex);
     }
@@ -616,7 +651,7 @@ export const useVideoSettings = () => {
     }
 
     setVideoTracks(previous =>
-      trackListKey(previous) === trackListKey(uniqueTracks)
+      videoTrackListKey(previous) === videoTrackListKey(uniqueTracks)
         ? previous
         : uniqueTracks,
     );

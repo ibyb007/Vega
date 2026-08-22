@@ -230,21 +230,23 @@ const AnimatedVideoPlayer = (
     [videoStyle, containerStyle],
   );
 
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+
   const _onSeek = useCallback(
     (obj: OnSeekData) => {
       try {
-        if (!seeking) {
+        if (!seekingRef.current) {
           setControlTimeout();
         }
 
-        // Ensure currentTime is valid
         const validCurrentTime = Math.max(
           0,
-          Math.min(obj.currentTime || 0, duration),
+          Math.min(obj.currentTime || 0, durationRef.current),
         );
         setCurrentTime(validCurrentTime);
-
-        console.log('Seek completed:', obj);
 
         if (typeof onSeek === 'function') {
           onSeek(obj);
@@ -253,12 +255,12 @@ const AnimatedVideoPlayer = (
         console.error('Error in _onSeek:', error);
       }
     },
-    [seeking, setControlTimeout, onSeek, duration],
+    [setControlTimeout, onSeek],
   );
 
   const _onEnd = useCallback(() => {
-    if (currentTime < duration) {
-      setCurrentTime(duration);
+    if (currentTimeRef.current < durationRef.current) {
+      setCurrentTime(durationRef.current);
       setPaused(!props.repeat);
 
       if (showOnEnd) {
@@ -269,7 +271,7 @@ const AnimatedVideoPlayer = (
     if (typeof onEnd === 'function') {
       onEnd();
     }
-  }, [currentTime, duration, props.repeat, showOnEnd, onEnd]);
+  }, [props.repeat, showOnEnd, onEnd]);
 
   const _onError = useCallback(() => {
     setError(true);
@@ -287,12 +289,15 @@ const AnimatedVideoPlayer = (
     [onLoadStart],
   );
 
+  const showControlsRef = useRef(showControls);
+  showControlsRef.current = showControls;
+
   const _onLoad = useCallback(
     (data: OnLoadData) => {
       setDuration(data.duration);
       setLoading(false);
 
-      if (showControls) {
+      if (showControlsRef.current) {
         setControlTimeout();
       }
 
@@ -300,7 +305,7 @@ const AnimatedVideoPlayer = (
         onLoad(data);
       }
     },
-    [showControls, setControlTimeout, onLoad],
+    [setControlTimeout, onLoad],
   );
 
   const _onProgress = useCallback(
@@ -333,22 +338,20 @@ const AnimatedVideoPlayer = (
         }
       }
     },
-    [seeking, buffering, onProgress, duration, seekerWidth],
+    [buffering, onProgress, duration, seekerWidth],
   );
 
   const _onScreenTouch = useCallback(() => {
     if (tapActionTimeout.current) {
-      // This is a double tap - clear timeout and toggle fullscreen
       clearTimeout(tapActionTimeout.current);
       tapActionTimeout.current = null;
       toggleFullscreen();
-      if (showControls) {
+      if (showControlsRef.current) {
         resetControlTimeout();
       }
     } else {
-      // This is a single tap - set timeout to handle single tap action
       tapActionTimeout.current = setTimeout(() => {
-        if (tapAnywhereToPause && showControls) {
+        if (tapAnywhereToPause && showControlsRef.current) {
           togglePlayPause();
           resetControlTimeout();
         } else {
@@ -359,7 +362,6 @@ const AnimatedVideoPlayer = (
     }
   }, [
     toggleFullscreen,
-    showControls,
     resetControlTimeout,
     tapAnywhereToPause,
     togglePlayPause,
@@ -370,13 +372,10 @@ const AnimatedVideoPlayer = (
   const _onPlaybackRateChange = useCallback(
     (playBack: {playbackRate: number}) => {
       if (playBack.playbackRate === 0 && !buffering) {
-        setTimeout(() => {
-          !buffering && setPaused(true);
-        });
-      } else {
-        setPaused(false);
+        setPaused(prev => (prev ? prev : true));
+      } else if (playBack.playbackRate > 0) {
+        setPaused(prev => (!prev ? prev : false));
       }
-      console.log(playBack);
     },
     [buffering],
   );
@@ -516,12 +515,6 @@ const AnimatedVideoPlayer = (
   });
 
   useEffect(() => {
-    if (currentTime >= duration && duration > 0) {
-      videoRef?.current?.seek(0);
-    }
-  }, [currentTime, duration, videoRef]);
-
-  useEffect(() => {
     if (toggleResizeModeOnFullscreen) {
       setResizeMode(_isFullscreen ? ResizeMode.CONTAIN : ResizeMode.COVER);
     }
@@ -637,7 +630,7 @@ const AnimatedVideoPlayer = (
       typeof events.onHideControls === 'function' && events.onHideControls();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showControls, loading]);
+  }, [showControls]);
 
   useEffect(() => {
     setMuted(muted);
@@ -647,6 +640,7 @@ const AnimatedVideoPlayer = (
   const updateVolumeRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (disableVolume) return;
     if (updateVolumeRef.current) {
       cancelAnimationFrame(updateVolumeRef.current);
     }
@@ -654,22 +648,15 @@ const AnimatedVideoPlayer = (
     updateVolumeRef.current = requestAnimationFrame(() => {
       const newVolume = volumePosition / volumeWidth;
 
-      if (newVolume <= 0) {
-        setMuted(true);
-      } else {
-        setMuted(false);
-      }
+      setMuted(newVolume <= 0);
 
-      setVolume(newVolume);
+      setVolume(prev => (Math.abs(prev - newVolume) > 0.02 ? newVolume : prev));
       setVolumeOffset(volumePosition);
 
       const newVolumeTrackWidth = volumeWidth - volumeFillWidth;
-
-      if (newVolumeTrackWidth > 150) {
-        setVolumeTrackWidth(150);
-      } else {
-        setVolumeTrackWidth(newVolumeTrackWidth);
-      }
+      setVolumeTrackWidth(
+        newVolumeTrackWidth > 150 ? 150 : newVolumeTrackWidth,
+      );
 
       updateVolumeRef.current = null;
     });
@@ -679,7 +666,7 @@ const AnimatedVideoPlayer = (
         cancelAnimationFrame(updateVolumeRef.current);
       }
     };
-  }, [volumeFillWidth, volumePosition]);
+  }, [disableVolume, volumeFillWidth, volumePosition]);
 
   useEffect(() => {
     const position = volumeWidth * _volume;

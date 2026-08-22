@@ -143,8 +143,10 @@ export const Seekbar = ({
           style={styles.track}
           onLayout={event => {
             const width = event.nativeEvent.layout.width;
-            setTrackWidth(width);
-            setSeekerWidth(width);
+            if (width > 0 && Math.abs(width - trackWidth) > 1) {
+              setTrackWidth(width);
+              setSeekerWidth(width);
+            }
           }}
           pointerEvents="none">
           <View

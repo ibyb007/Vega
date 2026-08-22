@@ -413,7 +413,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
   // Player ref
   const playerRef = useRef<VideoRef>(null as unknown as VideoRef);
   const remoteMediaClient = useRemoteMediaClient();
-  const hasSetInitialTracksRef = useRef(false);
+  const hasSetInitialAudioRef = useRef(false);
+  const hasSetInitialTextRef = useRef(false);
   const videoLoadedRef = useRef(false);
   const resumeAppliedRef = useRef(false);
   const loadedCastMediaRef = useRef('');
@@ -773,6 +774,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
   ]);
 
   useEffect(() => {
+    hasSetInitialAudioRef.current = false;
+    hasSetInitialTextRef.current = false;
     resumeAppliedRef.current = false;
     videoLoadedRef.current = false;
     appliedPersistedLocalVideoRef.current = false;
@@ -1052,25 +1055,56 @@ const Player = ({ route }: Props): React.JSX.Element => {
 
   // Memoized next episode handler
   const handleNextEpisode = useCallback(() => {
-    const currentIndex = route.params?.episodeList?.indexOf(activeEpisode);
+    if (!route.params?.episodeList?.length || !activeEpisode) {
+      ToastAndroid.show('No more episodes', ToastAndroid.SHORT);
+      return;
+    }
+    const currentIndex = route.params.episodeList.findIndex(
+      ep =>
+        (activeEpisode?.id && ep?.id && activeEpisode.id === ep.id) ||
+        (activeEpisode?.link && ep?.link && activeEpisode.link === ep.link) ||
+        (activeEpisode?.sourceLink &&
+          ep?.sourceLink &&
+          activeEpisode.sourceLink === ep.sourceLink) ||
+        activeEpisode === ep,
+    );
     if (
-      currentIndex !== undefined &&
-      currentIndex < route.params?.episodeList?.length - 1
+      currentIndex >= 0 &&
+      currentIndex < route.params.episodeList.length - 1
     ) {
-      setActiveEpisode(route.params?.episodeList[currentIndex + 1]);
-      hasSetInitialTracksRef.current = false;
+      setActiveEpisode(route.params.episodeList[currentIndex + 1]);
+      hasSetInitialAudioRef.current = false;
+      hasSetInitialTextRef.current = false;
     } else {
       ToastAndroid.show('No more episodes', ToastAndroid.SHORT);
     }
   }, [activeEpisode, route.params?.episodeList]);
 
+  const hasNextEpisode = useMemo(() => {
+    if (!route.params?.episodeList?.length || !activeEpisode) return false;
+    const currentIndex = route.params.episodeList.findIndex(
+      ep =>
+        (activeEpisode?.id && ep?.id && activeEpisode.id === ep.id) ||
+        (activeEpisode?.link && ep?.link && activeEpisode.link === ep.link) ||
+        (activeEpisode?.sourceLink &&
+          ep?.sourceLink &&
+          activeEpisode.sourceLink === ep.sourceLink) ||
+        activeEpisode === ep,
+    );
+    return currentIndex >= 0 && currentIndex < route.params.episodeList.length - 1;
+  }, [activeEpisode, route.params?.episodeList]);
+
   // Memoized error handler
+  const selectedStreamRef = useRef(selectedStream);
+  selectedStreamRef.current = selectedStream;
+  const streamDataRef = useRef(streamData);
+  streamDataRef.current = streamData;
+
   const handleVideoError = useCallback(
     (e: any) => {
       console.log('PlayerError', e);
 
-      if (selectedStream?.type === 'local') {
-
+      if (selectedStreamRef.current?.type === 'local') {
         if (activeEpisodeKey) {
           clearLocalVideoAssociation(activeEpisodeKey);
         }
@@ -1079,9 +1113,10 @@ const Player = ({ route }: Props): React.JSX.Element => {
           'Local video not found. Trying online sources...',
           ToastAndroid.SHORT,
         );
+        const sd = streamDataRef.current;
         setSelectedStream(
-          streamData && streamData.length > 0
-            ? streamData[0]
+          sd && sd.length > 0
+            ? sd[0]
             : { server: '', link: '', type: '' },
         );
         setShowControls(true);
@@ -1101,10 +1136,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
       activeEpisodeKey,
       clearLocalVideoAssociation,
       navigation,
-      selectedStream,
       setSelectedStream,
       setShowControls,
-      streamData,
       switchToNextStream,
     ],
   );
@@ -1380,6 +1413,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
 
   // Reset track selections when stream changes
   useEffect(() => {
+    hasSetInitialAudioRef.current = false;
+    hasSetInitialTextRef.current = false;
     setSelectedAudioTrackIndex(0);
     setSelectedTextTrackIndex(1000);
     setSelectedQualityIndex(1000);
@@ -1399,53 +1434,51 @@ const Player = ({ route }: Props): React.JSX.Element => {
 
   // Set last selected audio and subtitle tracks
   useEffect(() => {
-    if (hasSetInitialTracksRef.current) {
-      return;
-    }
-
     const lastAudioTrack = cacheStorage.getString('lastAudioTrack') || 'auto';
     const lastTextTrack = cacheStorage.getString('lastTextTrack') || 'auto';
 
-    const audioTrackIndex = audioTracks.findIndex(
-      track => track.language === lastAudioTrack,
-    );
-    let textTrackIndex = textTracks.findIndex(
-      track =>
-        track.language === lastTextTrack ||
-        track.title === lastTextTrack ||
-        track.language?.toLowerCase() === lastTextTrack?.toLowerCase(),
-    );
-
-    if (textTrackIndex === -1 && textTracks.length > 0) {
-      const downloadedIndex = textTracks.findIndex(
-        track =>
-          track.title?.includes('(Downloaded)') ||
-          track.uri?.startsWith('file://') ||
-          track.uri?.startsWith('content://'),
+    if (!hasSetInitialAudioRef.current && audioTracks.length > 0) {
+      hasSetInitialAudioRef.current = true;
+      const audioTrackIndex = audioTracks.findIndex(
+        track => track.language === lastAudioTrack,
       );
-      if (downloadedIndex !== -1) {
-        textTrackIndex = downloadedIndex;
+      if (audioTrackIndex !== -1) {
+        setSelectedAudioTrack({
+          type: SelectedTrackType.INDEX,
+          value: audioTrackIndex,
+        });
+        setSelectedAudioTrackIndex(audioTrackIndex);
       }
     }
 
-    if (audioTrackIndex !== -1) {
-      setSelectedAudioTrack({
-        type: SelectedTrackType.INDEX,
-        value: audioTrackIndex,
-      });
-      setSelectedAudioTrackIndex(audioTrackIndex);
-    }
+    if (!hasSetInitialTextRef.current && textTracks.length > 0) {
+      hasSetInitialTextRef.current = true;
+      let textTrackIndex = textTracks.findIndex(
+        track =>
+          track.language === lastTextTrack ||
+          track.title === lastTextTrack ||
+          track.language?.toLowerCase() === lastTextTrack?.toLowerCase(),
+      );
 
-    if (textTrackIndex !== -1) {
-      setSelectedTextTrack({
-        type: SelectedTrackType.INDEX,
-        value: textTrackIndex,
-      });
-      setSelectedTextTrackIndex(textTrackIndex);
-    }
+      if (textTrackIndex === -1 && textTracks.length > 0) {
+        const downloadedIndex = textTracks.findIndex(
+          track =>
+            track.title?.includes('(Downloaded)') ||
+            track.uri?.startsWith('file://') ||
+            track.uri?.startsWith('content://'),
+        );
+        if (downloadedIndex !== -1) {
+          textTrackIndex = downloadedIndex;
+        }
+      }
 
-    if (audioTracks.length > 0 && textTracks.length > 0) {
-      hasSetInitialTracksRef.current = true;
+      if (textTrackIndex !== -1) {
+        setSelectedTextTrack({
+          type: SelectedTrackType.INDEX,
+          value: textTrackIndex,
+        });
+        setSelectedTextTrackIndex(textTrackIndex);
+      }
     }
   }, [
     textTracks,
@@ -1574,6 +1607,89 @@ const Player = ({ route }: Props): React.JSX.Element => {
     reapplyFullscreenMode(isFullScreen);
   }, [isFullScreen]);
 
+  const handleShowControls = useCallback(
+    () => setShowControls(true),
+    [setShowControls],
+  );
+  const handleHideControls = useCallback(
+    () => setShowControls(false),
+    [setShowControls],
+  );
+  const handleAudioTracks = useCallback(
+    (e: any) => {
+      if (e?.audioTracks) processAudioTracks(e.audioTracks);
+    },
+    [processAudioTracks],
+  );
+  const selectedTextTrackIndexRef = useRef(selectedTextTrackIndex);
+  selectedTextTrackIndexRef.current = selectedTextTrackIndex;
+
+  const handleTextTracks = useCallback(
+    (e: any) => {
+      const tracks = e?.textTracks || [];
+      setTextTracks(tracks);
+      if (selectedTextTrackIndexRef.current === 1000 && tracks.length > 0) {
+        const downloadedTrack = tracks.find(
+          (t: any) =>
+            t.title?.toLowerCase().includes('downloaded') ||
+            t.title?.toLowerCase().includes('local'),
+        );
+        if (downloadedTrack) {
+          setSelectedTextTrack({
+            type: SelectedTrackType.INDEX,
+            value: String(downloadedTrack.index),
+          });
+          setSelectedTextTrackIndex(downloadedTrack.index);
+        }
+      }
+    },
+    [setTextTracks, setSelectedTextTrackIndex],
+  );
+  const handleVideoTracks = useCallback(
+    (e: any) => {
+      if (e?.videoTracks) processVideoTracks(e.videoTracks);
+    },
+    [processVideoTracks],
+  );
+  const handleSeekSnap = useCallback(() => {
+    if (settingsStorage.isHapticFeedbackEnabled()) {
+      ReactNativeHapticFeedback.trigger('effectTick', {
+        enableVibrateFallback: true,
+        ignoreAndroidSystemSettings: false,
+      });
+    }
+  }, []);
+  const watchedDurationRef = useRef(watchedDuration);
+  watchedDurationRef.current = watchedDuration;
+
+  const handleVideoLoadCallback = useCallback(
+    (e: any) => {
+      handleVideoLoad(e?.naturalSize);
+      if (e?.videoTracks && e.videoTracks.length > 0) {
+        processVideoTracks(e.videoTracks);
+      }
+      if (e?.audioTracks && e.audioTracks.length > 0) {
+        processAudioTracks(e.audioTracks);
+      }
+      if (e?.textTracks && e.textTracks.length > 0) {
+        setTextTracks(e.textTracks);
+      }
+      videoLoadedRef.current = true;
+      const wd = watchedDurationRef.current;
+      if (wd > 5) {
+        playerRef.current?.seek(wd);
+        resumeAppliedRef.current = true;
+      }
+      playerRef?.current?.resume();
+    },
+    [
+      handleVideoLoad,
+      processVideoTracks,
+      processAudioTracks,
+      setTextTracks,
+    ],
+  );
+
   // Memoized video player props
   const videoPlayerProps = useMemo(
     () => ({
@@ -1588,9 +1704,6 @@ const Player = ({ route }: Props): React.JSX.Element => {
             ? processedStreamUrl
             : selectedStream.link) || '',
         bufferConfig: {
-          // High-bitrate 4K streams can otherwise fill Android's complete
-          // Java heap: react-native-video defaults the allocator limit to
-          // 100%, then the codec has no room left for output buffers.
           minBufferMs: 8000,
           maxBufferMs: 20000,
           bufferForPlaybackMs: 1500,
@@ -1615,24 +1728,7 @@ const Player = ({ route }: Props): React.JSX.Element => {
       },
       onProgress: handleProgressWithTime,
       skips: combinedSkips,
-      onLoad: (e: any) => {
-        handleVideoLoad(e?.naturalSize);
-        if (e?.videoTracks && e.videoTracks.length > 0) {
-          processVideoTracks(e.videoTracks);
-        }
-        if (e?.audioTracks && e.audioTracks.length > 0) {
-          processAudioTracks(e.audioTracks);
-        }
-        if (e?.textTracks && e.textTracks.length > 0) {
-          setTextTracks(e.textTracks);
-        }
-        videoLoadedRef.current = true;
-        if (watchedDuration > 5) {
-          playerRef.current?.seek(watchedDuration);
-          resumeAppliedRef.current = true;
-        }
-        playerRef?.current?.resume();
-      },
+      onLoad: handleVideoLoadCallback,
       videoRef: playerRef,
       rate: playbackRate,
       subtitleStyle: {
@@ -1659,8 +1755,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
       toggleResizeModeOnFullscreen: false,
       fullscreenOrientation: 'landscape' as const,
       fullscreenAutorotate: true,
-      onShowControls: () => setShowControls(true),
-      onHideControls: () => setShowControls(false),
+      onShowControls: handleShowControls,
+      onHideControls: handleHideControls,
       rewindTime: 10,
       isFullscreen: true,
       disableFullscreen: true,
@@ -1673,67 +1769,45 @@ const Player = ({ route }: Props): React.JSX.Element => {
       onError: handleVideoError,
       resizeMode,
       selectedAudioTrack,
-      onAudioTracks: (e: any) => processAudioTracks(e.audioTracks),
+      onAudioTracks: handleAudioTracks,
       selectedTextTrack,
-      onTextTracks: (e: any) => {
-        const tracks = e.textTracks || [];
-        setTextTracks(tracks);
-        if (selectedTextTrackIndex === 1000 && tracks.length > 0) {
-          const downloadedTrack = tracks.find(
-            (t: any) =>
-              t.title?.toLowerCase().includes('downloaded') ||
-              t.title?.toLowerCase().includes('local'),
-          );
-          if (downloadedTrack) {
-            setSelectedTextTrack({
-              type: SelectedTrackType.INDEX,
-              value: String(downloadedTrack.index),
-            });
-            setSelectedTextTrackIndex(downloadedTrack.index);
-          }
-        }
-      },
-      onVideoTracks: (e: any) => processVideoTracks(e.videoTracks),
+      onTextTracks: handleTextTracks,
+      onVideoTracks: handleVideoTracks,
       selectedVideoTrack,
       style: { flex: 1, zIndex: 100 },
       controlAnimationTiming: 357,
       controlTimeoutDelay: 10000,
       hideAllControlls: isPlayerLocked,
-      onSeekSnap: () => {
-        if (settingsStorage.isHapticFeedbackEnabled()) {
-          ReactNativeHapticFeedback.trigger('effectTick', {
-            enableVibrateFallback: true,
-            ignoreAndroidSystemSettings: false,
-          });
-        }
-      },
+      onSeekSnap: handleSeekSnap,
     }),
     [
       isPlayerLocked,
-      enableSwipeGesture,
-      hideSeekButtons,
       externalSubs,
-      selectedStream,
-      route.params,
-      activeEpisode,
+      selectedStream.link,
+      selectedStream.type,
+      selectedStream.headers,
+      activeEpisode?.title,
       handleProgressWithTime,
       combinedSkips,
-      watchedDuration,
+      handleVideoLoadCallback,
       playbackRate,
-      setPlaybackRate,
       primary,
       navigation,
-      setShowControls,
+      handleShowControls,
+      handleHideControls,
       showMediaControls,
       handleVideoError,
       resizeMode,
       selectedAudioTrack,
+      handleAudioTracks,
       selectedTextTrack,
+      handleTextTracks,
+      handleVideoTracks,
       selectedVideoTrack,
-      processAudioTracks,
-      processVideoTracks,
-      handleVideoLoad,
+      handleSeekSnap,
       processedStreamUrl,
+      enableSwipeGesture,
+      hideSeekButtons,
     ],
   );
 
@@ -2081,11 +2155,9 @@ const Player = ({ route }: Props): React.JSX.Element => {
           </TouchableOpacity>
 
           {/* Next episode button */}
-          {route.params?.episodeList?.indexOf(activeEpisode) <
-            route.params?.episodeList?.length - 1 &&
-            videoPositionRef.current.position /
-            videoPositionRef.current.duration >
-            0.8 && (
+          {hasNextEpisode &&
+            videoPositionRef.current.duration > 0 &&
+            currentPlaybackTime / videoPositionRef.current.duration > 0.8 && (
               <TouchableOpacity
                 className="min-w-0 flex-1 flex-row items-center justify-center"
                 onPress={handleNextEpisode}>
@@ -2654,7 +2726,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
                       onSelect={() => {
                         if (!isActive) {
                           setActiveEpisode(ep);
-                          hasSetInitialTracksRef.current = false;
+                          hasSetInitialAudioRef.current = false;
+                          hasSetInitialTextRef.current = false;
                         }
                         setShowEpisodeSidebar(false);
                       }}

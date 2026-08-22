@@ -38,6 +38,42 @@ export const usePanResponders = ({
   horizontal = true,
   inverted = false,
 }: PanRespondersProps) => {
+  const propsRef = useRef({
+    duration,
+    volumeOffset,
+    loading,
+    seekerWidth,
+    seek,
+    clearControlTimeout,
+    setVolumePosition,
+    setSeekerPosition,
+    setSeeking,
+    setSeekSnapPosition,
+    setControlTimeout,
+    onEnd,
+    onSeekSnap,
+    horizontal,
+    inverted,
+  });
+
+  propsRef.current = {
+    duration,
+    volumeOffset,
+    loading,
+    seekerWidth,
+    seek,
+    clearControlTimeout,
+    setVolumePosition,
+    setSeekerPosition,
+    setSeeking,
+    setSeekSnapPosition,
+    setControlTimeout,
+    onEnd,
+    onSeekSnap,
+    horizontal,
+    inverted,
+  };
+
   const latestSeekerPosition = useRef(seekerPosition);
   const seekStartPosition = useRef(0);
   const dragStartPosition = useRef(0);
@@ -52,128 +88,173 @@ export const usePanResponders = ({
     latestSeekerPosition.current = seekerPosition;
   }, [seekerPosition]);
 
-  const volumePanResponder = PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => {
-      clearControlTimeout();
-    },
-    onPanResponderMove: (_evt, gestureState) => {
-      const diff = horizontal ? gestureState.dx : gestureState.dy;
-      const position = volumeOffset + diff * (inverted ? -1 : 1);
-      setVolumePosition(position);
-    },
-    onPanResponderRelease: () => {
-      setControlTimeout();
-    },
-  });
+  const respondersRef = useRef<{
+    volumePanResponder: any;
+    seekPanResponder: any;
+  } | null>(null);
 
-  const seekPanResponder = PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onPanResponderGrant: (evt) => {
-      setSeeking(true);
-      clearControlTimeout();
-      const localPointer = horizontal
-        ? evt.nativeEvent.locationX
-        : evt.nativeEvent.locationY;
-      const pagePointer = horizontal
-        ? evt.nativeEvent.pageX
-        : evt.nativeEvent.pageY;
-      // Keep a stable screen-space origin for the complete gesture. Android's
-      // locationX/locationY can change coordinate frames when children are
-      // added or rerendered while the responder is active (the seek preview is
-      // one such child), which makes the thumb stop following the finger.
-      seekTrackPageOffset.current = pagePointer - localPointer;
-      const position = inverted ? seekerWidth - localPointer : localPointer;
-      const playbackPosition = Math.max(
-        0,
-        Math.min(seekerWidth, latestSeekerPosition.current),
-      );
-      // The magnetic snap point represents where playback was when seeking
-      // began. The touched position is only the initial position of the thumb.
-      seekStartPosition.current = playbackPosition;
-      dragStartPosition.current = position;
-      hasLeftStartPoint.current = false;
-      isSnappedToStart.current = false;
-      setSeekSnapPosition(playbackPosition);
-      latestSeekerPosition.current = position;
-      setSeekerPosition(position);
-    },
-    onPanResponderMove: (_evt, gestureState) => {
-      const pagePointer = horizontal ? gestureState.moveX : gestureState.moveY;
-      const pointerPosition = pagePointer - seekTrackPageOffset.current;
-      const fallbackDiff = horizontal ? gestureState.dx : gestureState.dy;
-      const fallbackPosition =
-        dragStartPosition.current + fallbackDiff * (inverted ? -1 : 1);
-      const rawPosition = Number.isFinite(pointerPosition)
-        ? inverted
-          ? seekerWidth - pointerPosition
-          : pointerPosition
-        : fallbackPosition;
-      const distanceFromStart = Math.abs(
-        rawPosition - seekStartPosition.current,
-      );
+  if (!respondersRef.current) {
+    const volumePanResponder = PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        propsRef.current.clearControlTimeout();
+      },
+      onPanResponderMove: (_evt, gestureState) => {
+        const { horizontal: h, inverted: inv, volumeOffset: vOff, setVolumePosition: setVPos } = propsRef.current;
+        const diff = h ? gestureState.dx : gestureState.dy;
+        const position = vOff + diff * (inv ? -1 : 1);
+        setVPos(position);
+      },
+      onPanResponderRelease: () => {
+        propsRef.current.setControlTimeout();
+      },
+    });
 
-      if (
-        !hasLeftStartPoint.current &&
-        distanceFromStart >= SNAP_EXIT_DISTANCE
-      ) {
-        hasLeftStartPoint.current = true;
-      }
+    const seekPanResponder = PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        const {
+          setSeeking: setSeek,
+          clearControlTimeout: clearTimeout,
+          horizontal: h,
+          inverted: inv,
+          seekerWidth: sWidth,
+          setSeekSnapPosition: setSnapPos,
+          setSeekerPosition: setSPos,
+        } = propsRef.current;
 
-      let position = rawPosition;
-      if (hasLeftStartPoint.current) {
-        if (isSnappedToStart.current) {
-          if (distanceFromStart <= SNAP_EXIT_DISTANCE) {
+        setSeek(true);
+        clearTimeout();
+        const localPointer = h
+          ? evt.nativeEvent.locationX
+          : evt.nativeEvent.locationY;
+        const pagePointer = h
+          ? evt.nativeEvent.pageX
+          : evt.nativeEvent.pageY;
+
+        seekTrackPageOffset.current = pagePointer - localPointer;
+        const position = inv ? sWidth - localPointer : localPointer;
+        const playbackPosition = Math.max(
+          0,
+          Math.min(sWidth, latestSeekerPosition.current),
+        );
+
+        seekStartPosition.current = playbackPosition;
+        dragStartPosition.current = position;
+        hasLeftStartPoint.current = false;
+        isSnappedToStart.current = false;
+        setSnapPos(playbackPosition);
+        latestSeekerPosition.current = position;
+        setSPos(position);
+      },
+      onPanResponderMove: (_evt, gestureState) => {
+        const {
+          horizontal: h,
+          inverted: inv,
+          seekerWidth: sWidth,
+          setSeekerPosition: setSPos,
+          setSeeking: setSeek,
+          onSeekSnap: onSnap,
+        } = propsRef.current;
+
+        const pagePointer = h ? gestureState.moveX : gestureState.moveY;
+        const pointerPosition = pagePointer - seekTrackPageOffset.current;
+        const fallbackDiff = h ? gestureState.dx : gestureState.dy;
+        const fallbackPosition =
+          dragStartPosition.current + fallbackDiff * (inv ? -1 : 1);
+        const rawPosition = Number.isFinite(pointerPosition)
+          ? inv
+            ? sWidth - pointerPosition
+            : pointerPosition
+          : fallbackPosition;
+        const distanceFromStart = Math.abs(
+          rawPosition - seekStartPosition.current,
+        );
+
+        if (
+          !hasLeftStartPoint.current &&
+          distanceFromStart >= SNAP_EXIT_DISTANCE
+        ) {
+          hasLeftStartPoint.current = true;
+        }
+
+        let position = rawPosition;
+        if (hasLeftStartPoint.current) {
+          if (isSnappedToStart.current) {
+            if (distanceFromStart <= SNAP_EXIT_DISTANCE) {
+              position = seekStartPosition.current;
+            } else {
+              isSnappedToStart.current = false;
+            }
+          } else if (distanceFromStart <= SNAP_ENTER_DISTANCE) {
+            isSnappedToStart.current = true;
             position = seekStartPosition.current;
-          } else {
-            isSnappedToStart.current = false;
+            onSnap?.();
           }
-        } else if (distanceFromStart <= SNAP_ENTER_DISTANCE) {
-          isSnappedToStart.current = true;
-          position = seekStartPosition.current;
-          onSeekSnap?.();
         }
-      }
 
-      latestSeekerPosition.current = position;
-      setSeekerPosition(position);
-      setSeeking(true);
-    },
-    onPanResponderRelease: () => {
-      const constrainedPosition = Math.max(
-        0,
-        Math.min(seekerWidth, latestSeekerPosition.current),
-      );
-      const percent = seekerWidth > 0 ? constrainedPosition / seekerWidth : 0;
-      const time = duration * percent;
+        latestSeekerPosition.current = position;
+        setSPos(position);
+        setSeek(true);
+      },
+      onPanResponderRelease: () => {
+        const {
+          seekerWidth: sWidth,
+          duration: dur,
+          loading: isLoading,
+          onEnd: handleEnd,
+          setSeeking: setSeek,
+          setSeekSnapPosition: setSnapPos,
+          seek: doSeek,
+          setControlTimeout: setTimeoutFn,
+        } = propsRef.current;
 
-      if (time >= duration && !loading) {
-        if (typeof onEnd === 'function') {
-          onEnd();
+        const constrainedPosition = Math.max(
+          0,
+          Math.min(sWidth, latestSeekerPosition.current),
+        );
+        const percent = sWidth > 0 ? constrainedPosition / sWidth : 0;
+        const time = dur * percent;
+
+        if (time >= dur && !isLoading) {
+          if (typeof handleEnd === 'function') {
+            handleEnd();
+          }
         }
-      }
 
-      setSeeking(false);
-      setSeekSnapPosition(null);
-      seek && seek(time);
-      setControlTimeout();
-    },
-    onPanResponderTerminate: () => {
-      const constrainedPosition = Math.max(
-        0,
-        Math.min(seekerWidth, latestSeekerPosition.current),
-      );
-      const percent = seekerWidth > 0 ? constrainedPosition / seekerWidth : 0;
-      setSeeking(false);
-      setSeekSnapPosition(null);
-      seek && seek(duration * percent);
-      setControlTimeout();
-    },
-    onPanResponderTerminationRequest: () => false,
-    onShouldBlockNativeResponder: () => true,
-  });
+        setSeek(false);
+        setSnapPos(null);
+        doSeek && doSeek(time);
+        setTimeoutFn();
+      },
+      onPanResponderTerminate: () => {
+        const {
+          seekerWidth: sWidth,
+          duration: dur,
+          setSeeking: setSeek,
+          setSeekSnapPosition: setSnapPos,
+          seek: doSeek,
+          setControlTimeout: setTimeoutFn,
+        } = propsRef.current;
 
-  return {volumePanResponder, seekPanResponder};
+        const constrainedPosition = Math.max(
+          0,
+          Math.min(sWidth, latestSeekerPosition.current),
+        );
+        const percent = sWidth > 0 ? constrainedPosition / sWidth : 0;
+        setSeek(false);
+        setSnapPos(null);
+        doSeek && doSeek(dur * percent);
+        setTimeoutFn();
+      },
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+    });
+
+    respondersRef.current = { volumePanResponder, seekPanResponder };
+  }
+
+  return respondersRef.current;
 };

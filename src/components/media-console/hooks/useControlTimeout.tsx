@@ -16,6 +16,11 @@ export const useControlTimeout = ({
   alwaysShowControls,
 }: ControlTimeoutProps) => {
   const controlTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showControlsRef = useRef(showControls);
+  showControlsRef.current = showControls;
+
+  const mountedRef = useRef(mounted);
+  mountedRef.current = mounted;
 
   const clearControlTimeout = useCallback(() => {
     if (controlTimeoutRef.current) {
@@ -25,33 +30,29 @@ export const useControlTimeout = ({
   }, []);
 
   const hideControls = useCallback(() => {
-    if (mounted && showControls && !alwaysShowControls) {
+    if (mountedRef.current && showControlsRef.current && !alwaysShowControls) {
       setShowControls(false);
     }
-  }, [alwaysShowControls, mounted, setShowControls, showControls]);
+  }, [alwaysShowControls, setShowControls]);
 
   const setControlTimeout = useCallback(() => {
     clearControlTimeout();
-    if (showControls && !alwaysShowControls) {
+    if (showControlsRef.current && !alwaysShowControls) {
       controlTimeoutRef.current = setTimeout(
         hideControls,
         controlTimeoutDelay,
       );
     }
-  }, [
-    alwaysShowControls,
-    clearControlTimeout,
-    controlTimeoutDelay,
-    hideControls,
-    showControls,
-  ]);
+  }, [alwaysShowControls, clearControlTimeout, controlTimeoutDelay, hideControls]);
 
   const resetControlTimeout = setControlTimeout;
 
   useEffect(() => {
-    setControlTimeout();
+    if (showControls) {
+      setControlTimeout();
+    }
     return clearControlTimeout;
-  }, [clearControlTimeout, setControlTimeout]);
+  }, [showControls, clearControlTimeout, setControlTimeout]);
 
   return {
     clearControlTimeout,
