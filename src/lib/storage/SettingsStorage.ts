@@ -46,6 +46,11 @@ export enum SettingsKeys {
   SUBTITLE_FONT_SIZE = 'subtitleFontSize',
   SUBTITLE_OPACITY = 'subtitleOpacity',
   SUBTITLE_BOTTOM_PADDING = 'subtitleBottomPadding',
+  SUBTITLE_TEXT_COLOR = 'subtitleTextColor',
+  SUBTITLE_FONT_FAMILY = 'subtitleFontFamily',
+  SUBTITLE_EDGE_TYPE = 'subtitleEdgeType',
+  SUBTITLE_EDGE_COLOR = 'subtitleEdgeColor',
+  SUBTITLE_OUTLINE_WIDTH = 'subtitleOutlineWidth',
 
   LIST_VIEW_TYPE = 'viewType',
 
@@ -273,7 +278,7 @@ export class SettingsStorage {
 
   // Subtitle settings
   getSubtitleFontSize(): number {
-    return mainStorage.getNumber(SettingsKeys.SUBTITLE_FONT_SIZE) || 16;
+    return mainStorage.getNumber(SettingsKeys.SUBTITLE_FONT_SIZE) ?? 16;
   }
 
   setSubtitleFontSize(size: number): void {
@@ -282,7 +287,7 @@ export class SettingsStorage {
 
   getSubtitleOpacity(): number {
     const opacityStr = mainStorage.getString(SettingsKeys.SUBTITLE_OPACITY);
-    return opacityStr ? parseFloat(opacityStr) : 1;
+    return opacityStr !== undefined && opacityStr !== '' ? parseFloat(opacityStr) : 1;
   }
 
   setSubtitleOpacity(opacity: number): void {
@@ -290,11 +295,62 @@ export class SettingsStorage {
   }
 
   getSubtitleBottomPadding(): number {
-    return mainStorage.getNumber(SettingsKeys.SUBTITLE_BOTTOM_PADDING) || 10;
+    return mainStorage.getNumber(SettingsKeys.SUBTITLE_BOTTOM_PADDING) ?? 10;
   }
 
   setSubtitleBottomPadding(padding: number): void {
     mainStorage.setNumber(SettingsKeys.SUBTITLE_BOTTOM_PADDING, padding);
+  }
+
+  getSubtitleTextColor(): string {
+    return mainStorage.getString(SettingsKeys.SUBTITLE_TEXT_COLOR) || '#FFFFFF';
+  }
+
+  setSubtitleTextColor(color: string): void {
+    mainStorage.setString(SettingsKeys.SUBTITLE_TEXT_COLOR, color);
+  }
+
+  getSubtitleFontFamily(): string {
+    return mainStorage.getString(SettingsKeys.SUBTITLE_FONT_FAMILY) || 'default';
+  }
+
+  setSubtitleFontFamily(font: string): void {
+    mainStorage.setString(SettingsKeys.SUBTITLE_FONT_FAMILY, font);
+  }
+
+  getSubtitleEdgeType(): 'outline' | 'dropShadow' | 'raised' | 'depressed' | 'none' {
+    const val = mainStorage.getString(SettingsKeys.SUBTITLE_EDGE_TYPE);
+    if (
+      val === 'dropShadow' ||
+      val === 'raised' ||
+      val === 'depressed' ||
+      val === 'none'
+    ) {
+      return val;
+    }
+    return 'outline';
+  }
+
+  setSubtitleEdgeType(
+    edgeType: 'outline' | 'dropShadow' | 'raised' | 'depressed' | 'none',
+  ): void {
+    mainStorage.setString(SettingsKeys.SUBTITLE_EDGE_TYPE, edgeType);
+  }
+
+  getSubtitleEdgeColor(): string {
+    return mainStorage.getString(SettingsKeys.SUBTITLE_EDGE_COLOR) || '#000000';
+  }
+
+  setSubtitleEdgeColor(color: string): void {
+    mainStorage.setString(SettingsKeys.SUBTITLE_EDGE_COLOR, color);
+  }
+
+  getSubtitleOutlineWidth(): number {
+    return mainStorage.getNumber(SettingsKeys.SUBTITLE_OUTLINE_WIDTH) ?? 2;
+  }
+
+  setSubtitleOutlineWidth(width: number): void {
+    mainStorage.setNumber(SettingsKeys.SUBTITLE_OUTLINE_WIDTH, width);
   }
 
   getListViewType(): number {

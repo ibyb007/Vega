@@ -543,7 +543,7 @@ const trackListKey = (tracks: any[]): string =>
   tracks
     .map(
       track =>
-        `${track.index}-${track.trackId}-${track.width}x${track.height}-${track.bitrate}`,
+        `${track.index}-${track.trackId}-${track.width}x${track.height}-${track.bitrate}-${track.selected}`,
     )
     .join('|');
 
@@ -605,8 +605,16 @@ export const useVideoSettings = () => {
         (b.height || 0) - (a.height || 0) ||
         (b.bitrate || 0) - (a.bitrate || 0),
     );
-    // The player re-reports tracks on every selection change, so bail out when
-    // nothing actually changed to avoid re-rendering consumers on each event.
+
+    const activeTrack = uniqueTracks.find((t: any) => t.selected);
+    if (activeTrack && activeTrack.height) {
+      setLoadedVideoSize(prev =>
+        prev?.height === activeTrack.height && prev?.width === activeTrack.width
+          ? prev
+          : { width: activeTrack.width || 0, height: activeTrack.height },
+      );
+    }
+
     setVideoTracks(previous =>
       trackListKey(previous) === trackListKey(uniqueTracks)
         ? previous

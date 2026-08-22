@@ -1,6 +1,6 @@
-import {View, Text, Dimensions} from 'react-native';
-import type {LayoutChangeEvent} from 'react-native';
-import React, {useState, useRef, useEffect, useCallback, useMemo} from 'react';
+import { View, Text, Dimensions } from 'react-native';
+import type { LayoutChangeEvent } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Animated, {
   useAnimatedStyle,
   withTiming,
@@ -10,11 +10,13 @@ import Animated, {
   runOnJS,
   cancelAnimation,
 } from 'react-native-reanimated';
-import type {SharedValue} from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import Icon from '@expo/vector-icons/MaterialIcons';
 import AntDesign from '@expo/vector-icons/AntDesign';
 import * as Brightness from 'expo-brightness';
-import {VolumeManager} from 'react-native-volume-manager';
+import { VolumeManager } from 'react-native-volume-manager';
+import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
+import { settingsStorage } from '../../../lib/storage';
 
 import {
   GestureDetector,
@@ -33,12 +35,7 @@ type GesturesProps = {
   tapAnywhereToPause: boolean;
   rewindTime: number;
   showControls: boolean;
-  /**
-   * Whether the seek buttons are actually rendered. When they are, they own the
-   * skip feedback and animate their own label. When they are not, there is no
-   * button to animate and the ripple has to stand in. Defaults to false so the
-   * feedback is never silently dropped.
-   */
+
   seekButtonsEnabled?: boolean;
   disableGesture: boolean;
   baseRate?: number;
@@ -52,8 +49,7 @@ type GesturesProps = {
 
 const SWIPE_RANGE = 370;
 
-// Total runtime of the ripple's opacity sequence below (100 in + 120 hold +
-// 180 out). The slab is only unmounted once this has played out.
+
 const RIPPLE_FADE_DURATION = 400;
 
 const Ripple = React.memo(
@@ -74,14 +70,13 @@ const Ripple = React.memo(
       cancelAnimation(opacity);
 
       if (visible) {
-        // Reset before every skip so repeated double taps replay the effect
-        // instead of leaving a partially composited Android layer behind.
+
         scale.value = 0.9;
         opacity.value = 0;
-        scale.value = withTiming(1, {duration: 180});
+        scale.value = withTiming(1, { duration: 180 });
         opacity.value = withSequence(
-          withTiming(0.28, {duration: 100}),
-          withDelay(120, withTiming(0, {duration: 180})),
+          withTiming(0.28, { duration: 100 }),
+          withDelay(120, withTiming(0, { duration: 180 })),
         );
       } else {
         scale.value = 0.9;
@@ -93,7 +88,7 @@ const Ripple = React.memo(
       () => ({
         opacity: opacity.value,
         //@ts-ignore
-        transform: [{scale: scale.value}],
+        transform: [{ scale: scale.value }],
       }),
       [],
     );
@@ -101,7 +96,7 @@ const Ripple = React.memo(
     const contentRippleStyle = useAnimatedStyle(
       () => ({
         opacity: Math.min(opacity.value * 3.2, 1),
-        transform: [{scale: scale.value}],
+        transform: [{ scale: scale.value }],
       }),
       [],
     );
@@ -207,9 +202,9 @@ const ControlOverlay = React.memo(
 
       if (isVisible) {
         setMounted(true);
-        opacity.value = withTiming(1, {duration: INDICATOR_FADE_IN});
+        opacity.value = withTiming(1, { duration: INDICATOR_FADE_IN });
       } else {
-        opacity.value = withTiming(0, {duration: INDICATOR_FADE_OUT});
+        opacity.value = withTiming(0, { duration: INDICATOR_FADE_OUT });
         unmountRef.current = setTimeout(() => {
           setMounted(false);
           unmountRef.current = null;
@@ -226,7 +221,7 @@ const ControlOverlay = React.memo(
       [],
     );
 
-    const fadeStyle = useAnimatedStyle(() => ({opacity: opacity.value}), []);
+    const fadeStyle = useAnimatedStyle(() => ({ opacity: opacity.value }), []);
 
     const containerStyle = useMemo(
       () => ({
@@ -280,15 +275,15 @@ const ControlOverlay = React.memo(
       [value],
     );
 
-    const iconStyle = useMemo(() => ({marginTop: 10}), []);
+    const iconStyle = useMemo(() => ({ marginTop: 10 }), []);
 
     const iconName = useMemo(() => {
       if (isVolume) {
         return value === 0
           ? 'volume-mute'
           : value < 0.3
-          ? 'volume-down'
-          : 'volume-up';
+            ? 'volume-down'
+            : 'volume-up';
       }
       return 'brightness-6';
     }, [isVolume, value]);
@@ -343,10 +338,10 @@ const Gestures = ({
 
   // Memoize screen dimensions
   const screenDimensions = useMemo(() => Dimensions.get('window'), []);
-  const {width: SCREEN_WIDTH} = screenDimensions;
+  const { width: SCREEN_WIDTH } = screenDimensions;
 
   // Refs
-  const initialTapPosition = useRef({x: 0, y: 0});
+  const initialTapPosition = useRef({ x: 0, y: 0 });
   const isDoubleTapRef = useRef(false);
   const currentSideRef = useRef<'left' | 'right' | null>(null);
   const tapCountRef = useRef(0);
@@ -357,9 +352,11 @@ const Gestures = ({
     volume: 0,
     brightness: 0,
   });
+  const longPressTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const is2xActiveRef = useRef(false);
 
   // Shared values
-  // Measured width of the gesture view. `event.x` is relative to that view, so
   // the left/right split has to be measured rather than taken from the window:
   // the view can be narrower than the screen, and the memoized window width
   // below never updates on rotation. Falls back to the window until first layout.
@@ -409,16 +406,71 @@ const Gestures = ({
 
   const show2xToast = useCallback(() => {
     setToastMessage('2× speed');
-    toastOpacity.value = withTiming(1, {duration: 150});
+    toastOpacity.value = withTiming(1, { duration: 150 });
   }, [toastOpacity]);
 
   const hideToast = useCallback(() => {
-    toastOpacity.value = withTiming(0, {duration: 150}, (finished) => {
+    toastOpacity.value = withTiming(0, { duration: 150 }, (finished) => {
       if (finished) {
         runOnJS(setToastMessage)(null);
       }
     });
   }, [toastOpacity]);
+
+  const start2x = useCallback(() => {
+    if (disableGesture || showControls) return;
+    if (settingsStorage.isHapticFeedbackEnabled()) {
+      ReactNativeHapticFeedback.trigger('impactMedium', {
+        enableVibrateFallback: true,
+        ignoreAndroidSystemSettings: false,
+      });
+    }
+    is2xActiveRef.current = true;
+    setPlayback(2);
+    show2xToast();
+  }, [disableGesture, showControls, setPlayback, show2xToast]);
+
+  const cancel2x = useCallback(() => {
+    if (longPressTimeoutRef.current) {
+      clearTimeout(longPressTimeoutRef.current);
+      longPressTimeoutRef.current = null;
+    }
+    touchStartPosRef.current = null;
+    if (is2xActiveRef.current) {
+      is2xActiveRef.current = false;
+      setPlayback(baseRateRef.current);
+      hideToast();
+    }
+  }, [hideToast, setPlayback]);
+
+  const handleTouchDown = useCallback(
+    (x: number, y: number) => {
+      if (disableGesture || showControls) return;
+      cancel2x();
+      touchStartPosRef.current = { x, y };
+      longPressTimeoutRef.current = setTimeout(() => {
+        start2x();
+      }, 450);
+    },
+    [disableGesture, showControls, cancel2x, start2x],
+  );
+
+  const handleTouchMove = useCallback(
+    (x: number, y: number) => {
+      if (!touchStartPosRef.current) return;
+      const dx = Math.abs(x - touchStartPosRef.current.x);
+      const dy = Math.abs(y - touchStartPosRef.current.y);
+      if (dx > 8 || dy > 8) {
+        // Finger is moving -> cancel long press immediately
+        cancel2x();
+      }
+    },
+    [cancel2x],
+  );
+
+  const handleTouchUp = useCallback(() => {
+    cancel2x();
+  }, [cancel2x]);
 
   // The accumulated label is owned by the seek button and fades out on its own
   // timer, so resetting the tap tracking must not clear it. Otherwise the
@@ -490,7 +542,7 @@ const Gestures = ({
 
       if (!isDoubleTapRef.current) {
         isDoubleTapRef.current = true;
-        initialTapPosition.current = {x: touchX, y: touchY};
+        initialTapPosition.current = { x: touchX, y: touchY };
         currentSideRef.current = side;
         tapCountRef.current = 1;
         lastTapTimeRef.current = now;
@@ -542,7 +594,7 @@ const Gestures = ({
         } else {
           resetState();
           isDoubleTapRef.current = true;
-          initialTapPosition.current = {x: touchX, y: touchY};
+          initialTapPosition.current = { x: touchX, y: touchY };
           currentSideRef.current = side;
           tapCountRef.current = 1;
           lastTapTimeRef.current = now;
@@ -585,8 +637,35 @@ const Gestures = ({
         .enabled(!disableGesture)
         .maxPointers(1)
         .minDistance(10) // Minimum distance before gesture starts
+        .onTouchesDown((event) => {
+          'worklet';
+          if (event.allTouches && event.allTouches.length > 0) {
+            runOnJS(handleTouchDown)(
+              event.allTouches[0].x,
+              event.allTouches[0].y,
+            );
+          }
+        })
+        .onTouchesMove((event) => {
+          'worklet';
+          if (event.allTouches && event.allTouches.length > 0) {
+            runOnJS(handleTouchMove)(
+              event.allTouches[0].x,
+              event.allTouches[0].y,
+            );
+          }
+        })
+        .onTouchesUp(() => {
+          'worklet';
+          runOnJS(handleTouchUp)();
+        })
+        .onTouchesCancelled(() => {
+          'worklet';
+          runOnJS(handleTouchUp)();
+        })
         .onStart((event) => {
           'worklet';
+          runOnJS(cancel2x)();
           const isLeftSide = event.x < (gestureWidth.value || SCREEN_WIDTH) / 2;
 
           if (isLeftSide) {
@@ -599,6 +678,7 @@ const Gestures = ({
         })
         .onUpdate((event) => {
           'worklet';
+          runOnJS(cancel2x)();
           const isLeftSide = event.x < (gestureWidth.value || SCREEN_WIDTH) / 2;
           const change = -event.translationY / SWIPE_RANGE;
 
@@ -622,6 +702,7 @@ const Gestures = ({
         })
         .onFinalize(() => {
           'worklet';
+          runOnJS(handleTouchUp)();
           runOnJS(setIsVolumeVisible)(false);
           runOnJS(setIsBrightnessVisible)(false);
         }),
@@ -629,6 +710,10 @@ const Gestures = ({
       SCREEN_WIDTH,
       gestureWidth,
       disableGesture,
+      handleTouchDown,
+      handleTouchMove,
+      handleTouchUp,
+      cancel2x,
       updateSystemBrightness,
       updateSystemVolume,
     ],
@@ -686,6 +771,9 @@ const Gestures = ({
       }
       if (tapActionTimeout.current) {
         clearTimeout(tapActionTimeout.current);
+      }
+      if (longPressTimeoutRef.current) {
+        clearTimeout(longPressTimeoutRef.current);
       }
     };
   }, []);
@@ -748,6 +836,7 @@ const Gestures = ({
         // Tapping to show/hide controls is not an optional swipe gesture.
         // The locked player does not render this component at all.
         .enabled(true)
+        .maxDuration(250)
         .maxDistance(14)
         .onEnd((event, success) => {
           'worklet';
@@ -762,51 +851,9 @@ const Gestures = ({
     [SCREEN_WIDTH, gestureWidth, handleTap],
   );
 
-  const isLongPressActive = useSharedValue(false);
-
-  const longPressGesture = useMemo(
-    () =>
-      Gesture.LongPress()
-        .enabled(!disableGesture && !showControls)
-        .minDuration(450)
-        .maxDistance(120)
-        .shouldCancelWhenOutside(false)
-        .onStart((event) => {
-          'worklet';
-          if (event.x >= (gestureWidth.value || SCREEN_WIDTH) / 2) {
-            isLongPressActive.value = true;
-            runOnJS(setPlayback)(2);
-            runOnJS(show2xToast)();
-          }
-        })
-        .onFinalize(() => {
-          'worklet';
-          if (isLongPressActive.value) {
-            isLongPressActive.value = false;
-            runOnJS(setPlayback)(baseRateRef.current);
-            runOnJS(hideToast)();
-          }
-        }),
-    [
-      SCREEN_WIDTH,
-      gestureWidth,
-      disableGesture,
-      showControls,
-      hideToast,
-      isLongPressActive,
-      setPlayback,
-      show2xToast,
-    ],
-  );
-
-  const tapOrLongPressGesture = useMemo(
-    () => Gesture.Race(longPressGesture, tapGesture),
-    [longPressGesture, tapGesture],
-  );
-
   const composedGesture = useMemo(
-    () => Gesture.Simultaneous(pinchGesture, panGesture, tapOrLongPressGesture),
-    [panGesture, pinchGesture, tapOrLongPressGesture],
+    () => Gesture.Simultaneous(pinchGesture, panGesture, tapGesture),
+    [panGesture, pinchGesture, tapGesture],
   );
 
   const visualOverlayStyle = useMemo(

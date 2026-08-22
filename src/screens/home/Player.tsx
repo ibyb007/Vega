@@ -449,7 +449,6 @@ const Player = ({ route }: Props): React.JSX.Element => {
     [route.params?.episodeList, route.params?.type],
   );
 
-  // Animated styles
   const loadingContainerStyle = useAnimatedStyle(() => ({
     opacity: loadingOpacity.value,
     transform: [{ scale: loadingScale.value }],
@@ -1552,9 +1551,14 @@ const Player = ({ route }: Props): React.JSX.Element => {
       videoRef: playerRef,
       rate: playbackRate,
       subtitleStyle: {
-        fontSize: settingsStorage.getSubtitleFontSize() || 16,
-        opacity: settingsStorage.getSubtitleOpacity() || 1,
-        paddingBottom: settingsStorage.getSubtitleBottomPadding() || 10,
+        fontSize: settingsStorage.getSubtitleFontSize() ?? 16,
+        opacity: settingsStorage.getSubtitleOpacity() ?? 1,
+        paddingBottom: settingsStorage.getSubtitleBottomPadding() ?? 10,
+        textColor: settingsStorage.getSubtitleTextColor(),
+        fontFamily: settingsStorage.getSubtitleFontFamily(),
+        edgeType: settingsStorage.getSubtitleEdgeType(),
+        edgeColor: settingsStorage.getSubtitleEdgeColor(),
+        outlineWidth: settingsStorage.getSubtitleOutlineWidth() ?? 2,
         subtitlesFollowVideo: false,
       },
       title: {
@@ -2128,12 +2132,32 @@ const Player = ({ route }: Props): React.JSX.Element => {
 
                           if (!res.canceled && res.assets?.[0]) {
                             const asset = res.assets[0];
+                            let trackType = asset.mimeType as any;
+                            const fileName = (asset.name || '').toLowerCase();
+                            if (
+                              !trackType ||
+                              trackType === 'application/octet-stream' ||
+                              trackType === 'text/plain'
+                            ) {
+                              if (fileName.endsWith('.vtt')) {
+                                trackType = 'text/vtt';
+                              } else if (
+                                fileName.endsWith('.ttml') ||
+                                fileName.endsWith('.xml') ||
+                                fileName.endsWith('.dfxp')
+                              ) {
+                                trackType = 'application/ttml+xml';
+                              } else {
+                                trackType = 'application/x-subrip';
+                              }
+                            }
+
                             const track = {
-                              type: asset.mimeType as any,
+                              type: trackType,
                               title:
                                 asset.name && asset.name.length > 20
                                   ? asset.name.slice(0, 20) + '...'
-                                  : asset.name || 'undefined',
+                                  : asset.name || 'External Subtitle',
                               language: 'und',
                               uri: asset.uri,
                             };

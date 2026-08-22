@@ -1288,3 +1288,477 @@ index e16ac96..741a382 100644
      }
  
      public void setSelectedAudioTrack(String type, String value) {
+@@ -1332,9 +1345,23 @@
+                     }
+                 }
+                 
++                String mimeType = track.getType();
++                if (mimeType == null || mimeType.isEmpty() || "application/octet-stream".equals(mimeType) || "text/plain".equals(mimeType)) {
++                    String uriStr = track.getUri() != null ? track.getUri().toString().toLowerCase() : "";
++                    if (uriStr.contains(".vtt")) {
++                        mimeType = androidx.media3.common.MimeTypes.TEXT_VTT;
++                    } else if (uriStr.contains(".ttml") || uriStr.contains(".xml") || uriStr.contains(".dfxp")) {
++                        mimeType = androidx.media3.common.MimeTypes.APPLICATION_TTML;
++                    } else {
++                        mimeType = androidx.media3.common.MimeTypes.APPLICATION_SUBRIP;
++                    }
++                } else if ("text/srt".equals(mimeType)) {
++                    mimeType = androidx.media3.common.MimeTypes.APPLICATION_SUBRIP;
++                }
++
+                 MediaItem.SubtitleConfiguration.Builder configBuilder = new MediaItem.SubtitleConfiguration.Builder(track.getUri())
+                         .setId(trackId)
+-                        .setMimeType(track.getType())
++                        .setMimeType(mimeType)
+                         .setLabel(label)
+                         .setRoleFlags(C.ROLE_FLAG_SUBTITLE);
+                 
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/SubtitleStyle.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/SubtitleStyle.kt
+--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/SubtitleStyle.kt
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/SubtitleStyle.kt
+@@ -21,6 +21,16 @@
+         private set
+     var subtitlesFollowVideo = true
+         private set
++    var textColor: String? = null
++        private set
++    var fontFamily: String? = null
++        private set
++    var edgeType: String? = null
++        private set
++    var edgeColor: String? = null
++        private set
++    var outlineWidth = 2
++        private set
+ 
+     companion object {
+         private const val PROP_FONT_SIZE_TRACK = "fontSize"
+@@ -29,6 +39,11 @@
+         private const val PROP_PADDING_RIGHT = "paddingRight"
+         private const val PROP_OPACITY = "opacity"
+         private const val PROP_SUBTITLES_FOLLOW_VIDEO = "subtitlesFollowVideo"
++        private const val PROP_TEXT_COLOR = "textColor"
++        private const val PROP_FONT_FAMILY = "fontFamily"
++        private const val PROP_EDGE_TYPE = "edgeType"
++        private const val PROP_EDGE_COLOR = "edgeColor"
++        private const val PROP_OUTLINE_WIDTH = "outlineWidth"
+ 
+         @JvmStatic
+         fun parse(src: ReadableMap?): SubtitleStyle {
+@@ -39,6 +54,11 @@
+             subtitleStyle.paddingRight = ReactBridgeUtils.safeGetInt(src, PROP_PADDING_RIGHT, 0)
+             subtitleStyle.opacity = ReactBridgeUtils.safeGetFloat(src, PROP_OPACITY, 1f)
+             subtitleStyle.subtitlesFollowVideo = ReactBridgeUtils.safeGetBool(src, PROP_SUBTITLES_FOLLOW_VIDEO, true)
++            subtitleStyle.textColor = ReactBridgeUtils.safeGetString(src, PROP_TEXT_COLOR, null)
++            subtitleStyle.fontFamily = ReactBridgeUtils.safeGetString(src, PROP_FONT_FAMILY, null)
++            subtitleStyle.edgeType = ReactBridgeUtils.safeGetString(src, PROP_EDGE_TYPE, null)
+            subtitleStyle.edgeColor = ReactBridgeUtils.safeGetString(src, PROP_EDGE_COLOR, null)
+            subtitleStyle.outlineWidth = ReactBridgeUtils.safeGetInt(src, PROP_OUTLINE_WIDTH, 2)
+            return subtitleStyle
+        }
+    }
+}
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/CustomSubtitleOverlayView.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/CustomSubtitleOverlayView.kt
+new file mode 100644
+--- /dev/null
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/CustomSubtitleOverlayView.kt
+@@ -0,0 +1,198 @@
++package com.brentvatne.exoplayer
++
++import android.content.Context
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.graphics.RectF
++import android.graphics.Typeface
++import android.os.Build
++import android.text.Layout
++import android.text.StaticLayout
++import android.text.TextPaint
++import android.util.AttributeSet
++import android.util.TypedValue
++import android.view.View
++import android.view.ViewGroup
++import androidx.media3.common.text.Cue
++import com.brentvatne.common.api.SubtitleStyle
++
++class CustomSubtitleOverlayView @JvmOverloads constructor(
++    context: Context,
++    attrs: AttributeSet? = null,
++    defStyleAttr: Int = 0
++) : View(context, attrs, defStyleAttr) {
++
++    private var cues: List<Cue> = emptyList()
++    private var style = SubtitleStyle()
++
++    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
++        isSubpixelText = true
++    }
++    private val strokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
++        isSubpixelText = true
++        style = Paint.Style.STROKE
++        strokeJoin = Paint.Join.ROUND
++        strokeCap = Paint.Cap.ROUND
++    }
++    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
++
++    fun setCues(newCues: List<Cue>) {
++        this.cues = newCues
++        postInvalidate()
++    }
++
++    fun setStyle(newStyle: SubtitleStyle) {
++        this.style = newStyle
++        postInvalidate()
++    }
++
++    override fun onDraw(canvas: Canvas) {
++        super.onDraw(canvas)
++        if (cues.isEmpty()) return
++
++        val density = resources.displayMetrics.density
++        val fontSizeSp = if (style.fontSize > 0) style.fontSize.toFloat() else 16f
++        val textSizePx = TypedValue.applyDimension(
++            TypedValue.COMPLEX_UNIT_SP,
++            fontSizeSp,
++            resources.displayMetrics
++        )
++
++        val typeface = when (style.fontFamily) {
++            "sans-serif" -> Typeface.SANS_SERIF
++            "serif" -> Typeface.SERIF
++            "monospace" -> Typeface.MONOSPACE
++            "casual" -> Typeface.create("casual", Typeface.NORMAL)
++            "cursive" -> Typeface.create("cursive", Typeface.NORMAL)
++            else -> Typeface.DEFAULT
++        }
++
++        textPaint.typeface = typeface
++        textPaint.textSize = textSizePx
++
++        strokePaint.typeface = typeface
++        strokePaint.textSize = textSizePx
++
++        val fgColor = try {
++            if (!style.textColor.isNullOrEmpty()) Color.parseColor(style.textColor) else Color.WHITE
++        } catch (e: Exception) {
++            Color.WHITE
++        }
++
++        val edColor = try {
++            if (!style.edgeColor.isNullOrEmpty()) Color.parseColor(style.edgeColor) else Color.BLACK
++        } catch (e: Exception) {
++            Color.BLACK
++        }
++
++        val bgAlpha = if (style.opacity in 0.0f..1.0f) (style.opacity * 255).toInt() else 0
++        val edgeType = style.edgeType ?: "outline"
++        val outlineWidthPx = style.outlineWidth.toFloat() * density
++        val bottomPaddingPx = style.paddingBottom.toFloat() * density
++
++        val contentFrame = (parent as? ViewGroup)?.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
++        val followVideo = style.subtitlesFollowVideo && contentFrame != null && contentFrame.width > 0 && contentFrame.height > 0
++        val videoLeft = if (followVideo) contentFrame!!.left.toFloat() else 0f
++        val videoTop = if (followVideo) contentFrame!!.top.toFloat() else 0f
++        val videoWidth = if (followVideo) contentFrame!!.width.toFloat() else width.toFloat()
++        val videoHeight = if (followVideo) contentFrame!!.height.toFloat() else height.toFloat()
++        val videoBottom = if (followVideo) videoTop + videoHeight else height.toFloat()
++
++        if (videoWidth <= 0 || videoHeight <= 0) return
++
++        val maxTextWidth = (videoWidth - (48 * density)).toInt().coerceAtLeast(10)
++
++        // Render each cue
++        for (cue in cues) {
++            val text = cue.text ?: continue
++            if (text.isEmpty()) continue
++
++            textPaint.style = Paint.Style.FILL
++            textPaint.color = fgColor
++
++            val staticLayout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++                StaticLayout.Builder.obtain(text, 0, text.length, textPaint, maxTextWidth)
++                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
++                    .setLineSpacing(0f, 1.15f)
++                    .setIncludePad(false)
++                    .build()
++            } else {
++                @Suppress("DEPRECATION")
++                StaticLayout(text, textPaint, maxTextWidth, Layout.Alignment.ALIGN_CENTER, 1.15f, 0f, false)
++            }
++
++            var minLineLeft = Float.MAX_VALUE
++            var maxLineRight = Float.MIN_VALUE
++            for (i in 0 until staticLayout.lineCount) {
++                minLineLeft = minOf(minLineLeft, staticLayout.getLineLeft(i))
++                maxLineRight = maxOf(maxLineRight, staticLayout.getLineRight(i))
++            }
++            if (minLineLeft > maxLineRight) {
++                minLineLeft = 0f
++                maxLineRight = staticLayout.width.toFloat()
++            }
++
++            val textHeight = staticLayout.height.toFloat()
++            val padH = 12f * density
++            val padV = 5f * density
++
++            val x = videoLeft + (videoWidth - maxTextWidth) / 2f
++            val boxLeft = x + minLineLeft - padH
++            val boxRight = x + maxLineRight + padH
++            val boxHeight = textHeight + padV * 2
++            val boxBottom = videoBottom - bottomPaddingPx - (4f * density)
++            val boxTop = boxBottom - boxHeight
++            val y = boxTop + padV
++
++            // Draw background rounded box
++            if (bgAlpha > 0) {
++                bgPaint.color = Color.argb(bgAlpha, 0, 0, 0)
++                val bgRect = RectF(boxLeft, boxTop, boxRight, boxBottom)
++                canvas.drawRoundRect(bgRect, 8f * density, 8f * density, bgPaint)
++            }
++
++            // Draw edge effects
++            when (edgeType) {
++                "outline" -> {
++                    if (outlineWidthPx > 0f) {
++                        strokePaint.strokeWidth = outlineWidthPx * 2f
++                        strokePaint.color = edColor
++                        val strokeLayout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++                            StaticLayout.Builder.obtain(text, 0, text.length, strokePaint, maxTextWidth)
++                                .setAlignment(Layout.Alignment.ALIGN_CENTER)
++                                .setLineSpacing(0f, 1.15f)
++                                .setIncludePad(false)
++                                .build()
++                        } else {
++                            @Suppress("DEPRECATION")
++                            StaticLayout(text, strokePaint, maxTextWidth, Layout.Alignment.ALIGN_CENTER, 1.15f, 0f, false)
++                        }
++                        canvas.save()
++                        canvas.translate(x, y)
++                        strokeLayout.draw(canvas)
++                        canvas.restore()
++                    }
++                }
++                "dropShadow" -> {
++                    val shadowOffset = outlineWidthPx * 1.5f
++                    val shadowRadius = outlineWidthPx * 2f
++                    textPaint.setShadowLayer(shadowRadius, shadowOffset, shadowOffset, edColor)
++                }
++                "raised" -> {
++                    val offset = outlineWidthPx
++                    val shadowPaint = TextPaint(textPaint).apply {
++                        color = edColor
++                    }
++                    val shadowLayout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++                        StaticLayout.Builder.obtain(text, 0, text.length, shadowPaint, maxTextWidth)
++                            .setAlignment(Layout.Alignment.ALIGN_CENTER)
++                            .setLineSpacing(0f, 1.15f)
++                            .setIncludePad(false)
++                            .build()
++                    } else {
++                        @Suppress("DEPRECATION")
++                        StaticLayout(text, shadowPaint, maxTextWidth, Layout.Alignment.ALIGN_CENTER, 1.15f, 0f, false)
++                    }
++                    canvas.save()
++                    canvas.translate(x + offset, y + offset)
++                    shadowLayout.draw(canvas)
++                    canvas.restore()
++                }
++                "depressed" -> {
++                    val offset = outlineWidthPx
++                    val shadowPaint = TextPaint(textPaint).apply {
++                        color = edColor
++                    }
++                    val shadowLayout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++                        StaticLayout.Builder.obtain(text, 0, text.length, shadowPaint, maxTextWidth)
++                            .setAlignment(Layout.Alignment.ALIGN_CENTER)
++                            .setLineSpacing(0f, 1.15f)
++                            .setIncludePad(false)
++                            .build()
++                    } else {
++                        @Suppress("DEPRECATION")
++                        StaticLayout(text, shadowPaint, maxTextWidth, Layout.Alignment.ALIGN_CENTER, 1.15f, 0f, false)
++                    }
++                    canvas.save()
++                    canvas.translate(x - offset, y - offset)
++                    shadowLayout.draw(canvas)
++                    canvas.restore()
++                }
++            }
++
++            // Draw foreground text
++            textPaint.style = Paint.Style.FILL
++            textPaint.color = fgColor
++            canvas.save()
++            canvas.translate(x, y)
++            staticLayout.draw(canvas)
++            canvas.restore()
++            textPaint.clearShadowLayer()
++        }
++    }
++}
++diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt
++--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt
+++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt
++@@ -10,6 +10,8 @@
++ import android.widget.FrameLayout
++ import android.widget.TextView
++ import androidx.media3.common.Player
++ import androidx.media3.common.Timeline
+++import androidx.media3.common.text.Cue
+++import androidx.media3.common.text.CueGroup
++ import androidx.media3.common.util.UnstableApi
++ import androidx.media3.exoplayer.ExoPlayer
++ import androidx.media3.ui.AspectRatioFrameLayout
++@@ -52,10 +54,25 @@
++         // Ensure proper video scaling - start with FIT mode
++         resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
++     }
++ 
+++    private val customSubtitleOverlay = CustomSubtitleOverlayView(context).apply {
+++        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+++    }
+++
++     init {
++         // Add PlayerView with explicit layout parameters
++         val playerViewLayoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
++         addView(playerView, playerViewLayoutParams)
++ 
+++        // Add custom subtitle overlay above PlayerView
+++        addView(customSubtitleOverlay)
+++
++         // Add live badge with its own layout parameters
++         val liveBadgeLayoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
++@@ -84,6 +101,14 @@
+++    fun onCues(cueGroup: CueGroup) {
+++        customSubtitleOverlay.setCues(cueGroup.cues)
+++    }
+++
+++    fun onCues(cues: List<Cue>) {
+++        customSubtitleOverlay.setCues(cues)
+++    }
+++
++             // Reapply subtitle style when player is attached
++             setSubtitleStyle(localStyle)
+++        } else {
+++            customSubtitleOverlay.setCues(emptyList())
++         }
++     }
++ 
++@@ -114,35 +139,10 @@
++     fun setSubtitleStyle(style: SubtitleStyle) {
++         localStyle = style
++-        playerView.subtitleView?.let { subtitleView ->
++-            val contentFrame = playerView.findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame)
++-            val subtitleParent = if (style.subtitlesFollowVideo) contentFrame else playerView
++-            if (subtitleParent != null && subtitleView.parent !== subtitleParent) {
++-                (subtitleView.parent as? ViewGroup)?.removeView(subtitleView)
++-                val layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
++-                if (subtitleParent === playerView) {
++-                    subtitleParent.addView(subtitleView, playerView.indexOfChild(contentFrame) + 1, layoutParams)
++-                } else {
++-                    subtitleParent.addView(subtitleView, layoutParams)
++-                }
++-            }
++-
++-            // Reset to defaults
++-            subtitleView.setUserDefaultStyle()
++-            subtitleView.setUserDefaultTextSize()
++-            subtitleView.setPadding(
++-                style.paddingLeft,
++-                style.paddingTop,
++-                style.paddingRight,
++-                style.paddingBottom
++-            )
++-
++-            val captionStyle = androidx.media3.ui.CaptionStyleCompat(
++-                Color.WHITE,
++-                Color.TRANSPARENT,
++-                Color.TRANSPARENT,
++-                androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
++-                Color.BLACK,
++-                null
++-            )
++-            subtitleView.setStyle(captionStyle)
++-
++-            if (style.opacity != 0.0f) {
++-                subtitleView.alpha = style.opacity
++-                subtitleView.visibility = android.view.View.VISIBLE
++-            } else {
++-                subtitleView.visibility = android.view.View.GONE
++-            }
++-        }
+++        // Hide Media3 default subtitle view so there is no duplicate rendering
+++        playerView.subtitleView?.visibility = View.GONE
+++        // Apply custom subtitle styling to custom overlay
+++        customSubtitleOverlay.setStyle(style)
++     }
++ 
++@@ -330,6 +330,15 @@
++     private val playerListener = object : Player.Listener {
+++        override fun onCues(cueGroup: CueGroup) {
+++            customSubtitleOverlay.setCues(cueGroup.cues)
+++        }
+++
+++        @Suppress("DEPRECATION")
+++        override fun onCues(cues: List<Cue>) {
+++            customSubtitleOverlay.setCues(cues)
+++        }
+++
++         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
++             playerView.post {
++                 playerView.requestLayout()
++diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
++--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
+++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
++@@ -1824,14 +1824,18 @@
++         if (format == null || activeFormat == null) {
++             return false;
++         }
++-        if (format.id != null && activeFormat.id != null) {
++-            return format.id.equals(activeFormat.id);
++-        }
++-        // Progressive containers often omit format ids, so compare the properties that
++-        // distinguish one video rendition from another.
++-        return format.width == activeFormat.width
++-                && format.height == activeFormat.height
++-                && format.bitrate == activeFormat.bitrate;
+++        if (format.width > 0 && format.height > 0 && activeFormat.width > 0 && activeFormat.height > 0) {
+++            if (format.width == activeFormat.width && format.height == activeFormat.height) {
+++                if (format.bitrate > 0 && activeFormat.bitrate > 0) {
+++                    return format.bitrate == activeFormat.bitrate;
+++                }
+++                return true;
+++            }
+++        }
+++        if (format.id != null && activeFormat.id != null && format.id.equals(activeFormat.id)) {
+++            return true;
+++        }
+++        return format.height > 0 && format.height == activeFormat.height;
++     }
++ 
++     private ArrayList<VideoTrack> getVideoTrackInfoFromManifest() {
++@@ -2115,6 +2119,13 @@
++         
++         updateSubtitleButtonVisibility();
++     }
+++
+++    @Override
+++    public void onVideoSizeChanged(@NonNull androidx.media3.common.VideoSize videoSize) {
+++        DebugLog.d(TAG, "onVideoSizeChanged: " + videoSize.width + "x" + videoSize.height);
+++        ArrayList<VideoTrack> videoTracks = getVideoTrackInfo();
+++        eventEmitter.onVideoTracks.invoke(videoTracks);
+++    }
++     
++     
++     private boolean hasBuiltInTextTracks() {
++@@ -2261,6 +2272,9 @@
++     }
++ 
++     public void onCues(CueGroup cueGroup) {
+++        if (exoPlayerView != null) {
+++            exoPlayerView.onCues(cueGroup);
+++        }
++         if (!cueGroup.cues.isEmpty() && cueGroup.cues.get(0).text != null) {
++             String subtitleText = cueGroup.cues.get(0).text.toString();
++             eventEmitter.onTextTrackDataChanged.invoke(subtitleText);
