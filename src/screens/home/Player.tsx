@@ -70,8 +70,9 @@ import PlayerMenuRow from '../../components/PlayerMenuRow';
 import { extractImageAccent } from '../../lib/imageAccent';
 import { mixHex } from '../../theme/seeds';
 import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
-import { EpisodeLink } from '../../lib/providers/types';
+import { EpisodeLink, SkipInterval } from '../../lib/providers/types';
 import { getValidImageUri } from '../../components/EpisodeRowContent';
+import { Feather } from '@expo/vector-icons';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
@@ -650,10 +651,93 @@ const Player = ({ route }: Props): React.JSX.Element => {
     [continueWatchingId, updateContinueWatchingProgress],
   );
 
+  const [currentPlaybackTime, setCurrentPlaybackTime] = useState(0);
+
   const { videoPositionRef, handleProgress } = usePlayerProgress({
     activeEpisode,
     onProgressSaved: saveContinueWatchingProgress,
   });
+
+  const handleProgressWithTime = useCallback(
+    (e: { currentTime: number; seekableDuration: number }) => {
+      handleProgress(e);
+      setCurrentPlaybackTime(e.currentTime);
+    },
+    [handleProgress],
+  );
+
+  // Combined skip intervals from episode, direct links, and stream
+  const combinedSkips: SkipInterval[] = useMemo(() => {
+    const list: SkipInterval[] = [];
+    const addSkips = (items?: SkipInterval[]) => {
+      if (!items || !Array.isArray(items)) return;
+      for (const item of items) {
+        if (
+          item &&
+          typeof item.from === 'number' &&
+          typeof item.to === 'number' &&
+          item.to > item.from &&
+          item.from >= 0
+        ) {
+          const exists = list.some(
+            s =>
+              Math.abs(s.from - item.from) < 1 &&
+              Math.abs(s.to - item.to) < 1,
+          );
+          if (!exists) {
+            list.push({
+              title: item.title || 'Intro',
+              from: item.from,
+              to: item.to,
+            });
+          }
+        }
+      }
+    };
+
+    addSkips(activeEpisode?.skip);
+    addSkips((activeEpisode as any)?.skips);
+    addSkips(selectedStream?.skip);
+    addSkips((selectedStream as any)?.skips);
+
+    const rawLinkList = (route.params as any)?.linkList;
+    if (Array.isArray(rawLinkList)) {
+      for (const linkGroup of rawLinkList) {
+        if (Array.isArray(linkGroup?.directLinks)) {
+          const match = linkGroup.directLinks.find(
+            (d: any) => d?.link === activeEpisode?.link,
+          );
+          if (match) {
+            addSkips(match.skip);
+          }
+        }
+      }
+    }
+
+    return list.sort((a, b) => a.from - b.from);
+  }, [activeEpisode, selectedStream, (route.params as any)?.linkList]);
+
+  // Currently active skip interval based on playback position
+  const activeSkip = useMemo(() => {
+    if (!combinedSkips || combinedSkips.length === 0) return null;
+    return (
+      combinedSkips.find(
+        s => currentPlaybackTime >= s.from && currentPlaybackTime < s.to,
+      ) || null
+    );
+  }, [combinedSkips, currentPlaybackTime]);
+
+  const handleSkip = useCallback(() => {
+    if (!activeSkip) return;
+    if (settingsStorage.isHapticFeedbackEnabled()) {
+      ReactNativeHapticFeedback.trigger('effectTick', {
+        enableVibrateFallback: true,
+        ignoreAndroidSystemSettings: false,
+      });
+    }
+    playerRef.current?.seek(activeSkip.to);
+    setCurrentPlaybackTime(activeSkip.to);
+  }, [activeSkip]);
 
   // Memoized values
   const playbacks = useMemo(
@@ -1529,7 +1613,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
           imageUri: route.params?.poster?.poster,
         },
       },
-      onProgress: handleProgress,
+      onProgress: handleProgressWithTime,
+      skips: combinedSkips,
       onLoad: (e: any) => {
         handleVideoLoad(e?.naturalSize);
         if (e?.videoTracks && e.videoTracks.length > 0) {
@@ -1631,7 +1716,8 @@ const Player = ({ route }: Props): React.JSX.Element => {
       selectedStream,
       route.params,
       activeEpisode,
-      handleProgress,
+      handleProgressWithTime,
+      combinedSkips,
       watchedDuration,
       playbackRate,
       setPlaybackRate,
@@ -2018,6 +2104,55 @@ const Player = ({ route }: Props): React.JSX.Element => {
             )}
         </Animated.View>
       )}
+
+      {/* Floating Skip Button (Intro/Outro/Recap) */}
+      {activeSkip &&
+        !isCasting &&
+        !streamLoading &&
+        !isPlayerLocked &&
+        showControls && (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              bottom: 95,
+              right: 28,
+              zIndex: 65,
+            }}>
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={handleSkip}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: 'rgba(255, 255, 255, 0.11)',
+                // borderColor: 'rgba(255, 255, 255, 0.18)',
+                // borderWidth: 1,
+                borderRadius: 24,
+                paddingVertical: 7,
+                paddingHorizontal: 16,
+                gap: 6,
+              }}>
+              <Text
+                style={{
+                  color: 'rgba(255, 255, 255, 0.88)',
+                  fontWeight: '600',
+                  fontSize: 13,
+                  letterSpacing: 0.2,
+                }}>
+                {activeSkip.title
+                  ? activeSkip.title.toLowerCase().startsWith('skip')
+                    ? activeSkip.title
+                    : `Skip ${activeSkip.title}`
+                  : 'Skip Intro'}
+              </Text>
+              <Feather
+                name="chevrons-right"
+                size={18}
+                color="rgba(255, 255, 255, 0.85)"
+              />
+            </TouchableOpacity>
+          </Animated.View>
+        )}
 
       {/* Toast message */}
       <Animated.View

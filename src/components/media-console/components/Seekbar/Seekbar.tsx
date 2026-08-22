@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import {styles} from './styles';
 import {formatTime} from '../../utils';
+import type {SkipInterval} from '../../../../lib/providers/types';
 
 interface SeekbarProps {
   seekerFillWidth: number;
@@ -29,6 +30,7 @@ interface SeekbarProps {
   thumbnailUri: string | null;
   thumbnailLoading: boolean;
   snapPosition: number | null;
+  skips?: SkipInterval[];
 }
 
 const PREVIEW_WIDTH = 160;
@@ -52,6 +54,7 @@ export const Seekbar = ({
   thumbnailUri,
   thumbnailLoading,
   snapPosition,
+  skips,
 }: SeekbarProps) => {
   const [trackWidth, setTrackWidth] = useState(0);
   const previewLeft = useMemo(
@@ -165,6 +168,48 @@ export const Seekbar = ({
             ]}
             pointerEvents="none"
           />
+          {duration > 0 && trackWidth > 0 && skips && skips.length > 0
+            ? skips.map((skip, idx) => {
+                const gaps = [];
+                if (skip.from > 0 && skip.from < duration) {
+                  const leftPos = (skip.from / duration) * trackWidth;
+                  gaps.push(
+                    <View
+                      key={`skip-from-${idx}-${skip.from}`}
+                      style={{
+                        position: 'absolute',
+                        left: Math.max(0, leftPos - 1.5),
+                        top: 0,
+                        width: 3,
+                        height: 2,
+                        backgroundColor: '#000000',
+                        zIndex: 3,
+                      }}
+                      pointerEvents="none"
+                    />,
+                  );
+                }
+                if (skip.to > 0 && skip.to < duration) {
+                  const leftPos = (skip.to / duration) * trackWidth;
+                  gaps.push(
+                    <View
+                      key={`skip-to-${idx}-${skip.to}`}
+                      style={{
+                        position: 'absolute',
+                        left: Math.max(0, leftPos - 1.5),
+                        top: 0,
+                        width: 3,
+                        height: 2,
+                        backgroundColor: '#000000',
+                        zIndex: 3,
+                      }}
+                      pointerEvents="none"
+                    />,
+                  );
+                }
+                return gaps;
+              })
+            : null}
         </View>
         {seeking && snapPosition !== null ? (
           <View

@@ -95,6 +95,7 @@ const AnimatedVideoPlayer = (
     disableGesture = false,
     hideAllControlls = false,
     onSeekSnap,
+    skips,
   } = props;
 
   const mounted = useRef(false);
@@ -1051,6 +1052,7 @@ const AnimatedVideoPlayer = (
                   disableFullscreen={disableFullscreen}
                   toggleFullscreen={toggleFullscreen}
                   showControls={showControls}
+                  skips={skips}
                 />
               </>
             )}

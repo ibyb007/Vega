@@ -30,6 +30,12 @@ export type TextTracks = {
   uri: string;
 }[];
 
+export interface SkipInterval {
+  title?: string;
+  from: number;
+  to: number;
+}
+
 // getStream
 export interface Stream {
   server: string;
@@ -38,6 +44,7 @@ export interface Stream {
   quality?: '360' | '480' | '720' | '1080' | '2160';
   subtitles?: TextTracks;
   headers?: any;
+  skip?: SkipInterval[];
 }
 
 // getInfo
@@ -68,6 +75,7 @@ export interface EpisodeLink {
   description?: string;
   image?: string;
   quickDownload?: boolean;
+  skip?: SkipInterval[];
 }
 
 export interface Link {
@@ -82,6 +90,7 @@ export interface Link {
     description?: string;
     image?: string;
     quickDownload?: boolean;
+    skip?: SkipInterval[];
   }[];
 }
 

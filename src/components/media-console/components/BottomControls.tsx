@@ -11,6 +11,7 @@ import {Fullscreen} from './Fullscreen';
 import {Seekbar} from './Seekbar';
 import {calculateTime} from '../utils';
 import type {VideoAnimations} from '../types';
+import type {SkipInterval} from '../../../lib/providers/types';
 import {styles} from './styles';
 
 interface BottomControlsProps {
@@ -40,6 +41,7 @@ interface BottomControlsProps {
   seekThumbnailUri: string | null;
   seekThumbnailLoading: boolean;
   seekSnapPosition: number | null;
+  skips?: SkipInterval[];
 }
 
 export const BottomControls = ({
@@ -68,6 +70,7 @@ export const BottomControls = ({
   seekThumbnailUri,
   seekThumbnailLoading,
   seekSnapPosition,
+  skips,
 }: BottomControlsProps) => {
   //@ts-ignore
   const timerControl = disableTimer ? (
@@ -109,6 +112,7 @@ export const BottomControls = ({
       thumbnailUri={seekThumbnailUri}
       thumbnailLoading={seekThumbnailLoading}
       snapPosition={seekSnapPosition}
+      skips={skips}
     />
   );
 
