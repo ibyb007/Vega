@@ -20,6 +20,8 @@ jest.mock('@gorhom/bottom-sheet', () => {
     __esModule: true,
     default: BottomSheet,
     BottomSheetScrollView: ReactNative.ScrollView,
+    BottomSheetView: ReactNative.View,
+    BottomSheetBackdrop: ReactNative.View,
   };
 });
 
@@ -42,11 +44,38 @@ jest.mock('../src/lib/zustand/themeStore', () => ({
 }));
 
 jest.mock('../src/lib/storage', () => ({
-  settingsStorage: {isHapticFeedbackEnabled: () => false},
+  settingsStorage: {
+    isHapticFeedbackEnabled: () => false,
+    getBool: () => false,
+  },
 }));
 
 jest.mock('react-native-video', () => ({
   TextTrackType: {VTT: 'text/vtt'},
+}));
+
+jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => {
+  const {View} = require('react-native');
+  return View;
+});
+
+jest.mock('../src/theme/M3PaletteContext', () => ({
+  useM3Colors: () => ({
+    primary: '#ffffff',
+    surfaceContainerLow: '#1c1b1f',
+    surfaceContainerHighest: '#2b2930',
+    outline: '#79747e',
+    outlineVariant: '#49454f',
+    onSurface: '#e6e1e5',
+    onSurfaceVariant: '#cac4d0',
+    primaryContainer: '#4f378b',
+    onPrimaryContainer: '#eaddff',
+    secondaryContainer: '#4a4458',
+    onSecondaryContainer: '#e8def8',
+    errorContainer: '#8c1d18',
+    onErrorContainer: '#f9dedc',
+    error: '#f2b8b5',
+  }),
 }));
 
 import DownloadBottomSheet from '../src/components/DownloadBottomSheet';
@@ -71,7 +100,7 @@ describe('DownloadBottomSheet', () => {
     expect(mockBottomSheetProps).toHaveBeenLastCalledWith(
       expect.objectContaining({
         enableDynamicSizing: false,
-        snapPoints: ['30%', 450],
+        snapPoints: ['55%', '82%'],
       }),
     );
   });

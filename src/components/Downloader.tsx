@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, TouchableOpacity } from 'react-native';
+import { View, TouchableOpacity, ToastAndroid } from 'react-native';
 import { ifExists } from '../lib/file/ifExists';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Octicons from '@expo/vector-icons/Octicons';
@@ -465,16 +465,56 @@ const DownloadComponent = ({
     }
   };
 
-  const openExternalApp = async (targetLink: string, targetType?: string) => {
+  const openExternalApp = async (
+    targetLink: string,
+    targetType?: string,
+    headers?: Record<string, string>,
+  ) => {
     try {
       const isTorrent =
         targetType === 'torrent' || targetLink.startsWith('magnet:');
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+      const intentParams: any = {
         data: targetLink,
-        type: isTorrent ? undefined : targetType || 'video/*',
-      });
+        flags: 1,
+      };
+
+      if (!isTorrent) {
+        intentParams.type = 'application/octet-stream';
+      }
+
+      if (headers && Object.keys(headers).length > 0) {
+        const extra: Record<string, any> = {
+          ...headers,
+          headers: headers,
+          'android.media.intent.extra.HTTP_HEADERS': headers,
+        };
+
+        const referer = headers['Referer'] || headers['referer'];
+        if (referer) {
+          extra['android.intent.extra.REFERRER'] = referer;
+          extra['android.intent.extra.REFERRER_NAME'] = referer;
+        }
+
+        intentParams.extra = extra;
+      }
+
+      await IntentLauncher.startActivityAsync(
+        'android.intent.action.VIEW',
+        intentParams,
+      );
     } catch (error) {
-      console.log(error);
+      console.log('Error opening with application/octet-stream:', error);
+      try {
+        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+          data: targetLink,
+        });
+      } catch (fallbackError) {
+        console.log('Fallback intent error:', fallbackError);
+        ToastAndroid.show(
+          'No app found to handle this download',
+          ToastAndroid.SHORT,
+        );
+      }
     }
   };
 
@@ -592,7 +632,7 @@ const DownloadComponent = ({
           downloadSingleVideoStream(server);
         }}
         onPressExternalVideo={(server: Stream) => {
-          openExternalApp(server.link, server.type);
+          openExternalApp(server.link, server.type, server.headers);
         }}
         onPressSubs={(sub: { link: string; type: string; title: string }) => {
           startDownloadWithLocation({

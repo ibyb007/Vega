@@ -354,22 +354,63 @@ const SeasonList: React.FC<SeasonListProps> = ({
   );
 
   // Memoized external player opener
-  const openExternalPlayer = useCallback(async (streamUrl: string) => {
-    setShowServerModal(false);
-    setVlcLoading(true);
+  const openExternalPlayer = useCallback(
+    async (
+      streamUrl: string,
+      headers?: Record<string, string>,
+      title?: string,
+    ) => {
+      setShowServerModal(false);
+      setVlcLoading(true);
 
-    try {
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: streamUrl,
-        type: 'video/*',
-      });
-    } catch (error) {
-      console.error('Error opening external player:', error);
-      ToastAndroid.show('Failed to open external player', ToastAndroid.SHORT);
-    } finally {
-      setVlcLoading(false);
-    }
-  }, []);
+      try {
+        const intentParams: any = {
+          data: streamUrl,
+          type: 'video/*',
+          flags: 1,
+        };
+
+        const extra: Record<string, any> = {};
+
+        if (title) {
+          extra.title = title;
+          extra['android.intent.extra.TITLE'] = title;
+        }
+
+        if (headers && Object.keys(headers).length > 0) {
+          Object.assign(extra, headers);
+          extra['android.media.intent.extra.HTTP_HEADERS'] = headers;
+          extra.headers = headers;
+
+          const headersArray = Object.entries(headers).map(
+            ([key, val]) => `${key}: ${val}`,
+          );
+          extra.headers_array = headersArray;
+
+          const referer = headers['Referer'] || headers['referer'];
+          if (referer) {
+            extra['android.intent.extra.REFERRER'] = referer;
+            extra['android.intent.extra.REFERRER_NAME'] = referer;
+          }
+        }
+
+        if (Object.keys(extra).length > 0) {
+          intentParams.extra = extra;
+        }
+
+        await IntentLauncher.startActivityAsync(
+          'android.intent.action.VIEW',
+          intentParams,
+        );
+      } catch (error) {
+        console.error('Error opening external player:', error);
+        ToastAndroid.show('Failed to open external player', ToastAndroid.SHORT);
+      } finally {
+        setVlcLoading(false);
+      }
+    },
+    [],
+  );
 
   // Memoized play handler
   const playHandler = useCallback(
@@ -837,7 +878,13 @@ const SeasonList: React.FC<SeasonListProps> = ({
           borderRadius: 14,
           borderWidth: 1,
         }}
-        onPress={() => openExternalPlayer(item.link)}>
+        onPress={() =>
+          openExternalPlayer(
+            item.link,
+            item.headers,
+            `${metaTitle || ''} ${item.server || ''}`.trim(),
+          )
+        }>
         <View>
           <Text
             className="text-lg capitalize font-bold"
@@ -851,7 +898,7 @@ const SeasonList: React.FC<SeasonListProps> = ({
         <MaterialCommunityIcons name="vlc" size={24} color={primary} />
       </TouchableOpacity>
     ),
-    [colors, primary, openExternalPlayer],
+    [primary, openExternalPlayer, metaTitle],
   );
 
   // Show loading skeleton while episodes are loading
