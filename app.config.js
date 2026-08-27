@@ -10,10 +10,6 @@ const proxyApiUrl =
   '';
 
 module.exports = () => {
-  const IS_PLAYSTORE = process.env.APP_VARIANT === 'playstore';
-  const PACKAGE_NAME = IS_PLAYSTORE ? 'vega.app' : 'com.vega';
-  const APP_SCHEME = IS_PLAYSTORE ? 'vegaapp' : 'com.vega';
-
   const plugins = [
     './plugins/with-android-tv.js',
     './plugins/with-custom-native-modules.js',
@@ -89,7 +85,7 @@ module.exports = () => {
   return {
     expo: {
       name: 'Vega TV',
-      scheme: APP_SCHEME,
+      scheme: 'com.vega',
       displayName: 'Vega TV',
       jsEngine: 'hermes',
       newArchEnabled: true,
@@ -104,7 +100,7 @@ module.exports = () => {
       android: {
         isTV: true,
         minSdkVersion: 28,
-        package: PACKAGE_NAME,
+        package: 'com.vega',
         versionCode: 191,
         permissions: [
           'ACCESS_NETWORK_STATE',
@@ -133,9 +129,6 @@ module.exports = () => {
       },
       platforms: ['android'],
       extra: {
-        eas: {
-          projectId: '40d98354-d3c8-4616-ab2e-70d9c297091f',
-        },
         tmdbApiKey,
         proxyApiUrl,
       },
