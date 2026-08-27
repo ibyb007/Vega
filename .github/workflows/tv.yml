@@ -1,4 +1,4 @@
-name: Build Android TV APK
+name: Build Android TV ARMv7 APK
 
 on:
   push:
@@ -6,8 +6,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-android-tv:
+  build-tv:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -25,13 +26,13 @@ jobs:
           distribution: 'zulu'
           java-version: 17
 
-      - name: Setup Gradle Cache
-        uses: gradle/actions/setup-gradle@v3
+      - name: Setup Gradle Build Cache
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate Android TV Native Project
+      - name: Generate Android Native Project
         env:
           APP_VARIANT: standalone
         run: npx expo prebuild --platform android --clean --no-install
@@ -39,8 +40,10 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build Android TV Release APK (ARMv7 Fast Build)
+      - name: Build ARMv7 Release APK
         working-directory: ./android
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
         run: |
           ./gradlew assembleRelease \
             -PreactNativeArchitectures=armeabi-v7a \
@@ -50,16 +53,15 @@ jobs:
             -Pandroid.injected.signing.key.password=android \
             --no-daemon
 
-      - name: Extract ARMv7 APK
+      - name: Prepare APK Artifact
         run: |
-          mkdir -p apks
-          ARMV7_APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
-          cp "$ARMV7_APK" apks/Vega-Android-TV-armv7.apk
-          ls -la apks/
+          mkdir -p output_apk
+          APK_FILE=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          cp "$APK_FILE" output_apk/Vega-Android-TV-armv7.apk
 
       - name: Upload Android TV APK
         uses: actions/upload-artifact@v4
         with:
-          name: Vega-Android-TV-v7a
-          path: apks/Vega-Android-TV-armv7.apk
+          name: Vega-TV-ARMv7-APK
+          path: output_apk/Vega-Android-TV-armv7.apk
           if-no-files-found: error
