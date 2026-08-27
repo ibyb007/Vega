@@ -190,16 +190,29 @@ const App = () => {
     Boolean(Constants?.expoConfig?.extra?.hasFirebase) &&
     isFirebaseNativeReady();
 
-  // Root fail-safe to guarantee BootSplash dismissal
+  // Top-level immediate BootSplash dismissal with fallback
   useEffect(() => {
-    const timer = setTimeout(async () => {
+    let isMounted = true;
+    const hideSplash = async () => {
       try {
         await BootSplash.hide({fade: true});
       } catch (e) {
-        console.warn('BootSplash fail-safe dismissal error:', e);
+        console.warn('BootSplash dismissal error:', e);
       }
-    }, 100);
-    return () => clearTimeout(timer);
+    };
+
+    hideSplash();
+
+    const timer = setTimeout(() => {
+      if (isMounted) {
+        hideSplash();
+      }
+    }, 1000);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
