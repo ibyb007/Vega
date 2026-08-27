@@ -1,14 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 
-const androidGoogleServicesFile = './google-services.json';
-const iosGoogleServicesFile = './GoogleService-Info.plist';
-const hasAndroidGoogleServices = fs.existsSync(
-  path.resolve(__dirname, androidGoogleServicesFile),
-);
-const hasIosGooglePlist = fs.existsSync(
-  path.resolve(__dirname, iosGoogleServicesFile),
-);
 const tmdbApiKey =
   process.env.TMDB_API_KEY || process.env.EXPO_PUBLIC_TMDB_API_KEY || '';
 const proxyApiUrl =
@@ -19,8 +11,6 @@ const proxyApiUrl =
 
 module.exports = () => {
   const IS_PLAYSTORE = process.env.APP_VARIANT === 'playstore';
-  const HAS_FIREBASE =
-    !IS_PLAYSTORE && (hasAndroidGoogleServices || hasIosGooglePlist);
   const PACKAGE_NAME = IS_PLAYSTORE ? 'vega.app' : 'com.vega';
   const APP_SCHEME = IS_PLAYSTORE ? 'vegaapp' : 'com.vega';
 
@@ -32,30 +22,20 @@ module.exports = () => {
     './plugins/with-uri-permission-module.js',
     './plugins/with-proguard-rules.js',
     './plugins/with-jvm-args.js',
-    './plugins/with-android-notification-icons.js',
-    './plugins/with-notifee-service.js',
     './plugins/with-android-release-gradle.js',
     './plugins/with-android-signing.js',
     './plugins/with-android-okhttp.js',
-    ...(HAS_FIREBASE ? ['@react-native-firebase/app'] : []),
-    ...(HAS_FIREBASE ? ['@react-native-firebase/crashlytics'] : []),
     [
       'react-native-video',
       {
-        enableNotificationControls: true,
-        enableAndroidPictureInPicture: true,
+        enableNotificationControls: false,
+        enableAndroidPictureInPicture: false,
         androidExtensions: {
           useExoplayerRtsp: true,
           useExoplayerSmoothStreaming: true,
           useExoplayerHls: true,
           useExoplayerDash: true,
         },
-      },
-    ],
-    [
-      'react-native-google-cast',
-      {
-        expandedController: true,
       },
     ],
     'react-native-edge-to-edge',
@@ -74,12 +54,9 @@ module.exports = () => {
       {
         android: {
           usePrecompiledHeaders: true,
-          extraMavenRepos: [
-            '../../node_modules/@notifee/react-native/android/libs',
-          ],
           enableProguardInReleaseBuilds: true,
           splits: {
-            abi: { enable: true, universalApk: true },
+            abi: { enable: true, universalApk: false },
           },
           buildVariants: {
             release: {
@@ -126,16 +103,10 @@ module.exports = () => {
       },
       android: {
         isTV: true,
-        ...(!IS_PLAYSTORE && hasAndroidGoogleServices
-          ? { googleServicesFile: androidGoogleServicesFile }
-          : {}),
         minSdkVersion: 28,
         package: PACKAGE_NAME,
         versionCode: 191,
         permissions: [
-          'FOREGROUND_SERVICE',
-          'FOREGROUND_SERVICE_DATA_SYNC',
-          'FOREGROUND_SERVICE_MEDIA_PLAYBACK',
           'ACCESS_NETWORK_STATE',
           'INTERNET',
           'WRITE_SETTINGS',
@@ -145,12 +116,6 @@ module.exports = () => {
           'android.permission.READ_EXTERNAL_STORAGE',
           'android.permission.READ_MEDIA_VIDEO',
           'android.permission.WRITE_EXTERNAL_STORAGE',
-          ...(IS_PLAYSTORE
-            ? [
-                'android.permission.REQUEST_INSTALL_PACKAGES',
-                'com.google.android.gms.permission.AD_ID',
-              ]
-            : []),
         ],
         queries: [
           { action: 'VIEW', data: { scheme: 'http' } },
@@ -164,20 +129,13 @@ module.exports = () => {
           backgroundColor: '#000000',
         },
         launchMode: 'singleTask',
-        supportsPictureInPicture: true,
+        supportsPictureInPicture: false,
       },
-      ios: {
-        ...(!IS_PLAYSTORE && hasIosGooglePlist
-          ? { googleServicesFile: iosGoogleServicesFile }
-          : {}),
-      },
-      platforms: ['ios', 'android'],
+      platforms: ['android'],
       extra: {
         eas: {
           projectId: '40d98354-d3c8-4616-ab2e-70d9c297091f',
         },
-        hasFirebase: HAS_FIREBASE,
-        isPlayStore: IS_PLAYSTORE,
         tmdbApiKey,
         proxyApiUrl,
       },
