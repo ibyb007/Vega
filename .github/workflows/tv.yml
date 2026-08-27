@@ -8,7 +8,7 @@ on:
 jobs:
   build-tv:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -37,31 +37,38 @@ jobs:
           APP_VARIANT: standalone
         run: npx expo prebuild --platform android --clean --no-install
 
+      - name: Decode Release Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
+          ls -la android/app/release.keystore
+
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build ARMv7 Release APK
+      - name: Build ARMv7 Signed Release APK
         working-directory: ./android
         env:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
         run: |
+          KEYSTORE_PATH=$(realpath app/release.keystore)
           ./gradlew assembleRelease \
             -PreactNativeArchitectures=armeabi-v7a \
-            -Pandroid.injected.signing.store.file=$(realpath app/debug.keystore) \
-            -Pandroid.injected.signing.store.password=android \
-            -Pandroid.injected.signing.key.alias=androiddebugkey \
-            -Pandroid.injected.signing.key.password=android \
+            -Pandroid.injected.signing.store.file=$KEYSTORE_PATH \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}" \
             --no-daemon
 
-      - name: Prepare APK Artifact
+      - name: Extract ARMv7 APK
         run: |
           mkdir -p output_apk
-          APK_FILE=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
-          cp "$APK_FILE" output_apk/Vega-Android-TV-armv7.apk
+          ARMV7_APK=$(find android/app/build/outputs/apk/release -name "*armeabi-v7a*.apk" -o -name "*.apk" | head -1)
+          cp "$ARMV7_APK" output_apk/Vega-Android-TV-armv7.apk
+          ls -la output_apk/
 
       - name: Upload Android TV APK
         uses: actions/upload-artifact@v4
         with:
-          name: Vega-TV-ARMv7-APK
+          name: Vega-Sony-TV-armv7
           path: output_apk/Vega-Android-TV-armv7.apk
           if-no-files-found: error
