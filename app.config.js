@@ -23,7 +23,9 @@ module.exports = () => {
     !IS_PLAYSTORE && (hasAndroidGoogleServices || hasIosGooglePlist);
   const PACKAGE_NAME = IS_PLAYSTORE ? 'vega.app' : 'com.vega';
   const APP_SCHEME = IS_PLAYSTORE ? 'vegaapp' : 'com.vega';
+
   const plugins = [
+    './plugins/with-android-tv.js',
     './plugins/with-custom-native-modules.js',
     './plugins/android-native-config.js',
     './plugins/with-saf-copy-module.js',
@@ -43,7 +45,7 @@ module.exports = () => {
         enableNotificationControls: true,
         enableAndroidPictureInPicture: true,
         androidExtensions: {
-          useExoplayerRtsp: false,
+          useExoplayerRtsp: true,
           useExoplayerSmoothStreaming: true,
           useExoplayerHls: true,
           useExoplayerDash: true,
@@ -87,7 +89,7 @@ module.exports = () => {
                 abi: {
                   enable: true,
                   reset: false,
-                  include: ['armeabi-v7a', 'arm64-v8a'],
+                  include: ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'],
                 },
               },
             },
@@ -97,7 +99,6 @@ module.exports = () => {
         ios: {},
       },
     ],
-
     [
       'expo-dev-client',
       {
@@ -107,11 +108,12 @@ module.exports = () => {
     'expo-font',
     'expo-status-bar',
   ];
+
   return {
     expo: {
-      name: 'Vega',
+      name: 'Vega TV',
       scheme: APP_SCHEME,
-      displayName: 'Vega',
+      displayName: 'Vega TV',
       jsEngine: 'hermes',
       newArchEnabled: true,
       autolinking: { exclude: ['expo-splash-screen'] },
@@ -123,6 +125,7 @@ module.exports = () => {
         reactCompiler: true,
       },
       android: {
+        isTV: true,
         ...(!IS_PLAYSTORE && hasAndroidGoogleServices
           ? { googleServicesFile: androidGoogleServicesFile }
           : {}),
@@ -144,15 +147,16 @@ module.exports = () => {
           'android.permission.WRITE_EXTERNAL_STORAGE',
           ...(IS_PLAYSTORE
             ? [
-              'android.permission.REQUEST_INSTALL_PACKAGES',
-              'com.google.android.gms.permission.AD_ID',
-            ]
+                'android.permission.REQUEST_INSTALL_PACKAGES',
+                'com.google.android.gms.permission.AD_ID',
+              ]
             : []),
         ],
         queries: [
           { action: 'VIEW', data: { scheme: 'http' } },
           { action: 'VIEW', data: { scheme: 'https' } },
           { action: 'VIEW', data: { scheme: 'vlc' } },
+          { action: 'VIEW', data: { mimeType: 'video/*' } },
         ],
         allowBackup: true,
         adaptiveIcon: {
