@@ -1,16 +1,14 @@
-// plugins/with-android-tv.js
 const { withAndroidManifest } = require('@expo/config-plugins');
 
 module.exports = function withAndroidTV(config) {
   return withAndroidManifest(config, async (config) => {
     const androidManifest = config.modResults.manifest;
 
-    // Ensure uses-feature list exists
     if (!androidManifest['uses-feature']) {
       androidManifest['uses-feature'] = [];
     }
 
-    // Touchscreen is not required for Android TV
+    // Touchscreen is not required for TV
     androidManifest['uses-feature'].push({
       $: {
         'android:name': 'android.hardware.touchscreen',
@@ -18,7 +16,7 @@ module.exports = function withAndroidTV(config) {
       },
     });
 
-    // Leanback requirement
+    // Declare Leanback software support
     androidManifest['uses-feature'].push({
       $: {
         'android:name': 'android.software.leanback',
@@ -26,7 +24,7 @@ module.exports = function withAndroidTV(config) {
       },
     });
 
-    // Add LEANBACK_LAUNCHER intent filter to MainActivity
+    // Add LEANBACK_LAUNCHER category to MainActivity
     const mainActivity = androidManifest.application[0].activity.find(
       (a) => a.$['android:name'] === '.MainActivity'
     );
