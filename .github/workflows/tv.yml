@@ -1,0 +1,323 @@
+name: Android TV Nightly Build (ARMv7)
+
+on:
+  schedule:
+    # Runs at 12:00 AM India time (18:30 UTC of previous day)
+    - cron: '30 18 * * *'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        default: 'main'
+
+jobs:
+  check_for_changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check_changes.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for relevant changes
+        id: check_changes
+        run: |
+          git fetch --tags
+
+          LATEST_NIGHTLY_TAG=$(git tag -l "nightly-*" | sort -r | head -n 1 || echo "")
+
+          if [ -z "$LATEST_NIGHTLY_TAG" ]; then
+            echo "No previous nightly build found. Proceeding with build."
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          COMMIT_COUNT=$(git rev-list --count $LATEST_NIGHTLY_TAG..HEAD)
+            
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "No new commits since last nightly build. Skipping build."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Found $COMMIT_COUNT new commits since last nightly build."
+
+          CHANGED_FILES=$(git diff --name-only $LATEST_NIGHTLY_TAG..HEAD)
+
+          if echo "$CHANGED_FILES" | grep -q -E '^(src|android|plugins|app.config.js)/'; then
+            echo "Relevant changes detected. Proceeding with build."
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "No relevant changes found. Skipping build."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+  verify-android-manifests:
+    needs: check_for_changes
+    if: ${{ needs.check_for_changes.outputs.has_changes == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: 17
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android TV native project
+        env:
+          APP_VARIANT: standalone
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Verify TV manifest configuration
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew :app:processReleaseMainManifest
+          MANIFEST="app/build/intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml"
+          
+          # Verify broad storage permissions are blocked
+          if grep -Eq 'MANAGE_EXTERNAL_STORAGE|READ_EXTERNAL_STORAGE|READ_MEDIA_VIDEO|WRITE_EXTERNAL_STORAGE' "$MANIFEST"; then
+            echo "Forbidden broad storage permission found in manifest"
+            exit 1
+          fi
+          
+          # Verify Android TV leanback launcher configuration
+          if ! grep -q 'LEANBACK_LAUNCHER' "$MANIFEST"; then
+            echo "LEANBACK_LAUNCHER intent category missing from Android TV manifest"
+            exit 1
+          fi
+
+  build-android-tv:
+    needs: [check_for_changes, verify-android-manifests]
+    if: ${{ needs.check_for_changes.outputs.has_changes == 'true' }}
+    runs-on: ubuntu-latest
+    environment: nightly
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout specific branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || 'main' }}
+          fetch-depth: 0
+
+      - name: Get commit info
+        id: commit_info
+        run: |
+          HASH=$(git rev-parse --short HEAD)
+          echo "COMMIT_HASH=$HASH" >> $GITHUB_ENV
+
+          MSG=$(git log -1 --pretty=%s | sed 's/[^a-zA-Z0-9 .,;:_()-]//g')
+          echo "COMMIT_MSG=$MSG" >> $GITHUB_ENV
+
+          AUTHOR=$(git log -1 --pretty=%an)
+          echo "COMMIT_AUTHOR=$AUTHOR" >> $GITHUB_ENV
+
+          DATE=$(git log -1 --pretty=%cd --date=format:'%Y-%m-%d %H:%M:%S')
+          echo "COMMIT_DATE=$DATE" >> $GITHUB_ENV
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: 17
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Expo Prebuild (Generate Native Android TV Project)
+        env:
+          APP_VARIANT: standalone
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
+          ls -la android/app/release.keystore
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Set build timestamp
+        run: |
+          echo "BUILD_DATE=$(date -u '+%Y-%m-%d')" >> $GITHUB_ENV
+          echo "BUILD_TIME=$(date -u '+%H-%M-%S')" >> $GITHUB_ENV
+
+      # Assemble only the release APK with Direct Signing Parameters
+      - name: Build Android TV ARMv7 APK
+        run: |
+          cd android
+          KEYSTORE_PATH=$(realpath app/release.keystore)
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$KEYSTORE_PATH \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}" \
+            --stacktrace
+
+      # Isolate only the ARMv7 (armeabi-v7a) APK
+      - name: Identify and Extract ARMv7 APK
+        id: apk_files
+        run: |
+          VERSION=$(grep -m 1 "versionName " android/app/build.gradle | sed 's/.*versionName "\(.*\)".*/\1/')
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+
+          mkdir -p apks
+
+          # Find only armeabi-v7a APK
+          ARMV7_APK=$(find android/app/build/outputs/apk/release -name "*armeabi-v7a*.apk" -not -name "*unsigned*" | head -1)
+
+          if [ -z "$ARMV7_APK" ] || [ ! -f "$ARMV7_APK" ]; then
+            # Fallback if split APKs generated a single universal build
+            ARMV7_APK=$(find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" | head -1)
+          fi
+
+          if [ -f "$ARMV7_APK" ]; then
+            ARMV7_APK_NAME="Vega-TV-v${VERSION}-armv7-${BUILD_DATE}.apk"
+            cp "$ARMV7_APK" "apks/${ARMV7_APK_NAME}"
+            echo "ARMV7_APK_NAME=${ARMV7_APK_NAME}" >> $GITHUB_ENV
+            echo "apk_path=apks/${ARMV7_APK_NAME}" >> $GITHUB_OUTPUT
+            echo "ARMV7_APK_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "Error: ARMv7 APK was not generated."
+            exit 1
+          fi
+
+          NIGHTLY_DATE=$(date -u '+%Y%m%d')
+          RELEASE_TAG="nightly-${NIGHTLY_DATE}"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
+
+      - name: Delete Previous Nightly Releases
+        run: |
+          git fetch --tags
+          NIGHTLY_TAGS=$(git tag -l "nightly-*" || echo "")
+
+          if [ -n "$NIGHTLY_TAGS" ]; then
+            for TAG in $NIGHTLY_TAGS; do
+              git tag -d $TAG 2>/dev/null || true
+              git push --delete origin $TAG 2>/dev/null || true
+              
+              RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | \
+                grep -o '"id": [0-9]*' | head -1 | sed 's/"id": //')
+              
+              if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+                curl -s -X DELETE -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                  "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+              fi
+            done
+          fi
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: 'Vega Android TV Nightly Build v${{ env.APP_VERSION }} (${{ env.BUILD_DATE }})'
+          body: |
+            > 📺 **VEGA ANDROID TV BUILD (ARMv7 / 32-bit)** 📺  
+            > Optimized for Android TV boxes, Fire Sticks, and Smart TVs.
+
+            **Version:** v${{ env.APP_VERSION }}
+            **Architecture:** armeabi-v7a (32-bit TV)
+            **Build Date:** ${{ env.BUILD_DATE }}
+            **Commit:** [${{ env.COMMIT_HASH }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) by ${{ env.COMMIT_AUTHOR }}
+            **Commit Message:** ${{ env.COMMIT_MSG }}
+
+          files: ${{ steps.apk_files.outputs.apk_path }}
+          draft: false
+          prerelease: true
+
+      - name: Upload APK as GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vega-TV-v${{ env.APP_VERSION }}-armv7
+          path: apks/*.apk
+          if-no-files-found: error
+
+      - name: Create Discord notification script
+        run: |
+          ARMV7_DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${ARMV7_APK_NAME}"
+          echo "ARMV7_DOWNLOAD_URL=$ARMV7_DOWNLOAD_URL" >> $GITHUB_ENV
+
+          cat > send_discord.sh << 'EOF'
+          #!/bin/bash
+
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          COMMIT_URL="${REPO_URL}/commit/${GITHUB_SHA}"
+          RELEASE_URL="${REPO_URL}/releases/tag/${RELEASE_TAG}"
+          FORMATTED_COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/"/\\"/g')
+          CURRENT_TIMESTAMP=$(date -u --iso-8601=seconds)
+
+          cat > discord_payload.json << EOJSON
+          {
+            "embeds": [
+              {
+                "title": "📺 Vega Android TV Build v${APP_VERSION}",
+                "description": "New Android TV build (**ARMv7**) is ready for sideloading!",
+                "color": 9647348,
+                "fields": [
+                  {
+                    "name": "Version",
+                    "value": "v${APP_VERSION} (Build #${GITHUB_RUN_NUMBER})",
+                    "inline": true
+                  },
+                  {
+                    "name": "Target Architecture",
+                    "value": "ARMv7 (32-bit Android TV)",
+                    "inline": true
+                  },
+                  {
+                    "name": "Commit",
+                    "value": "[${COMMIT_HASH}](${COMMIT_URL}) - ${FORMATTED_COMMIT_MSG}",
+                    "inline": false
+                  },
+                  {
+                    "name": "Direct Download",
+                    "value": "• [📺 **Download ARMv7 TV APK**](${ARMV7_DOWNLOAD_URL})\n\n[View on GitHub Releases](${RELEASE_URL})",
+                    "inline": false
+                  }
+                ],
+                "footer": {
+                  "text": "Vega TV Nightly Automation"
+                },
+                "timestamp": "${CURRENT_TIMESTAMP}"
+              }
+            ]
+          }
+          EOJSON
+
+          if [ -n "${DISCORD_WEBHOOK}" ]; then
+            curl -H "Content-Type: application/json" -d @discord_payload.json "${DISCORD_WEBHOOK}"
+          fi
+          EOF
+
+          chmod +x send_discord.sh
+
+      - name: Send Discord notification
+        if: success()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: ./send_discord.sh
