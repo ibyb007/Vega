@@ -1,332 +1,94 @@
-import {extensionStorage, ProviderExtension} from '../storage/extensionStorage';
-import {extensionManager} from './ExtensionManager';
-import {settingsStorage} from '../storage';
-import {notificationService} from './Notification';
+import { extensionStorage, ProviderExtension } from '../storage/extensionStorage';
+import { extensionManager } from './ExtensionManager';
+import { settingsStorage } from '../storage';
 import useContentStore from '../zustand/contentStore';
 
 export interface UpdateInfo {
   provider: ProviderExtension;
-  currentVersion: string;
-  newVersion: string;
   hasUpdate: boolean;
+  latestVersion?: string;
 }
 
 class UpdateProvidersService {
-  private isUpdating = false;
-  private updateCheckInterval: NodeJS.Timeout | null = null;
-  private readonly updateCheckIntervalMs = 6 * 60 * 60 * 1000;
+  private intervalId: NodeJS.Timeout | null = null;
 
-  private ensureInstalledProvidersHaveSource(
-    providers: ProviderExtension[],
-  ): ProviderExtension[] {
-    const defaultSource = extensionStorage.getProviderSource();
-    if (!defaultSource) {
-      return providers;
+  async checkForUpdatesManual(force = false): Promise<UpdateInfo[]> {
+    const source = extensionStorage.getProviderSource();
+    if (!source) {
+      return [];
     }
 
-    let hasChanges = false;
-    const normalized = providers.map(provider => {
-      if (provider.source?.author && provider.source?.url) {
-        return provider;
-      }
-
-      hasChanges = true;
-      return {
-        ...provider,
-        source: {
-          author: defaultSource.author,
-          url: defaultSource.url,
-        },
-      };
-    });
-
-    if (hasChanges) {
-      extensionStorage.setInstalledProviders(normalized);
-    }
-
-    return normalized;
-  }
-
-  /**
-   * Check for updates for all installed providers
-   */
-  async checkForUpdates(force = true): Promise<UpdateInfo[]> {
     try {
-      // Ensure legacy users are migrated before running update checks.
-      await extensionManager.initialize();
+      const availableProviders = await extensionManager.fetchManifest(source, force);
+      const installedProviders = extensionStorage.getInstalledProviders() || [];
 
-      const installedProviders = this.ensureInstalledProvidersHaveSource(
-        extensionStorage.getInstalledProviders(),
-      );
-      const sources = new Map<string, ProviderExtension[]>();
-      const sourceByAuthor = new Map<string, {author: string; url: string}>();
-
-      for (const provider of installedProviders) {
-        if (provider.source) {
-          const author = provider.source.author || 'unknown';
-          if (!sourceByAuthor.has(author)) {
-            sourceByAuthor.set(author, provider.source);
-          }
-        }
-      }
-
-      for (const [author, source] of sourceByAuthor.entries()) {
-        try {
-          const availableProviders =
-            await extensionManager.fetchManifest(source, force);
-          sources.set(author, availableProviders);
-        } catch (error) {
-          console.warn(`Failed to fetch source ${author} for updates:`, error);
-          sources.set(author, []);
-        }
-      }
-
-      const updateInfos: UpdateInfo[] = [];
+      const updates: UpdateInfo[] = [];
 
       for (const installed of installedProviders) {
-        const available = sources
-          .get(installed.source?.author || 'unknown')
-          ?.find(p => p.value === installed.value);
+        const available = availableProviders.find(
+          p => p.value === installed.value && p.source?.author === installed.source?.author
+        );
 
-        if (
-          available &&
-          this.isNewerVersion(available.version, installed.version)
-        ) {
-          updateInfos.push({
+        if (available && this.isNewerVersion(installed.version, available.version)) {
+          updates.push({
             provider: available,
-            currentVersion: installed.version,
-            newVersion: available.version,
             hasUpdate: true,
-          });
-        } else {
-          updateInfos.push({
-            provider: installed,
-            currentVersion: installed.version,
-            newVersion: installed.version,
-            hasUpdate: false,
+            latestVersion: available.version,
           });
         }
       }
 
-      return updateInfos;
+      return updates;
     } catch (error) {
-      console.error('Error checking for updates:', error);
+      console.warn('[UpdateProviders] Check failed:', error);
       return [];
     }
   }
 
-  /**
-   * Update a specific provider
-   */
   async updateProvider(provider: ProviderExtension): Promise<boolean> {
     try {
-      await extensionManager.updateProvider(provider);
+      await extensionManager.installProvider(provider);
       return true;
     } catch (error) {
-      console.error('Error updating provider:', error);
+      console.error('[UpdateProviders] Failed to update provider:', error);
       return false;
     }
   }
 
-  /**
-   * Update multiple providers with progress notifications
-   */
-  async updateProviders(
-    providers: ProviderExtension[],
-    options?: {showNotifications?: boolean},
-  ): Promise<{
-    updated: ProviderExtension[];
-    failed: ProviderExtension[];
-  }> {
-    if (this.isUpdating || providers.length === 0) {
-      return {updated: [], failed: []};
-    }
+  startAutomaticUpdateCheck() {
+    if (this.intervalId) return;
 
-    const shouldNotify = options?.showNotifications ?? true;
+    // Check on startup
+    this.checkForUpdatesManual(false).catch(() => {});
 
-    this.isUpdating = true;
-    const updated: ProviderExtension[] = [];
-    const failed: ProviderExtension[] = [];
-
-    try {
-      // Show updating notification
-      if (shouldNotify) {
-        await this.showUpdatingNotification(providers);
-      }
-
-      for (const provider of providers) {
-        const success = await this.updateProvider(provider);
-        if (success) {
-          updated.push(provider);
-        } else {
-          failed.push(provider);
-        }
-      }
-
-      if (updated.length > 0) {
-        const latestInstalled = extensionStorage.getInstalledProviders();
-        useContentStore.getState().setInstalledProviders(latestInstalled);
-        const currentActive = useContentStore.getState().provider;
-        if (currentActive) {
-          const updatedActive = latestInstalled.find(
-            p => p.value === currentActive.value,
-          );
-          if (updatedActive) {
-            useContentStore.getState().setProvider(updatedActive);
-          }
-        }
-      }
-
-      // Show completion notification
-      if (shouldNotify) {
-        await this.showUpdateCompleteNotification(updated, failed);
-      }
-
-      return {updated, failed};
-    } finally {
-      this.isUpdating = false;
-    }
-  }
-  /**
-   * Check for updates and automatically start updating if updates are available
-   */
-  async checkForUpdatesAndAutoUpdate(): Promise<UpdateInfo[]> {
-    const updateInfos = await this.checkForUpdates();
-    const availableUpdates = updateInfos.filter(info => info.hasUpdate);
-    if (availableUpdates.length > 0) {
-      // Automatically start updating instead of just showing notification.
-      const providersToUpdate = availableUpdates.map(update => update.provider);
-      const showNotifications = settingsStorage.isNotificationsEnabled();
-      await this.updateProviders(providersToUpdate, {showNotifications});
-    }
-    return updateInfos;
+    // Periodic check every 6 hours
+    this.intervalId = setInterval(() => {
+      this.checkForUpdatesManual(true).catch(() => {});
+    }, 6 * 60 * 60 * 1000);
   }
 
-  /**
-   * Check for updates without auto-updating (for manual refresh)
-   */
-  async checkForUpdatesManual(force = false): Promise<UpdateInfo[]> {
-    return await this.checkForUpdates(force);
-  }
-
-  /**
-   * Start automatic update checking
-   */
-  startAutomaticUpdateCheck(): void {
-    if (this.updateCheckInterval) {
-      clearInterval(this.updateCheckInterval);
-    }
-
-    // Check immediately.
-    this.checkForUpdatesAndAutoUpdate().catch(error => {
-      console.warn('Automatic provider update check failed:', error);
-    });
-
-    // Continue checking periodically in the background.
-    this.updateCheckInterval = setInterval(() => {
-      this.checkForUpdatesAndAutoUpdate().catch(error => {
-        console.warn('Scheduled provider update check failed:', error);
-      });
-    }, this.updateCheckIntervalMs);
-  }
-
-  /**
-   * Stop automatic update checking
-   */
-  stopAutomaticUpdateCheck(): void {
-    if (this.updateCheckInterval) {
-      clearInterval(this.updateCheckInterval);
-      this.updateCheckInterval = null;
+  stopAutomaticUpdateCheck() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
     }
   }
-  /**
-   * Compare version strings to determine if newVersion is newer than currentVersion
-   */
-  private isNewerVersion(newVersion: string, currentVersion: string): boolean {
-    const parseVersion = (version: string) => {
-      return version.split('.').map(part => parseInt(part, 10) || 0);
-    };
 
-    const newParts = parseVersion(newVersion);
-    const currentParts = parseVersion(currentVersion);
+  private isNewerVersion(current?: string, latest?: string): boolean {
+    if (!latest) return false;
+    if (!current) return true;
 
-    for (let i = 0; i < Math.max(newParts.length, currentParts.length); i++) {
-      const newPart = newParts[i] || 0;
-      const currentPart = currentParts[i] || 0;
+    const currentParts = current.split('.').map(Number);
+    const latestParts = latest.split('.').map(Number);
 
-      if (newPart > currentPart) {
-        return true;
-      }
-      if (newPart < currentPart) {
-        return false;
-      }
+    for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
+      const c = currentParts[i] || 0;
+      const l = latestParts[i] || 0;
+      if (l > c) return true;
+      if (l < c) return false;
     }
 
     return false;
-  }
-
-  /**
-   * Show notification when providers are being updated
-   */
-  private async showUpdatingNotification(
-    providers: ProviderExtension[],
-  ): Promise<void> {
-    await notificationService.showUpdateProgress(
-      'Updating Providers',
-      `Updating ${providers.length} provider${
-        providers.length > 1 ? 's' : ''
-      }...`,
-      {
-        max: 100,
-        current: 0,
-        indeterminate: true,
-      },
-    );
-  }
-
-  /**   * Show notification when updates are complete
-   */
-  private async showUpdateCompleteNotification(
-    updated: ProviderExtension[],
-    failed: ProviderExtension[],
-  ): Promise<void> {
-    // Cancel the updating notification
-    await notificationService.cancelNotification('updateProgress');
-
-    if (updated.length === 0 && failed.length === 0) {
-      return;
-    }
-
-    let title = '';
-    let body = '';
-
-    if (updated.length > 0 && failed.length === 0) {
-      title = 'Providers Updated Successfully';
-      body = `${updated.length} provider${
-        updated.length > 1 ? 's' : ''
-      } updated: ${updated.map(p => p.display_name).join(', ')}`;
-    } else if (updated.length > 0 && failed.length > 0) {
-      title = 'Providers Update Complete';
-      body = `${updated.length} updated, ${failed.length} failed`;
-    } else {
-      title = 'Provider Update Failed';
-      body = `Failed to update ${failed.length} provider${
-        failed.length > 1 ? 's' : ''
-      }`;
-    }
-
-    await notificationService.displayUpdateNotification({
-      id: 'providers-updated',
-      title,
-      body,
-    });
-  }
-
-  /**
-   * Get current updating state
-   */
-  get updating(): boolean {
-    return this.isUpdating;
   }
 }
 
