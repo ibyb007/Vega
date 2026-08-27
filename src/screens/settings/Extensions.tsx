@@ -9,7 +9,6 @@ import {
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import {SettingsStackParamList} from '../../App';
 import {MaterialCommunityIcons, FontAwesome6} from '@expo/vector-icons';
-import useThemeStore from '../../lib/zustand/themeStore';
 import useContentStore from '../../lib/zustand/contentStore';
 import {
   extensionStorage,
@@ -21,8 +20,6 @@ import {
   updateProvidersService,
   UpdateInfo,
 } from '../../lib/services/UpdateProviders';
-import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
-import {settingsStorage} from '../../lib/storage';
 import ProviderSourceManager from './components/ProviderSourceManager';
 import ProviderCard, {ProviderTestStatus} from './components/ProviderCard';
 import {
@@ -85,6 +82,7 @@ const Extensions = ({navigation}: Props) => {
   const setAvailableProviders = useContentStore(
     state => state.setAvailableProviders,
   );
+
   const [installingProvider, setInstallingProvider] = useState<string | null>(
     null,
   );
@@ -103,13 +101,14 @@ const Extensions = ({navigation}: Props) => {
   const [activeSourceAuthor, setActiveSourceAuthor] = useState<string>(
     extensionStorage.getProviderSource()?.author || '',
   );
+
   const showDialog = (
     title: string,
     message: string,
     variant: AppDialogVariant = 'info',
     actions?: AppDialogAction[],
   ) => setDialog({title, message, variant, actions});
-  // Load providers immediately on component mount (synchronous 0ms load)
+
   useEffect(() => {
     const initialSource = extensionStorage.getProviderSource();
     const initialAuthor = initialSource?.author || '';
@@ -126,8 +125,6 @@ const Extensions = ({navigation}: Props) => {
           loadProviders(author);
         }
         await checkForUpdates(false);
-
-        // Fetch latest providers in background if cache is empty
         const cachedAvailable = author
           ? extensionStorage.getAvailableProviders(author)
           : [];
@@ -138,7 +135,6 @@ const Extensions = ({navigation}: Props) => {
         console.warn('Background extensions initialization error:', error);
       }
     };
-
     initializeExtensions();
   }, []);
 
@@ -160,7 +156,6 @@ const Extensions = ({navigation}: Props) => {
       setUpdateInfos([]);
       return;
     }
-
     try {
       const updates = await updateProvidersService.checkForUpdatesManual(force);
       setUpdateInfos(updates);
@@ -174,14 +169,6 @@ const Extensions = ({navigation}: Props) => {
       showDialog('Error', 'Invalid provider data', 'error');
       return;
     }
-
-    if (settingsStorage.isHapticFeedbackEnabled()) {
-      ReactNativeHapticFeedback.trigger('effectClick', {
-        enableVibrateFallback: true,
-        ignoreAndroidSystemSettings: false,
-      });
-    }
-
     const providerKey = `${provider.source?.author || ''}:${provider.value}`;
     setUpdatingProvider(providerKey);
     try {
@@ -189,8 +176,6 @@ const Extensions = ({navigation}: Props) => {
       if (success) {
         loadProviders();
         await checkForUpdates();
-
-        // Update the active provider if it was the one being updated
         if (
           activeExtensionProvider?.value === provider.value &&
           activeExtensionProvider?.source?.author === provider.source?.author
@@ -221,28 +206,15 @@ const Extensions = ({navigation}: Props) => {
       showDialog('Error', 'Invalid provider data', 'error');
       return;
     }
-
-    if (settingsStorage.isHapticFeedbackEnabled()) {
-      ReactNativeHapticFeedback.trigger('effectClick', {
-        enableVibrateFallback: true,
-        ignoreAndroidSystemSettings: false,
-      });
-    }
-
     const providerKey = `${provider.source?.author || ''}:${provider.value}`;
     setInstallingProvider(providerKey);
     try {
       await extensionManager.installProvider(provider);
       loadProviders();
-
       const refreshedInstalledProviders =
         extensionStorage.getInstalledProviders() || [];
       setInstalledProviders(refreshedInstalledProviders);
 
-      // Keep the current provider active. Switching here can immediately run
-      // newly downloaded provider code in mounted screens and block the UI.
-      // Read after the download so concurrent installs cannot act on a stale
-      // provider captured when their handlers started.
       const currentProvider = useContentStore.getState().provider;
       const currentProviderIsInstalled = refreshedInstalledProviders.some(
         installedProvider => isSameProvider(installedProvider, currentProvider),
@@ -250,7 +222,6 @@ const Extensions = ({navigation}: Props) => {
       const installedSameValueFromAnotherSource =
         currentProvider?.value === provider.value &&
         currentProvider.source?.author !== provider.source?.author;
-
       if (
         !currentProvider?.value ||
         !currentProviderIsInstalled ||
@@ -269,12 +240,12 @@ const Extensions = ({navigation}: Props) => {
       setInstallingProvider(null);
     }
   };
+
   const handleUninstallProvider = (provider: ProviderExtension) => {
     if (!provider || !provider.value) {
       showDialog('Error', 'Invalid provider data', 'error');
       return;
     }
-
     showDialog(
       'Uninstall Provider',
       `Are you sure you want to uninstall ${
@@ -296,8 +267,6 @@ const Extensions = ({navigation}: Props) => {
             setInstalledProviders(
               extensionStorage.getInstalledProviders() || [],
             );
-
-            // If this was the active provider, clear it
             if (
               activeExtensionProvider?.value === provider?.value &&
               activeExtensionProvider?.source?.author ===
@@ -318,17 +287,11 @@ const Extensions = ({navigation}: Props) => {
       ],
     );
   };
+
   const handleSetActiveProvider = (provider: ProviderExtension) => {
     if (!provider || !provider.value) {
       showDialog('Error', 'Invalid provider data', 'error');
       return;
-    }
-
-    if (settingsStorage.isHapticFeedbackEnabled()) {
-      ReactNativeHapticFeedback.trigger('effectClick', {
-        enableVibrateFallback: true,
-        ignoreAndroidSystemSettings: false,
-      });
     }
     setActiveExtensionProvider(provider);
   };
@@ -343,6 +306,7 @@ const Extensions = ({navigation}: Props) => {
       providerName: provider.display_name,
       steps: createProviderTestSteps(),
     });
+
     const handleProgress = (progress: ProviderDiagnosticProgress) => {
       setProviderTest(current =>
         current
@@ -360,6 +324,7 @@ const Extensions = ({navigation}: Props) => {
           : current,
       );
     };
+
     try {
       const result = await testProvider(provider.value, handleProgress);
       const playableTitle =
@@ -409,20 +374,15 @@ const Extensions = ({navigation}: Props) => {
         setAvailableProviders([]);
         return;
       }
-
       const source = extensionStorage
         .getProviderSources()
         .find(item => item.author === sourceAuthor);
-
       if (!source) {
         setAvailableProviders([]);
         return;
       }
-
       const providers = await extensionManager.fetchManifest(source, true);
-
       setAvailableProviders(providers);
-
       loadProviders(sourceAuthor);
       await checkForUpdates();
     } catch (error) {
@@ -440,12 +400,12 @@ const Extensions = ({navigation}: Props) => {
   const handleRefresh = async () => {
     await refreshProviders(activeSourceAuthor);
   };
+
   const currentData = useMemo(() => {
     const allProviders = [
       ...(availableProviders || []),
       ...(installedProviders || []),
     ].filter(item => item && item.value);
-
     const providersMap = new Map<string, ProviderExtension>();
     for (const item of allProviders) {
       const key = `${item.source?.author || ''}:${item.value}`;
@@ -456,7 +416,6 @@ const Extensions = ({navigation}: Props) => {
         hasSettings: Boolean(item.hasSettings || existing?.hasSettings),
       });
     }
-
     return Array.from(providersMap.values());
   }, [availableProviders, installedProviders]);
 
@@ -480,7 +439,6 @@ const Extensions = ({navigation}: Props) => {
           info.provider.source?.author === item.source?.author,
       );
       const hasUpdate = updateInfo?.hasUpdate || false;
-
       return (
         <ProviderCard
           provider={item}
@@ -564,7 +522,6 @@ const Extensions = ({navigation}: Props) => {
           await refreshProviders(author);
         }}
       />
-
       <View className="mb-1 mt-6 flex-row items-center justify-between px-5">
         <AppText role="titleLargeEmphasized" className="text-m3-on-background">
           Available providers
@@ -582,8 +539,6 @@ const Extensions = ({navigation}: Props) => {
           </AppText>
         </View>
       </View>
-
-      {/* Provider list */}
       <FlatList
         data={currentData}
         keyExtractor={(item, index) =>
