@@ -1,4 +1,4 @@
-name: Build Android TV ARMv7 APK
+name: Build Android TV Release APK
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 jobs:
   build-tv:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -45,7 +45,7 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build ARMv7 Release APK
+      - name: Build Android TV Release APKs
         working-directory: ./android
         env:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
@@ -54,20 +54,17 @@ jobs:
           MYAPP_UPLOAD_KEY_ALIAS: "${{ secrets.KEY_ALIAS }}"
           MYAPP_UPLOAD_KEY_PASSWORD: "${{ secrets.KEY_PASSWORD }}"
         run: |
-          ./gradlew assembleRelease \
-            -PreactNativeArchitectures=armeabi-v7a \
-            --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
-      - name: Prepare APK Artifact
+      - name: Prepare APK Artifacts
         run: |
-          mkdir -p output_apk
-          APK_FILE=$(find android/app/build/outputs/apk/release -name "*armeabi-v7a*.apk" -o -name "*.apk" | head -1)
-          cp "$APK_FILE" output_apk/Vega-Android-TV-armv7.apk
-          ls -la output_apk/
+          mkdir -p output_apks
+          find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" -exec cp {} output_apks/ \;
+          ls -la output_apks/
 
-      - name: Upload Android TV APK
+      - name: Upload Android TV APKs
         uses: actions/upload-artifact@v4
         with:
-          name: Vega-TV-ARMv7-APK
-          path: output_apk/Vega-Android-TV-armv7.apk
+          name: Vega-Android-TV-APKs
+          path: output_apks/*.apk
           if-no-files-found: error
