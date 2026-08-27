@@ -1,14 +1,12 @@
 const {withGradleProperties} = require('expo/config-plugins');
 
-// Keep the Gradle daemon within a memory budget that fits alongside the Kotlin
-// compiler workers and Metro. A 4GB heap starves memory-constrained hosts
-// (e.g. WSL2) and causes the VM to be OOM-killed mid-build.
 const GRADLE_PROPERTIES = {
-  'org.gradle.jvmargs': '-Xmx3072m -XX:MaxMetaspaceSize=768m',
-  // Cap concurrent Gradle workers so parallel module builds don't spike RAM.
-  'org.gradle.workers.max': '4',
-  // Bound the Kotlin daemon heap; it otherwise sizes to the host and adds up.
-  'kotlin.daemon.jvmargs': '-Xmx1536m',
+  // Dedicated 4GB heap allocation with G1GC and increased Metaspace
+  'org.gradle.jvmargs': '-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC',
+  // Limit concurrent workers to prevent RAM spikes on GitHub Actions runners
+  'org.gradle.workers.max': '2',
+  // Bound Kotlin compiler daemon memory
+  'kotlin.daemon.jvmargs': '-Xmx2048m',
 };
 
 function upsertProperty(modResults, key, value) {
