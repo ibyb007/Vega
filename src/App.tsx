@@ -18,8 +18,6 @@ import 'react-native-reanimated';
 import 'react-native-gesture-handler';
 import WebView from './screens/WebView';
 import SearchResults from './screens/SearchResults';
-import * as SystemUI from 'expo-system-ui';
-// import DisableProviders from './screens/settings/DisableProviders';
 import About, {checkForUpdate} from './screens/settings/About';
 import BootSplash from 'react-native-bootsplash';
 import {SystemBars} from 'react-native-edge-to-edge';
@@ -27,7 +25,7 @@ import {enableFreeze, enableScreens} from 'react-native-screens';
 import Preferences from './screens/settings/Preference';
 import Appearance from './screens/settings/Appearance';
 import {M3ThemeProvider} from './theme/M3ThemeProvider';
-import {AppState, LogBox, useWindowDimensions, View} from 'react-native';
+import {AppState, LogBox, Platform, useWindowDimensions, View} from 'react-native';
 import {EpisodeLink} from './lib/providers/types';
 import {
   SafeAreaProvider,
@@ -153,6 +151,7 @@ export type TabStackParamList = {
   DownloadsStack: undefined;
   SettingsStack: undefined;
 };
+
 const Tab = createBottomTabNavigator<TabStackParamList>();
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 let pendingDownloadsNavigation = false;
@@ -175,7 +174,8 @@ export const openDownloadsScreen = (): void => {
 
 const App = () => {
   const {width: windowWidth, height: windowHeight} = useWindowDimensions();
-  const isLargeScreen = Math.min(windowWidth, windowHeight) >= 600;
+  const isLargeScreen = Math.min(windowWidth, windowHeight) >= 600 || Platform.isTV;
+  
   LogBox.ignoreLogs([
     'You have passed a style to FlashList',
     'new NativeEventEmitter()',
@@ -190,7 +190,17 @@ const App = () => {
     Boolean(Constants?.expoConfig?.extra?.hasFirebase) &&
     isFirebaseNativeReady();
 
-  // const showTabBarLables = settingsStorage.showTabBarLabels();
+  // Root fail-safe to guarantee BootSplash dismissal
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        await BootSplash.hide({fade: true});
+      } catch (e) {
+        console.warn('BootSplash fail-safe dismissal error:', e);
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     let reconciled = false;
@@ -262,19 +272,17 @@ const App = () => {
           });
       } catch {}
 
-      // Mark app open
       try {
         const analytics = getAnalytics();
         analytics && analytics().logAppOpen();
       } catch {}
-      // Example user property: theme
+
       try {
         const analytics = getAnalytics();
         analytics &&
           analytics().setUserProperty('theme_preference', 'fixed-neutral');
       } catch {}
 
-      // Initial Crashlytics log
       try {
         const crashlytics = getCrashlytics();
         crashlytics && crashlytics().log('App mounted');
@@ -307,25 +315,19 @@ const App = () => {
     };
   }, []);
 
-  // Initialize update service
   useEffect(() => {
-    // Start automatic update checking at app startup
     updateProvidersService.startAutomaticUpdateCheck();
-
-    // Cleanup on unmount
     return () => {
       updateProvidersService.stopAutomaticUpdateCheck();
     };
   }, []);
 
-  // Initialize DNS over HTTPS
   useEffect(() => {
     syncDohSettings().catch(e =>
       console.warn('[DoH] Failed to sync settings:', e),
     );
   }, []);
 
-  // Initialize shared folder sync
   useEffect(() => {
     initializeSyncService().catch(e =>
       console.warn('[VegaSync] Startup sync failed:', e),
@@ -427,10 +429,6 @@ const App = () => {
           component={Appearance}
           options={subpageOptions}
         />
-        {/* <SettingsStack.Screen
-          name="DisableProviders"
-          component={DisableProviders}
-        /> */}
         <SettingsStack.Screen
           name="About"
           component={About}
@@ -477,6 +475,7 @@ const App = () => {
       </DownloadsStack.Navigator>
     );
   }
+
   function TabStack() {
     const hideDownloadsTab = useNavigationPreferencesStore(
       state => state.hideDownloadsTab,
@@ -590,9 +589,7 @@ const App = () => {
                   if (pendingDownloadsNavigation) {
                     openDownloadsScreen();
                   }
-                  // Hide bootsplash
                   await BootSplash.hide({fade: true});
-                  // Track initial screen
                   if (hasFirebase) {
                     try {
                       const route = navigationRef.getCurrentRoute();
@@ -664,7 +661,7 @@ const App = () => {
                     name="Player"
                     component={Player}
                     options={{
-                      orientation: 'landscape',
+                      orientation: Platform.isTV ? 'sensorLandscape' : 'landscape',
                       statusBarHidden: true,
                       navigationBarHidden: true,
                       autoHideHomeIndicator: true,
@@ -672,12 +669,7 @@ const App = () => {
                   />
                 </Stack.Navigator>
               </NavigationContainer>
-              {/* Global WAF / captcha solving dialog, triggered by providers via
-                providerContext.openWebView */}
               <WafWebViewDialog />
-              {/* Isolated realm that runs untrusted provider code. Must stay
-                mounted for the app lifetime: every provider call is dispatched
-                into it. */}
               <ProviderSandboxHost />
             </View>
           </QueryClientProvider>
