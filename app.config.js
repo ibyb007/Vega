@@ -79,7 +79,7 @@ module.exports = () => {
           ],
           enableProguardInReleaseBuilds: true,
           splits: {
-            abi: { enable: true, universalApk: false },
+            abi: { enable: true, universalApk: true },
           },
           buildVariants: {
             release: {
@@ -89,7 +89,7 @@ module.exports = () => {
                 abi: {
                   enable: true,
                   reset: true,
-                  include: ['armeabi-v7a'],
+                  include: ['armeabi-v7a', 'arm64-v8a'],
                 },
               },
             },
