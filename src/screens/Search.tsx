@@ -1,419 +1,253 @@
-import {View, FlatList, Pressable, Text} from 'react-native';
-import React, {useState, useEffect, useCallback, memo, useRef} from 'react';
-import {useNavigation} from '@react-navigation/native';
-import type {BottomTabNavigationProp} from '@react-navigation/bottom-tabs';
-import {NativeStackNavigationProp} from '@react-navigation/native-stack';
-import {SearchStackParamList, TabStackParamList} from '../App';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  ScrollView,
+  Image,
+  StyleSheet,
+  ActivityIndicator,
+} from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import {MMKV} from '../lib/Mmkv';
-import {SafeAreaView} from 'react-native-safe-area-context';
-import Animated, {FadeInDown} from 'react-native-reanimated';
-import {searchOMDB} from '../lib/services/omdb';
+import { TVFocusablePressable } from '../components/tv/TVFocusablePressable';
+import { TVHeroMeta, TVHeroMedia } from '../components/tv/TVHeroMeta';
+import { providerManager } from '../lib/services/ProviderManager';
+import useContentStore from '../lib/zustand/contentStore';
 import debounce from 'lodash/debounce';
-import {OMDBResult} from '../types/omdb';
-import Button from '../components/ui/Button';
-import IconButton from '../components/ui/IconButton';
-import AppText from '../components/ui/Text';
-import SearchField, {type SearchFieldRef} from '../components/ui/SearchField';
-import {useM3Colors} from '../theme/M3PaletteContext';
 
-const MAX_VISIBLE_RESULTS = 15; // Limit number of animated items to prevent excessive callbacks
-const MAX_HISTORY_ITEMS = 30; // Maximum number of history items to store
+interface TVSearchProps {
+  onSelectItem?: (item: any) => void;
+}
 
-// Memoized search result item to prevent unnecessary re-renders
-const SearchResultItem = memo(
-  ({item, onPress}: {item: OMDBResult; onPress: (title: string) => void}) => {
-    const colors = useM3Colors();
-    const handlePress = useCallback(() => {
-      onPress(item.Title);
-    }, [item.Title, onPress]);
+export const TVSearch: React.FC<TVSearchProps> = ({ onSelectItem }) => {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
 
-    return (
-      <View style={{paddingHorizontal: 16, paddingVertical: 5}}>
-        <Pressable
-          onPress={handlePress}
-          style={({pressed}) => ({
-            backgroundColor: pressed
-              ? colors.surfaceContainerHighest
-              : colors.surfaceContainerLow,
-            borderRadius: 20,
-            padding: 14,
-          })}>
-          <View style={{alignItems: 'center', flexDirection: 'row'}}>
-            <View
-              style={{
-                alignItems: 'center',
-                backgroundColor: colors.secondaryContainer,
-                borderRadius: 16,
-                height: 44,
-                justifyContent: 'center',
-                marginRight: 14,
-                width: 44,
-              }}>
-              <MaterialCommunityIcons
-                name={item.Type === 'series' ? 'television' : 'movie-open'}
-                size={22}
-                color={colors.onSecondaryContainer}
-              />
-            </View>
-            <View className="flex-1">
-              <AppText
-                role="bodyLargeEmphasized"
-                style={{color: colors.onSurface}}>
-                {item.Title}
-              </AppText>
-              <AppText
-                role="bodySmall"
-                style={{color: colors.onSurfaceVariant, marginTop: 2}}>
-                {item.Type === 'series' ? 'TV Show' : 'Movie'} • {item.Year}
-              </AppText>
-            </View>
-            <MaterialCommunityIcons
-              name="arrow-top-right"
-              size={20}
-              color={colors.onSurfaceVariant}
-            />
-          </View>
-        </Pressable>
-      </View>
-    );
-  },
-);
+  const provider = useContentStore((state) => state.provider);
+  const installedProviders = useContentStore((state) => state.installedProviders);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-// Memoized history item component
-const HistoryItem = memo(
-  ({
-    search,
-    onPress,
-    onRemove,
-  }: {
-    search: string;
-    onPress: (text: string) => void;
-    onRemove: (text: string) => void;
-  }) => {
-    const colors = useM3Colors();
-    const handlePress = useCallback(() => {
-      onPress(search);
-    }, [search, onPress]);
-
-    const handleRemove = useCallback(() => {
-      onRemove(search);
-    }, [search, onRemove]);
-
-    return (
-      <Pressable
-        onPress={handlePress}
-        className="flex-row items-center rounded-[20px] mb-2 px-4 py-3.5"
-        style={({pressed}) => ({
-          backgroundColor: colors.surfaceContainerLow,
-          opacity: pressed ? 0.72 : 1,
-        })}>
-        <MaterialCommunityIcons
-          name="history"
-          size={22}
-          color={colors.onSurfaceVariant}
-        />
-        <Text
-          numberOfLines={1}
-          className="flex-1 mx-3"
-          style={{
-            color: colors.onSurface,
-            fontSize: 16,
-            fontWeight: '500',
-          }}>
-          {search}
-        </Text>
-        <Pressable
-          onPress={handleRemove}
-          hitSlop={8}
-          accessibilityLabel={`Remove ${search} from recent searches`}>
-          <MaterialCommunityIcons
-            name="close"
-            size={18}
-            color={colors.onSurfaceVariant}
-          />
-        </Pressable>
-      </Pressable>
-    );
-  },
-);
-
-const Search = () => {
-  const colors = useM3Colors();
-  const navigation =
-    useNavigation<NativeStackNavigationProp<SearchStackParamList>>();
-  const [searchText, setSearchText] = useState('');
-  const [searchHistory, setSearchHistory] = useState<string[]>(
-    MMKV.getArray<string>('searchHistory') || [],
-  );
-  const [searchResults, setSearchResults] = useState<OMDBResult[]>([]);
-  const searchFieldRef = useRef<SearchFieldRef>(null);
-  const focusAfterTabResetRef = useRef(false);
-
-  useEffect(() => {
-    const tabNavigation =
-      navigation.getParent<BottomTabNavigationProp<TabStackParamList>>();
-    if (!tabNavigation) {
+  const searchAcrossProviders = async (searchQuery: string) => {
+    if (!searchQuery.trim() || searchQuery.length < 2) {
+      setResults([]);
+      setLoading(false);
       return;
     }
 
-    const unsubscribeTabPress = tabNavigation.addListener('tabPress', event => {
-      const state = tabNavigation.getState();
-      if (state.routes[state.index]?.name !== 'SearchStack') {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    setLoading(true);
+    try {
+      // Use active provider or fallback across all installed providers
+      const providerValue = provider?.value || installedProviders[0]?.value;
+      if (!providerValue) {
+        setLoading(false);
         return;
       }
 
-      if (!navigation.isFocused()) {
-        event.preventDefault();
-        focusAfterTabResetRef.current = true;
-        navigation.popToTop();
-        return;
-      }
+      const posts = await providerManager.getSearchPosts({
+        searchQuery,
+        page: 1,
+        providerValue,
+        signal: abortControllerRef.current.signal,
+      });
 
-      searchFieldRef.current?.focus();
-    });
-    const unsubscribeFocus = navigation.addListener('focus', () => {
-      if (!focusAfterTabResetRef.current) {
-        return;
-      }
-      focusAfterTabResetRef.current = false;
-      searchFieldRef.current?.focus();
-    });
-
-    return () => {
-      unsubscribeTabPress();
-      unsubscribeFocus();
-    };
-  }, [navigation]);
-
-  const debouncedSearch = useCallback(
-    debounce(async (text: string) => {
-      if (text.length >= 2) {
-        setSearchResults([]); // Clear previous results
-        const results = await searchOMDB(text);
-        if (results.length > 0) {
-          // Remove duplicates based on imdbID
-          const uniqueResults = results.reduce((acc, current) => {
-            const x = acc.find(
-              (item: OMDBResult) => item.imdbID === current.imdbID,
-            );
-            if (!x) {
-              return acc.concat([current]);
-            } else {
-              return acc;
-            }
-          }, [] as OMDBResult[]);
-
-          // Limit the number of results to prevent excessive animations
-          setSearchResults(uniqueResults.slice(0, MAX_VISIBLE_RESULTS));
+      if (posts && Array.isArray(posts)) {
+        setResults(posts);
+        if (posts.length > 0) {
+          setActiveHero({
+            title: posts[0].title,
+            backdropUrl: posts[0].image,
+            posterUrl: posts[0].image,
+            overview: posts[0].overview || 'Select to browse streams.',
+          });
         }
-      } else {
-        setSearchResults([]);
       }
-    }, 300), // Reduced debounce time for better responsiveness
-    [],
-  );
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        console.error('Search error:', err);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const debouncedSearch = useRef(
+    debounce((text: string) => searchAcrossProviders(text), 400)
+  ).current;
 
   useEffect(() => {
-    debouncedSearch(searchText);
-    return () => {
-      debouncedSearch.cancel();
-    };
-  }, [searchText, debouncedSearch]);
-
-  const handleSearch = useCallback(
-    (text: string) => {
-      if (text.trim()) {
-        // Save to search history
-        const prevSearches = MMKV.getArray<string>('searchHistory') || [];
-        if (!prevSearches.includes(text.trim())) {
-          const newSearches = [text.trim(), ...prevSearches].slice(
-            0,
-            MAX_HISTORY_ITEMS,
-          );
-          MMKV.setArray('searchHistory', newSearches);
-          setSearchHistory(newSearches);
-        }
-
-        navigation.navigate('SearchResults', {
-          filter: text.trim(),
-        });
-      }
-    },
-    [navigation],
-  );
-
-  const removeHistoryItem = useCallback(
-    (search: string) => {
-      const newSearches = searchHistory.filter(item => item !== search);
-      MMKV.setArray('searchHistory', newSearches);
-      setSearchHistory(newSearches);
-    },
-    [searchHistory],
-  );
-
-  const clearHistory = useCallback(() => {
-    MMKV.setArray('searchHistory', []);
-    setSearchHistory([]);
-  }, []);
-
-  const handleResultPress = useCallback(
-    (title: string) => {
-      // Save to search history
-      const prevSearches = MMKV.getArray<string>('searchHistory') || [];
-      if (!prevSearches.includes(title)) {
-        const newSearches = [title, ...prevSearches].slice(
-          0,
-          MAX_HISTORY_ITEMS,
-        );
-        MMKV.setArray('searchHistory', newSearches);
-        setSearchHistory(newSearches);
-      }
-      navigation.navigate('SearchResults', {
-        filter: title,
-      });
-    },
-    [navigation],
-  );
-
-  // Memoized render function for search results
-  const renderSearchResult = useCallback(
-    ({item}: {item: OMDBResult}) => (
-      <SearchResultItem item={item} onPress={handleResultPress} />
-    ),
-    [handleResultPress],
-  );
-
-  // Memoized render function for history items
-  const renderHistoryItem = useCallback(
-    ({item}: {item: string}) => (
-      <HistoryItem
-        search={item}
-        onPress={handleSearch}
-        onRemove={removeHistoryItem}
-      />
-    ),
-    [handleSearch, removeHistoryItem],
-  );
-
-  // Memoized key extractors
-  const searchResultKeyExtractor = useCallback(
-    (item: OMDBResult) => item.imdbID.toString(),
-    [],
-  );
-  const historyKeyExtractor = useCallback(
-    (item: string, index: number) => `history-${index}`,
-    [],
-  );
-
-  // Conditionally render animations based on state
-  const AnimatedContainer = Animated.View;
+    debouncedSearch(query);
+    return () => debouncedSearch.cancel();
+  }, [query]);
 
   return (
-    <SafeAreaView className="flex-1 bg-m3-background">
-      {/* Title Section */}
-      <AnimatedContainer
-        entering={FadeInDown.duration(300)}
-        className="px-4 pt-5">
-        {/* <AppText
-          role="headlineLargeEmphasized"
-          className="mb-1 text-m3-on-background"></AppText> */}
-        <AppText
-          role="bodyLarge"
-          style={{color: colors.onSurfaceVariant, marginBottom: 18}}>
-          Search across all providers
-        </AppText>
-        <View className="flex-row items-center space-x-3 mb-3">
-          <View className="flex-1">
-            <SearchField
-              ref={searchFieldRef}
-              value={searchText}
-              onChangeText={setSearchText}
-              onSubmit={handleSearch}
-              placeholder="Search anime..."
-            />
-          </View>
-          {searchText.length > 0 && (
-            <IconButton
-              icon="close"
-              label="Clear search"
-              onPress={() => setSearchText('')}
-              size={18}
-            />
-          )}
-        </View>
-      </AnimatedContainer>
+    <View style={styles.container}>
+      {/* Top Dynamic Fanart Header for focused result */}
+      <TVHeroMeta media={activeHero} />
 
-      {/* Search Results */}
-      <View className="flex-1">
-        {searchResults.length > 0 ? (
-          <FlatList
-            data={searchResults}
-            keyExtractor={searchResultKeyExtractor}
-            renderItem={renderSearchResult}
-            contentContainerStyle={{paddingTop: 4}}
-            showsVerticalScrollIndicator={false}
-            removeClippedSubviews={true}
-            maxToRenderPerBatch={10}
-            updateCellsBatchingPeriod={50}
-            windowSize={10}
-            initialNumToRender={10}
-          />
-        ) : searchHistory.length > 0 ? (
-          <AnimatedContainer
-            entering={FadeInDown.duration(250)}
-            className="px-4 flex-1 pt-4">
-            <View className="flex-row items-center justify-between mb-3">
-              <AppText
-                role="titleMediumEmphasized"
-                className="text-m3-on-surface">
-                Recent Searches
-              </AppText>
-              <Button compact variant="text" onPress={clearHistory}>
-                Clear all
-              </Button>
-            </View>
-
-            <FlatList
-              data={searchHistory}
-              keyExtractor={historyKeyExtractor}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{paddingBottom: 20}}
-              renderItem={renderHistoryItem}
-              removeClippedSubviews={false}
-              maxToRenderPerBatch={10}
-              updateCellsBatchingPeriod={50}
-              windowSize={10}
-              initialNumToRender={10}
-            />
-          </AnimatedContainer>
-        ) : (
-          // Empty State - Only show when no history and no results
-          <AnimatedContainer
-            entering={FadeInDown.duration(300)}
-            className="items-center justify-center flex-1 px-8">
-            <View className="mb-5 rounded-[28px] bg-m3-secondary-container p-7">
+      {/* D-Pad Focusable Search Input Field */}
+      <View style={styles.searchBarWrapper}>
+        <TVFocusablePressable
+          hasTVPreferredFocus={true}
+          scaleFocused={1.02}
+          focusedBorderColor="#8A5CF6"
+          borderRadius={12}
+          style={styles.inputContainer}
+        >
+          {({ focused }) => (
+            <View style={styles.inputRow}>
               <MaterialCommunityIcons
                 name="magnify"
-                size={32}
-                color={colors.onSecondaryContainer}
+                size={24}
+                color={focused ? '#8A5CF6' : '#9CA3AF'}
               />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search movies, series, anime..."
+                placeholderTextColor="#6B7280"
+                style={styles.input}
+              />
+              {loading && <ActivityIndicator size="small" color="#8A5CF6" />}
             </View>
-            <AppText
-              role="bodyLarge"
-              className="text-center text-m3-on-surface">
-              Your next watch starts here
-            </AppText>
-            <AppText
-              role="bodyMedium"
-              className="mt-1 text-center text-m3-on-surface-variant">
-              Search by title, then browse every provider in one place
-            </AppText>
-          </AnimatedContainer>
-        )}
+          )}
+        </TVFocusablePressable>
       </View>
-    </SafeAreaView>
+
+      {/* Grid of Results directly on the same screen */}
+      <ScrollView
+        contentContainerStyle={styles.resultsGrid}
+        showsVerticalScrollIndicator={false}
+      >
+        {results.map((item, index) => (
+          <TVFocusablePressable
+            key={item.id || item.link || index}
+            scaleFocused={1.08}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={8}
+            onFocus={() =>
+              setActiveHero({
+                title: item.title,
+                backdropUrl: item.image,
+                posterUrl: item.image,
+                overview: item.overview || 'Press select to load playback sources.',
+              })
+            }
+            onPress={() => onSelectItem?.(item)}
+            style={styles.card}
+          >
+            {({ focused }) => (
+              <View style={styles.cardInner}>
+                <Image
+                  source={{
+                    uri:
+                      item.image ||
+                      'https://placehold.jp/24/363636/ffffff/100x150.png?text=Vega',
+                  }}
+                  style={styles.cardPoster}
+                  resizeMode="cover"
+                />
+                {focused && (
+                  <View style={styles.cardBadge}>
+                    <Text numberOfLines={1} style={styles.cardTitle}>
+                      {item.title}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+          </TVFocusablePressable>
+        ))}
+
+        {!loading && results.length === 0 && query.length >= 2 && (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyText}>No results found for "{query}"</Text>
+          </View>
+        )}
+      </ScrollView>
+    </View>
   );
 };
 
-export default Search;
+export default TVSearch;
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0A0A0E',
+  },
+  searchBarWrapper: {
+    paddingLeft: 96,
+    paddingRight: 48,
+    marginBottom: 16,
+    zIndex: 20,
+  },
+  inputContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  input: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  resultsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingLeft: 96,
+    paddingRight: 48,
+    paddingBottom: 40,
+    gap: 16,
+  },
+  card: {
+    width: 140,
+    height: 210,
+  },
+  cardInner: {
+    flex: 1,
+    position: 'relative',
+  },
+  cardPoster: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 8,
+  },
+  cardBadge: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
+  },
+  cardTitle: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  emptyState: {
+    width: '100%',
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  emptyText: {
+    color: '#9CA3AF',
+    fontSize: 16,
+  },
+});
