@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import './global.css';
-import { View, StyleSheet, StatusBar } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, StyleSheet, StatusBar, Dimensions } from 'react-native';
 import BootSplash from 'react-native-bootsplash';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/client';
@@ -23,6 +22,8 @@ import TVSearch from './screens/Search';
 import WatchList from './screens/WatchList';
 import Extensions from './screens/settings/Extensions';
 
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
 export interface ActiveStreamPayload {
   url: string;
   title: string;
@@ -33,32 +34,43 @@ export default function App() {
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
 
   useEffect(() => {
-    BootSplash.hide({ fade: true }).catch(() => {});
-    syncDohSettings().catch((e) => console.warn('[DoH] Startup sync failed:', e));
+    // 1. Hide native bootsplash immediately
+    BootSplash.hide({ fade: false }).catch(() => {});
+
+    // 2. Initialize background network & provider tasks safely
+    syncDohSettings().catch((e) => console.warn('[DoH] Startup error:', e));
     try {
       updateProvidersService.startAutomaticUpdateCheck();
     } catch (e) {
       console.warn('[UpdateProviders] Init failed:', e);
     }
+
+    return () => {
+      try {
+        updateProvidersService.stopAutomaticUpdateCheck();
+      } catch {}
+    };
   }, []);
 
   return (
-    <SafeAreaProvider style={styles.root}>
-      <GestureHandlerRootView style={styles.root}>
+    <SafeAreaProvider style={styles.rootContainer}>
+      <GestureHandlerRootView style={styles.rootContainer}>
         <M3ThemeProvider>
           <GlobalErrorBoundary>
             <QueryClientProvider client={queryClient}>
-              <View style={styles.root}>
+              <View style={styles.rootContainer}>
                 <StatusBar hidden={true} />
                 <AppDialogHost />
 
                 {activeStream ? (
+                  /* Fullscreen TV Player */
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
                     onClose={() => setActiveStream(null)}
                   />
                 ) : (
+                  /* Master TV Layout: Collapsible Rail + Viewport */
                   <View style={styles.layout}>
                     <TVNavigationRail
                       currentRoute={currentRoute}
@@ -127,6 +139,7 @@ export default function App() {
                   </View>
                 )}
 
+                {/* Scraper Isolation Sandbox */}
                 <WafWebViewDialog />
                 <ProviderSandboxHost />
               </View>
@@ -139,10 +152,10 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: {
+  rootContainer: {
     flex: 1,
-    width: '100%',
-    height: '100%',
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
     backgroundColor: '#0A0A0E',
   },
   layout: {
@@ -153,7 +166,7 @@ const styles = StyleSheet.create({
   },
   viewport: {
     flex: 1,
-    backgroundColor: '#0A0A0E',
     height: '100%',
+    backgroundColor: '#0A0A0E',
   },
 });
