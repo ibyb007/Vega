@@ -1,4 +1,4 @@
-import {MMKVLoader} from 'react-native-mmkv-storage';
+import {MMKV} from 'react-native-mmkv';
 import type {StateStorage} from 'zustand/middleware';
 
 /**
@@ -22,17 +22,18 @@ export interface IStorageService {
 }
 
 /**
- * Base storage service that wraps MMKV operations
+ * Base storage service that wraps MMKV operations.
+ *
+ * Uses `react-native-mmkv` (TurboModule-based) instead of the legacy
+ * `react-native-mmkv-storage`, which predates the New Architecture and
+ * throws "undefined is not a function" during module init under
+ * newArchEnabled/bridgeless mode.
  */
 export class StorageService implements IStorageService {
-  // Define storage variable with proper typing
-  private storage;
+  private storage: MMKV;
 
   constructor(instanceId?: string) {
-    const loader = new MMKVLoader();
-    this.storage = instanceId
-      ? loader.withInstanceID(instanceId).initialize()
-      : loader.initialize();
+    this.storage = instanceId ? new MMKV({id: instanceId}) : new MMKV();
   }
 
   // String operations
@@ -41,28 +42,26 @@ export class StorageService implements IStorageService {
   }
 
   setString(key: string, value: string): void {
-    this.storage.setString(key, value);
+    this.storage.set(key, value);
   }
 
   // Boolean operations
   getBool(key: string, defaultValue?: boolean): boolean {
-    const value = this.storage.getBool(key);
+    const value = this.storage.getBoolean(key);
     return value == null ? defaultValue || false : value;
   }
 
   setBool(key: string, value: boolean): void {
-    this.storage.setBool(key, value);
+    this.storage.set(key, value);
   }
 
   // Number operations
   getNumber(key: string): number | undefined {
-    // Use getInt or getFloat equivalent methods which exist in MMKV
-    return this.storage.getInt(key) ?? undefined;
+    return this.storage.getNumber(key) ?? undefined;
   }
 
   setNumber(key: string, value: number): void {
-    // Use setInt for number values
-    this.storage.setInt(key, value);
+    this.storage.set(key, value);
   }
 
   // Object operations
@@ -80,7 +79,7 @@ export class StorageService implements IStorageService {
   }
 
   setObject<T>(key: string, value: T): void {
-    this.storage.setString(key, JSON.stringify(value));
+    this.storage.set(key, JSON.stringify(value));
   }
 
   // Array operations
@@ -94,35 +93,26 @@ export class StorageService implements IStorageService {
 
   // Delete operations
   delete(key: string): void {
-    this.storage.removeItem(key);
+    this.storage.delete(key);
   }
 
   // Check if key exists
   contains(key: string): boolean {
-    // Check if key exists by attempting to get the value
-    return (
-      this.storage.getString(key) !== undefined ||
-      this.storage.getBool(key) !== undefined ||
-      this.storage.getInt(key) !== undefined
-    );
+    return this.storage.contains(key);
   }
 
   // Clear all storage
   clearAll(): void {
-    this.storage.clearStore();
+    this.storage.clearAll();
   }
 
   // Get all keys
   async getKeys(): Promise<string[]> {
-    if (this.storage?.indexer?.getKeys) {
-      try {
-        const keys = await this.storage.indexer.getKeys();
-        return Array.isArray(keys) ? keys : [];
-      } catch {
-        return [];
-      }
+    try {
+      return this.storage.getAllKeys();
+    } catch {
+      return [];
     }
-    return [];
   }
 }
 
