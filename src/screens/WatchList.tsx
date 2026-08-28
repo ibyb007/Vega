@@ -11,14 +11,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import ReactNativeHapticFeedback, {
-  HapticFeedbackTypes,
-} from 'react-native-haptic-feedback';
-import type {WatchListStackParamList} from '../App';
 import MediaPosterCard from '../components/MediaPosterCard';
 import AppText from '../components/ui/Text';
 import type {WatchListItem} from '../lib/storage';
-import {settingsStorage} from '../lib/storage';
 import {syncFromSharedFolder} from '../lib/sync/syncService';
 import {showAppDialog} from '../lib/zustand/appDialogStore';
 import useWatchListStore from '../lib/zustand/watchListStore';
@@ -26,12 +21,10 @@ import {useM3Colors} from '../theme/M3PaletteContext';
 
 const WatchList = () => {
   const colors = useM3Colors();
-  const navigation =
-    useNavigation<NativeStackNavigationProp<WatchListStackParamList>>();
+  const navigation = useNavigation<NativeStackNavigationProp<any>>();
   const watchList = useWatchListStore(state => state.watchList);
   const removeItem = useWatchListStore(state => state.removeItem);
   const [selectedLinks, setSelectedLinks] = useState<Set<string>>(new Set());
-
   const isSelectionMode = selectedLinks.size > 0;
 
   useFocusEffect(
@@ -42,20 +35,8 @@ const WatchList = () => {
     }, []),
   );
 
-  const triggerHaptic = (
-    type: HapticFeedbackTypes = HapticFeedbackTypes.effectTick,
-  ) => {
-    if (settingsStorage.isHapticFeedbackEnabled()) {
-      ReactNativeHapticFeedback.trigger(type, {
-        enableVibrateFallback: true,
-        ignoreAndroidSystemSettings: false,
-      });
-    }
-  };
-
   const handleCardPress = (item: WatchListItem) => {
     if (isSelectionMode) {
-      triggerHaptic(HapticFeedbackTypes.effectTick);
       setSelectedLinks(prev => {
         const next = new Set(prev);
         if (next.has(item.link)) {
@@ -75,7 +56,6 @@ const WatchList = () => {
   };
 
   const handleCardLongPress = (item: WatchListItem) => {
-    triggerHaptic(HapticFeedbackTypes.impactMedium);
     setSelectedLinks(prev => {
       const next = new Set(prev);
       if (next.has(item.link)) {
@@ -88,12 +68,10 @@ const WatchList = () => {
   };
 
   const handleExitSelection = () => {
-    triggerHaptic(HapticFeedbackTypes.effectClick);
     setSelectedLinks(new Set());
   };
 
   const handleToggleSelectAll = () => {
-    triggerHaptic(HapticFeedbackTypes.effectClick);
     if (selectedLinks.size === watchList.length) {
       setSelectedLinks(new Set());
     } else {
@@ -102,7 +80,6 @@ const WatchList = () => {
   };
 
   const handleInvertSelection = () => {
-    triggerHaptic(HapticFeedbackTypes.effectClick);
     setSelectedLinks(prev => {
       const next = new Set<string>();
       watchList.forEach(item => {
@@ -116,10 +93,7 @@ const WatchList = () => {
 
   const handleDeletePress = () => {
     if (selectedLinks.size === 0) return;
-
-    triggerHaptic(HapticFeedbackTypes.effectHeavyClick);
     const count = selectedLinks.size;
-
     showAppDialog({
       title: `Remove from Watchlist?`,
       message: `Are you sure you want to remove ${count} ${
@@ -145,13 +119,13 @@ const WatchList = () => {
   const isAllSelected =
     watchList.length > 0 && selectedLinks.size === watchList.length;
 
-  // Calculate how many items can fit per row
   const screenWidth = Dimensions.get('window').width;
   const containerPadding = 12;
   const itemSpacing = 10;
   const availableWidth = screenWidth - containerPadding * 2;
-  const numColumns = Math.floor(
-    (availableWidth + itemSpacing) / (100 + itemSpacing),
+  const numColumns = Math.max(
+    3,
+    Math.floor((availableWidth + itemSpacing) / (100 + itemSpacing)),
   );
   const itemWidth =
     (availableWidth - itemSpacing * (numColumns - 1)) / numColumns;
@@ -159,8 +133,6 @@ const WatchList = () => {
   return (
     <View className="flex-1 bg-m3-background">
       <StatusBar />
-
-      {/* Top Selection Header Toolbar */}
       {isSelectionMode ? (
         <View
           style={{
@@ -192,7 +164,6 @@ const WatchList = () => {
               {selectedLinks.size}
             </AppText>
           </View>
-
           <View style={{alignItems: 'center', flexDirection: 'row', gap: 12}}>
             <TouchableOpacity
               activeOpacity={0.7}
@@ -224,7 +195,6 @@ const WatchList = () => {
           }}
         />
       )}
-
       <View className="flex-1 w-full px-3">
         {!isSelectionMode ? (
           <AppText
@@ -233,7 +203,6 @@ const WatchList = () => {
             Watchlist
           </AppText>
         ) : null}
-
         {watchList.length > 0 ? (
           <FlatList
             data={watchList}
@@ -277,8 +246,6 @@ const WatchList = () => {
           </View>
         )}
       </View>
-
-      {/* Bottom Action Bar in Selection Mode */}
       {isSelectionMode ? (
         <View
           style={{
@@ -332,7 +299,6 @@ const WatchList = () => {
                 {selectedLinks.size} selected
               </AppText>
             </View>
-
             <TouchableOpacity
               activeOpacity={0.75}
               disabled={selectedLinks.size === 0}
