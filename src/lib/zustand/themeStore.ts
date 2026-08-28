@@ -1,9 +1,7 @@
 import {create} from 'zustand';
 import {persist, createJSONStorage} from 'zustand/middleware';
-import {MMKVLoader} from 'react-native-mmkv-storage';
+import {createZustandStorage} from '../storage/StorageService';
 import {settingsStorage} from '../storage';
-
-const storage = new MMKVLoader().initialize();
 
 export type AccentSource = 'wallpaper' | 'custom';
 
@@ -39,8 +37,7 @@ const useThemeStore = create<Theme>()(
     }),
     {
       name: 'content-storage',
-      //@ts-expect-error
-      storage: createJSONStorage(() => storage),
+      storage: createJSONStorage(() => createZustandStorage()),
     },
   ),
 );

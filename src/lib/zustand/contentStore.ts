@@ -1,10 +1,8 @@
 import {create} from 'zustand';
 import {persist, createJSONStorage} from 'zustand/middleware';
-import {MMKVLoader} from 'react-native-mmkv-storage';
+import {createZustandStorage} from '../storage/StorageService';
 // import {ProvidersList, providersList} from '../constants';
 import {extensionStorage, ProviderExtension} from '../storage/extensionStorage';
-
-const storage = new MMKVLoader().initialize();
 
 export interface Content {
   provider: ProviderExtension;
@@ -56,7 +54,7 @@ const useContentStore = create<Content>()(
     }),
     {
       name: 'content-storage',
-      storage: createJSONStorage(() => storage as any), // Only persist certain fields
+      storage: createJSONStorage(() => createZustandStorage()), // Only persist certain fields
       partialize: state => ({
         provider: state.provider,
         activeExtensionProvider: state.activeExtensionProvider,
