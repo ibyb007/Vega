@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './global.css';
-import { View, StyleSheet, LogBox, StatusBar } from 'react-native';
+import { View, StyleSheet, LogBox, StatusBar, Text } from 'react-native';
 import BootSplash from 'react-native-bootsplash';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/client';
@@ -21,7 +21,6 @@ import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
 import TVSearch from './screens/Search';
 import WatchList from './screens/WatchList';
-import Extensions from './screens/settings/Extensions';
 
 LogBox.ignoreLogs([
   'new NativeEventEmitter()',
@@ -39,34 +38,28 @@ export default function App() {
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
 
   useEffect(() => {
-    let isMounted = true;
+    // 1. Initialize Network & Provider Updates silently
+    syncDohSettings().catch(e => console.warn('[DoH] Startup sync failed:', e));
+    try {
+      updateProvidersService.startAutomaticUpdateCheck();
+    } catch (e) {
+      console.warn('[UpdateProviders] Init failed:', e);
+    }
 
-    const hideSplash = async () => {
+    // 2. Hide Splash Screen safely after layout has attached
+    const hideTimer = setTimeout(async () => {
       try {
         await BootSplash.hide({ fade: true });
-      } catch (e) {
-        console.warn('[BootSplash] Dismissal error:', e);
+      } catch (err) {
+        console.warn('[BootSplash] Hide error:', err);
       }
-    };
-
-    hideSplash();
-
-    const timer = setTimeout(() => {
-      if (isMounted) {
-        hideSplash();
-      }
-    }, 400);
-
-    syncDohSettings().catch((e) =>
-      console.warn('[DoH] Startup sync failed:', e)
-    );
-
-    updateProvidersService.startAutomaticUpdateCheck();
+    }, 500);
 
     return () => {
-      isMounted = false;
-      clearTimeout(timer);
-      updateProvidersService.stopAutomaticUpdateCheck();
+      clearTimeout(hideTimer);
+      try {
+        updateProvidersService.stopAutomaticUpdateCheck();
+      } catch {}
     };
   }, []);
 
@@ -81,14 +74,14 @@ export default function App() {
                 <AppDialogHost />
 
                 {activeStream ? (
-                  /* Fullscreen TV Player */
+                  /* Fullscreen TV Leanback Player */
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
                     onClose={() => setActiveStream(null)}
                   />
                 ) : (
-                  /* Master TV Layout: Collapsible Rail + Dynamic Viewport */
+                  /* Master TV Layout: Collapsible Rail + Active Viewport */
                   <View style={styles.layout}>
                     <TVNavigationRail
                       currentRoute={currentRoute}
@@ -137,14 +130,18 @@ export default function App() {
 
                       {currentRoute === 'library' && <WatchList />}
 
-                      {currentRoute === 'addons' && <Extensions navigation={{} as any} route={{} as any} />}
+                      {currentRoute === 'addons' && (
+                        <View style={styles.fallbackCenter}>
+                          <Text style={styles.fallbackText}>Addons & Extensions Manager</Text>
+                        </View>
+                      )}
 
                       {currentRoute === 'settings' && <TVSettingsScreen />}
                     </View>
                   </View>
                 )}
 
-                {/* Vega Sandbox Runtime */}
+                {/* Scraper Isolation Sandbox Runtime */}
                 <WafWebViewDialog />
                 <ProviderSandboxHost />
               </View>
@@ -168,5 +165,16 @@ const styles = StyleSheet.create({
   viewport: {
     flex: 1,
     backgroundColor: '#0A0A0E',
+  },
+  fallbackCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0A0A0E',
+  },
+  fallbackText: {
+    color: '#9CA3AF',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
