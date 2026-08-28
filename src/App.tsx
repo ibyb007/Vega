@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './global.css';
-import { View, StyleSheet, LogBox, StatusBar, Text } from 'react-native';
+import { View, StyleSheet, StatusBar } from 'react-native';
 import BootSplash from 'react-native-bootsplash';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/client';
@@ -21,12 +21,7 @@ import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
 import TVSearch from './screens/Search';
 import WatchList from './screens/WatchList';
-
-LogBox.ignoreLogs([
-  'new NativeEventEmitter()',
-  'Setting a timer for a long period of time',
-  'You have passed a style to FlashList',
-]);
+import Extensions from './screens/settings/Extensions';
 
 export interface ActiveStreamPayload {
   url: string;
@@ -36,18 +31,21 @@ export interface ActiveStreamPayload {
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<TVRoute>('home');
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
+  const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
-    // Hide bootsplash immediately once React attaches
-    BootSplash.hide({ fade: true }).catch(() => {});
-
-    // Initialize Network & Provider Updates silently
-    syncDohSettings().catch(e => console.warn('[DoH] Startup sync failed:', e));
-    try {
-      updateProvidersService.startAutomaticUpdateCheck();
-    } catch (e) {
-      console.warn('[UpdateProviders] Init failed:', e);
+    async function init() {
+      try {
+        await syncDohSettings().catch((e) => console.warn('[DoH] Startup sync failed:', e));
+        updateProvidersService.startAutomaticUpdateCheck();
+      } catch (e) {
+        console.warn('[Init] Startup error:', e);
+      } finally {
+        setIsReady(true);
+      }
     }
+
+    init();
 
     return () => {
       try {
@@ -56,25 +54,35 @@ export default function App() {
     };
   }, []);
 
+  const onLayoutRootView = useCallback(async () => {
+    if (isReady) {
+      try {
+        await BootSplash.hide({ fade: true });
+      } catch (e) {
+        console.warn('[BootSplash] Hide error:', e);
+      }
+    }
+  }, [isReady]);
+
   return (
-    <SafeAreaProvider>
+    <SafeAreaProvider style={styles.root}>
       <GestureHandlerRootView style={styles.root}>
         <M3ThemeProvider>
           <GlobalErrorBoundary>
             <QueryClientProvider client={queryClient}>
-              <View style={styles.root}>
+              <View style={styles.root} onLayout={onLayoutRootView}>
                 <StatusBar hidden={true} />
                 <AppDialogHost />
 
                 {activeStream ? (
-                  /* Fullscreen TV Leanback Player */
+                  /* Fullscreen TV Player */
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
                     onClose={() => setActiveStream(null)}
                   />
                 ) : (
-                  /* Master TV Layout: Collapsible Rail + Active Viewport */
+                  /* Master TV Layout: Collapsible Rail + Dynamic Viewport */
                   <View style={styles.layout}>
                     <TVNavigationRail
                       currentRoute={currentRoute}
@@ -84,10 +92,12 @@ export default function App() {
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
+                          onNavigateRoute={(route) => setCurrentRoute(route)}
                           onSelectItem={(item) =>
                             setActiveStream({
                               url:
                                 item.streamUrl ||
+                                item.link ||
                                 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
                               title: item.title,
                             })
@@ -101,6 +111,7 @@ export default function App() {
                             setActiveStream({
                               url:
                                 item.streamUrl ||
+                                item.link ||
                                 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
                               title: item.title,
                             })
@@ -110,10 +121,12 @@ export default function App() {
 
                       {currentRoute === 'discover' && (
                         <TVHomeScreen
+                          onNavigateRoute={(route) => setCurrentRoute(route)}
                           onSelectItem={(item) =>
                             setActiveStream({
                               url:
                                 item.streamUrl ||
+                                item.link ||
                                 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
                               title: item.title,
                             })
@@ -124,9 +137,13 @@ export default function App() {
                       {currentRoute === 'library' && <WatchList />}
 
                       {currentRoute === 'addons' && (
-                        <View style={styles.fallbackCenter}>
-                          <Text style={styles.fallbackText}>Addons & Extensions</Text>
-                        </View>
+                        <Extensions
+                          navigation={{
+                            navigate: (screen: string) => setCurrentRoute(screen.toLowerCase() as any),
+                            goBack: () => setCurrentRoute('home'),
+                          } as any}
+                          route={{} as any}
+                        />
                       )}
 
                       {currentRoute === 'settings' && <TVSettingsScreen />}
@@ -134,7 +151,7 @@ export default function App() {
                   </View>
                 )}
 
-                {/* Scraper Isolation Sandbox Runtime */}
+                {/* Vega Isolated Scraper Sandbox Runtime */}
                 <WafWebViewDialog />
                 <ProviderSandboxHost />
               </View>
@@ -149,25 +166,19 @@ export default function App() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#0A0A0E',
   },
   layout: {
     flex: 1,
     flexDirection: 'row',
+    width: '100%',
+    height: '100%',
   },
   viewport: {
     flex: 1,
     backgroundColor: '#0A0A0E',
-  },
-  fallbackCenter: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#0A0A0E',
-  },
-  fallbackText: {
-    color: '#9CA3AF',
-    fontSize: 16,
-    fontWeight: '600',
+    height: '100%',
   },
 });
