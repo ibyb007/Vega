@@ -42,7 +42,6 @@ jobs:
       - name: Decode Release Keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
-          ls -la android/app/release.keystore
 
       - name: Make gradlew executable
         run: chmod +x android/gradlew
@@ -50,13 +49,13 @@ jobs:
       - name: Build Android TV Release APKs
         working-directory: ./android
         env:
-          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
           MYAPP_UPLOAD_STORE_FILE: "release.keystore"
           MYAPP_UPLOAD_STORE_PASSWORD: "${{ secrets.KEYSTORE_PASSWORD }}"
           MYAPP_UPLOAD_KEY_ALIAS: "${{ secrets.KEY_ALIAS }}"
           MYAPP_UPLOAD_KEY_PASSWORD: "${{ secrets.KEY_PASSWORD }}"
         run: |
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
 
       - name: Prepare APK Artifacts
         run: |
@@ -64,22 +63,9 @@ jobs:
           find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" -exec cp {} output_apks/ \;
           ls -la output_apks/
 
-      - name: Collect JS Sourcemaps
-        run: |
-          mkdir -p output_sourcemaps
-          find android/app/build -iname "*.map" -exec cp {} output_sourcemaps/ \; || true
-          ls -la output_sourcemaps/
-
       - name: Upload Android TV APKs
         uses: actions/upload-artifact@v4
         with:
           name: Vega-TV-Release-APKs
           path: output_apks/*.apk
           if-no-files-found: error
-
-      - name: Upload JS Sourcemaps
-        uses: actions/upload-artifact@v4
-        with:
-          name: Vega-TV-Release-Sourcemaps
-          path: output_sourcemaps/*.map
-          if-no-files-found: warn
