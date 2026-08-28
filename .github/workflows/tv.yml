@@ -9,6 +9,8 @@ jobs:
   build-tv:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
     steps:
       - name: Checkout repository
@@ -21,7 +23,7 @@ jobs:
           cache: 'npm'
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: 17
@@ -65,7 +67,7 @@ jobs:
       - name: Collect JS Sourcemaps
         run: |
           mkdir -p output_sourcemaps
-          find android/app/build -iname "*.map" -exec cp {} output_sourcemaps/ \;
+          find android/app/build -iname "*.map" -exec cp {} output_sourcemaps/ \; || true
           ls -la output_sourcemaps/
 
       - name: Upload Android TV APKs
