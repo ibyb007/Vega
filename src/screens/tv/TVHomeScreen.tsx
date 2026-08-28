@@ -1,40 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import useContentStore from '../../lib/zustand/contentStore';
+import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
+import { Post } from '../../lib/providers/types';
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
-}
-
-interface MediaItem {
-  id: string;
-  title: string;
-  posterUrl: string;
-  backdropUrl: string;
-  year?: string | number;
-  rating?: string | number;
-  duration?: string;
-  genres?: string[];
-  overview?: string;
-  link: string;
+  onNavigateRoute?: (route: 'addons' | 'settings') => void;
 }
 
 interface MediaRowProps {
   title: string;
-  items: MediaItem[];
+  posts: Post[];
   isFirstRow?: boolean;
-  onFocusItem: (item: MediaItem) => void;
-  onSelectItem: (item: MediaItem) => void;
+  onFocusItem: (post: Post) => void;
+  onSelectItem: (post: Post) => void;
 }
 
 const MediaRow: React.FC<MediaRowProps> = ({
   title,
-  items,
+  posts,
   isFirstRow = false,
   onFocusItem,
   onSelectItem,
 }) => {
+  if (!posts || posts.length === 0) return null;
+
   return (
     <View style={styles.rowContainer}>
       <Text style={styles.rowTitle}>{title}</Text>
@@ -43,9 +37,9 @@ const MediaRow: React.FC<MediaRowProps> = ({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.rowScroll}
       >
-        {items.map((item, index) => (
+        {posts.map((item, index) => (
           <TVFocusablePressable
-            key={item.id || index}
+            key={`${item.link}-${index}`}
             hasTVPreferredFocus={isFirstRow && index === 0}
             scaleFocused={1.08}
             focusedBorderColor="#8A5CF6"
@@ -57,7 +51,11 @@ const MediaRow: React.FC<MediaRowProps> = ({
             {({ focused }) => (
               <View style={styles.cardInner}>
                 <Image
-                  source={{ uri: item.posterUrl }}
+                  source={{
+                    uri:
+                      item.image ||
+                      'https://placehold.jp/24/363636/ffffff/100x150.png?text=Vega',
+                  }}
                   style={styles.cardPoster}
                   resizeMode="cover"
                 />
@@ -77,78 +75,112 @@ const MediaRow: React.FC<MediaRowProps> = ({
   );
 };
 
-export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({ onSelectItem }) => {
+export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
+  onSelectItem,
+  onNavigateRoute,
+}) => {
+  const provider = useContentStore((state) => state.provider);
+  const installedProviders = useContentStore((state) => state.installedProviders);
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
 
-  // Mock catalog rows - replace/bind with Vega catalog providers
-  const popularMovies: MediaItem[] = [
-    {
-      id: '1',
-      title: 'Margin Call',
-      posterUrl: 'https://image.tmdb.org/t/p/w500/9kkwTszZzWfIuS311F5s3e7qQYc.jpg',
-      backdropUrl: 'https://image.tmdb.org/t/p/original/9r1B3p3F3Esl8nK7f0Qh6vTsk2A.jpg',
-      year: '2011',
-      rating: '7.1',
-      duration: '107 min',
-      genres: ['Drama', 'Thriller'],
-      overview: 'Follows key people at an investment bank over a 24-hour period during the financial crisis.',
-      link: '/movie/margin-call',
-    },
-    {
-      id: '2',
-      title: 'Obsession',
-      posterUrl: 'https://image.tmdb.org/t/p/w500/yF1Vs2Aepn6U3dM6dK2xLq1q.jpg',
-      backdropUrl: 'https://image.tmdb.org/t/p/original/mDeZ8l4K6b9xL3v5A.jpg',
-      year: '2024',
-      rating: '7.9',
-      duration: '111 min',
-      genres: ['Horror', 'Romance', 'Thriller'],
-      overview: 'A novelty charm traps two people in a cycle of dark and supernatural obsession.',
-      link: '/movie/obsession',
-    },
-    {
-      id: '3',
-      title: 'The Invite',
-      posterUrl: 'https://image.tmdb.org/t/p/w500/z6xK7w2xX9L3m1N4x5Y6Z7A.jpg',
-      backdropUrl: 'https://image.tmdb.org/t/p/original/p7L8k9M2N1x5Y6Z7A.jpg',
-      year: '2024',
-      rating: '7.5',
-      duration: '101 min',
-      genres: ['Comedy', 'Drama'],
-      overview: 'A couple invites their neighbors for dinner, setting off an unhinged chain of events.',
-      link: '/movie/the-invite',
-    },
-  ];
+  const hasProviders = Boolean(installedProviders && installedProviders.length > 0 && provider?.value);
 
+  const { data: homeData = [], isLoading } = useHomePageData({
+    provider,
+    enabled: hasProviders,
+  });
+
+  // Pick hero backdrop when catalog loads
   useEffect(() => {
-    if (popularMovies.length > 0 && !activeHero) {
-      setActiveHero(popularMovies[0]);
+    if (homeData && homeData.length > 0) {
+      const hero = getRandomHeroPost(homeData, provider?.value);
+      if (hero) {
+        setActiveHero({
+          title: hero.title,
+          backdropUrl: hero.image,
+          posterUrl: hero.image,
+          overview: 'Select title to browse stream links and episodes.',
+        });
+      }
     }
-  }, []);
+  }, [homeData, provider?.value]);
+
+  // If no extensions/providers are installed, show the TV Tutorial Screen
+  if (!hasProviders) {
+    return (
+      <View style={styles.emptyContainer}>
+        <View style={styles.iconCircle}>
+          <MaterialCommunityIcons name="package-variant-closed" size={72} color="#8A5CF6" />
+        </View>
+
+        <Text style={styles.emptyTitle}>No Provider Installed</Text>
+        <Text style={styles.emptySubtitle}>
+          Install cloud providers from the Addons repository to browse catalogs and stream media.
+        </Text>
+
+        <View style={styles.buttonRow}>
+          <TVFocusablePressable
+            hasTVPreferredFocus={true}
+            scaleFocused={1.06}
+            focusedBorderColor="#FFFFFF"
+            borderRadius={12}
+            onPress={() => onNavigateRoute?.('addons')}
+            style={styles.primaryButton}
+          >
+            {({ focused }) => (
+              <View style={styles.btnContent}>
+                <MaterialCommunityIcons name="download" size={20} color="#FFFFFF" />
+                <Text style={styles.btnText}>Install Cloud Providers</Text>
+              </View>
+            )}
+          </TVFocusablePressable>
+
+          <TVFocusablePressable
+            scaleFocused={1.06}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={12}
+            onPress={() => onNavigateRoute?.('settings')}
+            style={styles.secondaryButton}
+          >
+            {({ focused }) => (
+              <View style={styles.btnContent}>
+                <MaterialCommunityIcons name="cog-outline" size={20} color="#D1D5DB" />
+                <Text style={styles.secondaryBtnText}>Settings</Text>
+              </View>
+            )}
+          </TVFocusablePressable>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      {/* Dynamic Stremio Fanart / Details Header */}
+      {/* Top Dynamic Fanart Header */}
       <TVHeroMeta media={activeHero} />
 
-      {/* Horizontal Carousel Rows */}
+      {/* Catalog Slider Rows */}
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.rowsWrapper}
       >
-        <MediaRow
-          title="Popular Movies"
-          items={popularMovies}
-          isFirstRow={true}
-          onFocusItem={(item) => setActiveHero(item)}
-          onSelectItem={onSelectItem}
-        />
-        <MediaRow
-          title="Popular TV Series"
-          items={popularMovies}
-          onFocusItem={(item) => setActiveHero(item)}
-          onSelectItem={onSelectItem}
-        />
+        {homeData.map((row, index) => (
+          <MediaRow
+            key={`${row.filter}-${index}`}
+            title={row.title}
+            posts={row.Posts}
+            isFirstRow={index === 0}
+            onFocusItem={(post) =>
+              setActiveHero({
+                title: post.title,
+                backdropUrl: post.image,
+                posterUrl: post.image,
+                overview: 'Select title to browse stream links.',
+              })
+            }
+            onSelectItem={onSelectItem}
+          />
+        ))}
       </ScrollView>
     </View>
   );
@@ -158,6 +190,67 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0A0A0E',
+  },
+  emptyContainer: {
+    flex: 1,
+    backgroundColor: '#0A0A0E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+    paddingLeft: 88,
+  },
+  iconCircle: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: 'rgba(138, 92, 246, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  emptyTitle: {
+    color: '#FFFFFF',
+    fontSize: 28,
+    fontWeight: '800',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  emptySubtitle: {
+    color: '#9CA3AF',
+    fontSize: 16,
+    lineHeight: 24,
+    textAlign: 'center',
+    maxWidth: 580,
+    marginBottom: 32,
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  primaryButton: {
+    backgroundColor: '#8A5CF6',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+  },
+  secondaryButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+  },
+  btnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  btnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  secondaryBtnText: {
+    color: '#D1D5DB',
+    fontSize: 15,
+    fontWeight: '600',
   },
   rowsWrapper: {
     paddingBottom: 40,
