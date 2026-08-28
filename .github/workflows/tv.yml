@@ -62,9 +62,22 @@ jobs:
           find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" -exec cp {} output_apks/ \;
           ls -la output_apks/
 
+      - name: Collect JS Sourcemaps
+        run: |
+          mkdir -p output_sourcemaps
+          find android/app/build -iname "*.map" -exec cp {} output_sourcemaps/ \;
+          ls -la output_sourcemaps/
+
       - name: Upload Android TV APKs
         uses: actions/upload-artifact@v4
         with:
           name: Vega-TV-Release-APKs
           path: output_apks/*.apk
           if-no-files-found: error
+
+      - name: Upload JS Sourcemaps
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vega-TV-Release-Sourcemaps
+          path: output_sourcemaps/*.map
+          if-no-files-found: warn
