@@ -1,9 +1,9 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import {useFocusEffect, useNavigation} from '@react-navigation/native';
+import {useNavigation} from '@react-navigation/native';
 import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {StatusBar} from 'expo-status-bar';
-import React, {useCallback, useState} from 'react';
+import React, {useState} from 'react';
 import {
   Dimensions,
   FlatList,
@@ -14,7 +14,6 @@ import {
 import MediaPosterCard from '../components/MediaPosterCard';
 import AppText from '../components/ui/Text';
 import type {WatchListItem} from '../lib/storage';
-import {syncFromSharedFolder} from '../lib/sync/syncService';
 import {showAppDialog} from '../lib/zustand/appDialogStore';
 import useWatchListStore from '../lib/zustand/watchListStore';
 import {useM3Colors} from '../theme/M3PaletteContext';
@@ -26,14 +25,6 @@ const WatchList = () => {
   const removeItem = useWatchListStore(state => state.removeItem);
   const [selectedLinks, setSelectedLinks] = useState<Set<string>>(new Set());
   const isSelectionMode = selectedLinks.size > 0;
-
-  useFocusEffect(
-    useCallback(() => {
-      syncFromSharedFolder().catch(e =>
-        console.warn('[VegaSync] WatchList sync failed:', e),
-      );
-    }, []),
-  );
 
   const handleCardPress = (item: WatchListItem) => {
     if (isSelectionMode) {
@@ -95,7 +86,7 @@ const WatchList = () => {
     if (selectedLinks.size === 0) return;
     const count = selectedLinks.size;
     showAppDialog({
-      title: `Remove from Watchlist?`,
+      title: 'Remove from Watchlist?',
       message: `Are you sure you want to remove ${count} ${
         count === 1 ? 'title' : 'titles'
       } from your watchlist?`,
