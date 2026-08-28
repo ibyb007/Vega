@@ -38,7 +38,10 @@ export default function App() {
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
 
   useEffect(() => {
-    // 1. Initialize Network & Provider Updates silently
+    // Hide bootsplash immediately once React attaches
+    BootSplash.hide({ fade: true }).catch(() => {});
+
+    // Initialize Network & Provider Updates silently
     syncDohSettings().catch(e => console.warn('[DoH] Startup sync failed:', e));
     try {
       updateProvidersService.startAutomaticUpdateCheck();
@@ -46,17 +49,7 @@ export default function App() {
       console.warn('[UpdateProviders] Init failed:', e);
     }
 
-    // 2. Hide Splash Screen safely after layout has attached
-    const hideTimer = setTimeout(async () => {
-      try {
-        await BootSplash.hide({ fade: true });
-      } catch (err) {
-        console.warn('[BootSplash] Hide error:', err);
-      }
-    }, 500);
-
     return () => {
-      clearTimeout(hideTimer);
       try {
         updateProvidersService.stopAutomaticUpdateCheck();
       } catch {}
@@ -132,7 +125,7 @@ export default function App() {
 
                       {currentRoute === 'addons' && (
                         <View style={styles.fallbackCenter}>
-                          <Text style={styles.fallbackText}>Addons & Extensions Manager</Text>
+                          <Text style={styles.fallbackText}>Addons & Extensions</Text>
                         </View>
                       )}
 
