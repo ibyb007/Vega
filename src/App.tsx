@@ -31,38 +31,16 @@ export interface ActiveStreamPayload {
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<TVRoute>('home');
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
-  const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
-    async function init() {
-      try {
-        await syncDohSettings().catch((e) => console.warn('[DoH] Startup sync failed:', e));
-        updateProvidersService.startAutomaticUpdateCheck();
-      } catch (e) {
-        console.warn('[Init] Startup error:', e);
-      } finally {
-        setIsReady(true);
-      }
+    BootSplash.hide({ fade: true }).catch(() => {});
+    syncDohSettings().catch((e) => console.warn('[DoH] Startup sync failed:', e));
+    try {
+      updateProvidersService.startAutomaticUpdateCheck();
+    } catch (e) {
+      console.warn('[UpdateProviders] Init failed:', e);
     }
-
-    init();
-
-    return () => {
-      try {
-        updateProvidersService.stopAutomaticUpdateCheck();
-      } catch {}
-    };
   }, []);
-
-  const onLayoutRootView = useCallback(async () => {
-    if (isReady) {
-      try {
-        await BootSplash.hide({ fade: true });
-      } catch (e) {
-        console.warn('[BootSplash] Hide error:', e);
-      }
-    }
-  }, [isReady]);
 
   return (
     <SafeAreaProvider style={styles.root}>
@@ -70,19 +48,17 @@ export default function App() {
         <M3ThemeProvider>
           <GlobalErrorBoundary>
             <QueryClientProvider client={queryClient}>
-              <View style={styles.root} onLayout={onLayoutRootView}>
+              <View style={styles.root}>
                 <StatusBar hidden={true} />
                 <AppDialogHost />
 
                 {activeStream ? (
-                  /* Fullscreen TV Player */
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
                     onClose={() => setActiveStream(null)}
                   />
                 ) : (
-                  /* Master TV Layout: Collapsible Rail + Dynamic Viewport */
                   <View style={styles.layout}>
                     <TVNavigationRail
                       currentRoute={currentRoute}
@@ -151,7 +127,6 @@ export default function App() {
                   </View>
                 )}
 
-                {/* Vega Isolated Scraper Sandbox Runtime */}
                 <WafWebViewDialog />
                 <ProviderSandboxHost />
               </View>
