@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Image,
   Modal,
   ToastAndroid,
 } from 'react-native';
@@ -53,12 +54,11 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Top Header */}
       <View style={styles.headerRow}>
         <View style={styles.headerTitles}>
           <Text style={styles.headerTitle}>Select Provider Source</Text>
           <Text style={styles.headerSubtitle}>
-            Choose which provider supplies the catalog and search results on your Home Screen
+            Choose which provider supplies the catalog and stream links on your Home Screen
           </Text>
         </View>
 
@@ -70,7 +70,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
             onPress={onNavigateAddons}
             style={[styles.addonsButton, { backgroundColor: primaryColor }]}
           >
-            {({ focused }) => (
+            {() => (
               <View style={styles.btnInner}>
                 <MaterialCommunityIcons name="puzzle-outline" size={20} color="#FFFFFF" />
                 <Text style={styles.addonsButtonText}>Add / Manage Addons</Text>
@@ -80,15 +80,14 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
         )}
       </View>
 
-      {/* Grid of Installed Providers */}
       {installedProviders.length === 0 ? (
         <View style={styles.emptyState}>
           <View style={styles.emptyIconCircle}>
             <MaterialCommunityIcons name="cloud-search-outline" size={64} color="#6B7280" />
           </View>
-          <Text style={styles.emptyTitle}>No Cloud Providers Installed</Text>
+          <Text style={styles.emptyTitle}>No Providers Installed</Text>
           <Text style={styles.emptyDescription}>
-            You haven't installed any provider extensions yet. Go to the Addons tab to add a source repository (e.g. vega-org).
+            You haven't installed any provider extensions yet. Go to the Addons tab and type vega-org to install some.
           </Text>
           {onNavigateAddons && (
             <TVFocusablePressable
@@ -99,7 +98,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               onPress={onNavigateAddons}
               style={[styles.emptyActionBtn, { backgroundColor: primaryColor }]}
             >
-              {({ focused }) => (
+              {() => (
                 <View style={styles.btnInner}>
                   <MaterialCommunityIcons name="download" size={20} color="#FFFFFF" />
                   <Text style={styles.emptyActionBtnText}>Install Providers Now</Text>
@@ -132,16 +131,19 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                   },
                 ]}
               >
-                {({ focused }) => (
+                {() => (
                   <View style={styles.cardInner}>
-                    {/* Top Status Badges */}
                     <View style={styles.cardHeader}>
                       <View style={[styles.avatar, isSelected && { backgroundColor: primaryColor }]}>
-                        <MaterialCommunityIcons
-                          name="server-network"
-                          size={24}
-                          color={isSelected ? '#FFFFFF' : '#9CA3AF'}
-                        />
+                        {item.icon ? (
+                          <Image source={{ uri: item.icon }} style={styles.providerLogo} resizeMode="contain" />
+                        ) : (
+                          <MaterialCommunityIcons
+                            name="server-network"
+                            size={24}
+                            color={isSelected ? '#FFFFFF' : '#9CA3AF'}
+                          />
+                        )}
                       </View>
 
                       <View style={styles.headerBadges}>
@@ -170,7 +172,6 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                       </View>
                     </View>
 
-                    {/* Provider Info */}
                     <View style={styles.cardBody}>
                       <Text numberOfLines={1} style={styles.providerName}>
                         {item.displayTitle || item.name}
@@ -180,7 +181,6 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                       </Text>
                     </View>
 
-                    {/* Bottom Prompt */}
                     <View style={styles.cardFooter}>
                       <Text style={[styles.footerText, isSelected && { color: primaryColor, fontWeight: '700' }]}>
                         {isSelected ? 'Loaded on Home Screen' : 'Press OK to Switch'}
@@ -194,7 +194,6 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
         </ScrollView>
       )}
 
-      {/* Delete Confirmation Dialog */}
       <Modal
         visible={Boolean(providerToDelete)}
         transparent={true}
@@ -218,7 +217,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                 onPress={() => setProviderToDelete(null)}
                 style={styles.cancelBtn}
               >
-                {({ focused }) => <Text style={styles.cancelBtnText}>Cancel</Text>}
+                {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
               </TVFocusablePressable>
 
               <TVFocusablePressable
@@ -228,7 +227,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                 onPress={handleConfirmDelete}
                 style={styles.deleteBtn}
               >
-                {({ focused }) => <Text style={styles.deleteBtnText}>Uninstall</Text>}
+                {() => <Text style={styles.deleteBtnText}>Uninstall</Text>}
               </TVFocusablePressable>
             </View>
           </View>
@@ -308,10 +307,16 @@ const styles = StyleSheet.create({
   avatar: {
     width: 42,
     height: 42,
-    borderRadius: 21,
+    borderRadius: 10,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
+  },
+  providerLogo: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
   },
   headerBadges: {
     flexDirection: 'row',
