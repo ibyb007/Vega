@@ -5,6 +5,9 @@ import { MMKV } from '../Mmkv';
  */
 const SETTINGS_KEYS = {
   USE_EXTERNAL_PLAYER: 'useExternalPlayer',
+  PRIMARY_COLOR: 'primaryColor',
+  IS_CUSTOM_THEME: 'isCustomTheme',
+  ACCENT_SOURCE: 'accentSource',
   EXCLUDED_QUALITIES: 'excludedQualities',
   DOH_ENABLED: 'dohEnabled',
   DOH_PROVIDER: 'dohProvider',
@@ -30,6 +33,37 @@ const SETTINGS_KEYS = {
 } as const;
 
 export class SettingsStorage {
+  // Theme settings (read eagerly by themeStore.ts on app start)
+  getPrimaryColor(): string {
+    return MMKV.getString(SETTINGS_KEYS.PRIMARY_COLOR) || '#FFFFFF';
+  }
+
+  setPrimaryColor(color: string): void {
+    MMKV.setString(SETTINGS_KEYS.PRIMARY_COLOR, color);
+  }
+
+  isCustomTheme(): boolean {
+    return MMKV.getBool(SETTINGS_KEYS.IS_CUSTOM_THEME, false);
+  }
+
+  setCustomTheme(isCustom: boolean): void {
+    MMKV.setBool(SETTINGS_KEYS.IS_CUSTOM_THEME, isCustom);
+  }
+
+  /**
+   * Accent source for the Material 3 palette. `wallpaper` follows Material You
+   * (Android 12+), `custom` derives the palette from the stored seed color.
+   */
+  getAccentSource(): 'wallpaper' | 'custom' {
+    return MMKV.getString(SETTINGS_KEYS.ACCENT_SOURCE) === 'custom'
+      ? 'custom'
+      : 'wallpaper';
+  }
+
+  setAccentSource(source: 'wallpaper' | 'custom'): void {
+    MMKV.setString(SETTINGS_KEYS.ACCENT_SOURCE, source);
+  }
+
   // DNS over HTTPS (DoH)
   isDoHActive(): boolean {
     return MMKV.getBool(SETTINGS_KEYS.DOH_ENABLED, true);
@@ -135,27 +169,27 @@ export class SettingsStorage {
 
   // Subtitles Preferences
   getSubtitleFontSize(): number {
-    return MMKV.getInt(SETTINGS_KEYS.SUBTITLE_FONT_SIZE, 18);
+    return MMKV.getNumber(SETTINGS_KEYS.SUBTITLE_FONT_SIZE) ?? 18;
   }
 
   setSubtitleFontSize(size: number): void {
-    MMKV.setInt(SETTINGS_KEYS.SUBTITLE_FONT_SIZE, size);
+    MMKV.setNumber(SETTINGS_KEYS.SUBTITLE_FONT_SIZE, size);
   }
 
   getSubtitleOpacity(): number {
-    return MMKV.getInt(SETTINGS_KEYS.SUBTITLE_OPACITY, 1);
+    return MMKV.getNumber(SETTINGS_KEYS.SUBTITLE_OPACITY) ?? 1;
   }
 
   setSubtitleOpacity(opacity: number): void {
-    MMKV.setInt(SETTINGS_KEYS.SUBTITLE_OPACITY, opacity);
+    MMKV.setNumber(SETTINGS_KEYS.SUBTITLE_OPACITY, opacity);
   }
 
   getSubtitleBottomPadding(): number {
-    return MMKV.getInt(SETTINGS_KEYS.SUBTITLE_BOTTOM_PADDING, 12);
+    return MMKV.getNumber(SETTINGS_KEYS.SUBTITLE_BOTTOM_PADDING) ?? 12;
   }
 
   setSubtitleBottomPadding(padding: number): void {
-    MMKV.setInt(SETTINGS_KEYS.SUBTITLE_BOTTOM_PADDING, padding);
+    MMKV.setNumber(SETTINGS_KEYS.SUBTITLE_BOTTOM_PADDING, padding);
   }
 
   getSubtitleTextColor(): string {
@@ -193,11 +227,11 @@ export class SettingsStorage {
   }
 
   getSubtitleOutlineWidth(): number {
-    return MMKV.getInt(SETTINGS_KEYS.SUBTITLE_OUTLINE_WIDTH, 2);
+    return MMKV.getNumber(SETTINGS_KEYS.SUBTITLE_OUTLINE_WIDTH) ?? 2;
   }
 
   setSubtitleOutlineWidth(width: number): void {
-    MMKV.setInt(SETTINGS_KEYS.SUBTITLE_OUTLINE_WIDTH, width);
+    MMKV.setNumber(SETTINGS_KEYS.SUBTITLE_OUTLINE_WIDTH, width);
   }
 
   // Appearance
