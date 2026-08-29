@@ -6,10 +6,11 @@ import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
 import { Post } from '../../lib/providers/types';
+import { TVRoute } from '../../components/tv/TVNavigationRail';
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
-  onNavigateRoute?: (route: 'addons' | 'settings') => void;
+  onNavigateRoute?: (route: TVRoute) => void;
 }
 
 interface MediaRowProps {
@@ -106,11 +107,11 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     }
   }, [homeData, provider?.value]);
 
-  // If no extensions or cloud providers exist on first launch, show fallback
+  // If no extensions or cloud providers exist on first launch, show fallback routing to Sources
   if (!hasProviders) {
     return (
       <TVNoProviderFallback
-        onInstallProviders={() => onNavigateRoute?.('addons')}
+        onInstallProviders={() => onNavigateRoute?.('sources')}
         onOpenSettings={() => onNavigateRoute?.('settings')}
       />
     );
