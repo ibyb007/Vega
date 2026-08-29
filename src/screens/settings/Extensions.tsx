@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, memo } from 'react';
 import {
   View,
   Text,
@@ -18,17 +18,98 @@ import { extensionStorage } from '../../lib/storage';
 import { Provider } from '../../lib/providers/types';
 
 interface RepoProviderManifest {
-  name: string;
+  name?: string;
   displayTitle?: string;
+  title?: string;
   version: string;
   type?: string;
   author?: string;
   value: string;
   icon?: string;
   url?: string;
-  sourceUrl?: string;
   [key: string]: any;
 }
+
+// Sub-component for input to prevent focus loss while typing on TV keyboards
+const AddSourceModal = memo(({
+  visible,
+  onClose,
+  onConfirm,
+  isLoading,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onConfirm: (url: string) => void;
+  isLoading: boolean;
+}) => {
+  const [text, setText] = useState('');
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalBox}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Add Source</Text>
+          </View>
+
+          <Text style={styles.modalDesc}>
+            Enter URL of your hosted provider source or GitHub author (e.g.{' '}
+            <Text style={styles.highlightText}>vega-org</Text>):
+          </Text>
+
+          <TextInput
+            value={text}
+            onChangeText={setText}
+            placeholder="GitHub author or source URL"
+            placeholderTextColor="#6B7280"
+            style={styles.textInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+
+          <View style={styles.modalActions}>
+            <TVFocusablePressable
+              scaleFocused={1.05}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={10}
+              onPress={() => {
+                setText('');
+                onClose();
+              }}
+              style={styles.cancelBtn}
+            >
+              {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
+            </TVFocusablePressable>
+
+            <TVFocusablePressable
+              hasTVPreferredFocus={true}
+              scaleFocused={1.05}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={10}
+              onPress={() => onConfirm(text)}
+              style={styles.confirmBtn}
+            >
+              {() => (
+                <View style={styles.btnContent}>
+                  {isLoading ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.confirmBtnText}>Confirm</Text>
+                  )}
+                </View>
+              )}
+            </TVFocusablePressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+});
 
 export default function Extensions({ navigation }: any) {
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
@@ -42,13 +123,9 @@ export default function Extensions({ navigation }: any) {
   const [activeSource, setActiveSource] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
-
-  // Add Source Modal
   const [isModalVisible, setIsModalVisible] = useState(false);
-  const [newSourceInput, setNewSourceInput] = useState('');
   const [isAddingSource, setIsAddingSource] = useState(false);
 
-  // Helper: Read sources safely from MMKV
   const getSavedSources = (): string[] => {
     try {
       const raw = extensionStorage.getString('providerSources');
@@ -59,143 +136,132 @@ export default function Extensions({ navigation }: any) {
     }
   };
 
-  // Helper: Save sources safely to MMKV
   const saveSources = (sources: string[]) => {
     try {
       extensionStorage.set('providerSources', JSON.stringify(sources));
     } catch (e) {
-      console.warn('[Storage] Failed to save sources:', e);
+      console.warn('[Storage] Error:', e);
     }
   };
 
-  // Fetch Manifest from a Repository URL
-  const fetchManifestFromUrl = async (url: string): Promise<RepoProviderManifest[]> => {
+  const fetchManifest = async (url: string): Promise<RepoProviderManifest[]> => {
     const res = await axios.get(url, {
       timeout: 10000,
-      headers: {
-        'Cache-Control': 'no-cache',
-        Pragma: 'no-cache',
-      },
+      headers: { 'Cache-Control': 'no-cache' },
     });
-
     const data = res.data;
-    if (Array.isArray(data)) {
-      return data;
-    }
-    if (data && Array.isArray(data.providers)) {
-      return data.providers;
-    }
-    if (data && Array.isArray(data.extensions)) {
-      return data.extensions;
-    }
-    return [];
+    let list: RepoProviderManifest[] = [];
+    if (Array.isArray(data)) list = data;
+    else if (data?.providers && Array.isArray(data.providers)) list = data.providers;
+    else if (data?.extensions && Array.isArray(data.extensions)) list = data.extensions;
+
+    // Sanitize titles and versions to prevent undefined localeCompare crashes
+    return list.map((item) => ({
+      ...item,
+      displayTitle: item.displayTitle || item.title || item.name || item.value || 'Provider',
+      name: item.name || item.displayTitle || item.title || item.value || 'Provider',
+      version: item.version || '1.0.0',
+    }));
   };
 
-  // Load repositories and active providers
-  const loadSourcesAndProviders = useCallback(async () => {
+  const loadSources = useCallback(async () => {
     setIsRefreshing(true);
     try {
       const saved = getSavedSources();
       setSourcesList(saved);
-
       if (saved.length > 0) {
-        const currentSrc = saved[0];
-        setActiveSource(currentSrc);
-        const providers = await fetchManifestFromUrl(currentSrc);
-        setAvailableProviders(providers);
-      } else {
-        setAvailableProviders([]);
+        const src = saved[0];
+        setActiveSource(src);
+        const provs = await fetchManifest(src);
+        setAvailableProviders(provs);
       }
     } catch (e) {
-      console.warn('[Extensions] Error loading sources:', e);
-      setAvailableProviders([]);
+      console.warn('[Extensions] Load error:', e);
     } finally {
       setIsRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    loadSourcesAndProviders();
-  }, [loadSourcesAndProviders]);
+    loadSources();
+  }, [loadSources]);
 
-  // Handle Adding New Source / Author (e.g. vega-org)
-  const handleAddSource = async () => {
-    const trimmed = newSourceInput.trim();
+  const handleAddSource = async (rawInput: string) => {
+    const trimmed = rawInput.trim();
     if (!trimmed) return;
 
     setIsAddingSource(true);
     try {
       let finalUrl = trimmed;
       if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-        // Automatically resolve GitHub organization shortcut
         finalUrl = `https://raw.githubusercontent.com/${trimmed}/vega-providers/main/manifest.json`;
       }
 
-      // Test fetching the manifest before saving
-      const providers = await fetchManifestFromUrl(finalUrl);
-
-      if (!providers || providers.length === 0) {
-        throw new Error('No valid providers found at this source URL');
+      const provs = await fetchManifest(finalUrl);
+      if (!provs || provs.length === 0) {
+        throw new Error('No valid providers found at this URL');
       }
 
       const updated = Array.from(new Set([...getSavedSources(), finalUrl]));
       saveSources(updated);
       setSourcesList(updated);
       setActiveSource(finalUrl);
-      setAvailableProviders(providers);
+      setAvailableProviders(provs);
 
-      ToastAndroid.show(`Found ${providers.length} available providers!`, ToastAndroid.SHORT);
-      setNewSourceInput('');
+      ToastAndroid.show(`Found ${provs.length} available providers!`, ToastAndroid.SHORT);
       setIsModalVisible(false);
     } catch (err: any) {
-      const msg = err?.response?.status === 404
-        ? 'Repository manifest.json not found'
-        : err?.message || 'Failed to add source';
-      ToastAndroid.show(msg, ToastAndroid.LONG);
+      ToastAndroid.show(err?.message || 'Failed to add source', ToastAndroid.LONG);
     } finally {
       setIsAddingSource(false);
     }
   };
 
-  // Toggle Install / Uninstall
   const handleToggleInstall = async (item: RepoProviderManifest) => {
     const isInstalled = installedProviders.some((p) => p.value === item.value);
     setInstallingMap((prev) => ({ ...prev, [item.value]: true }));
 
     try {
       if (isInstalled) {
-        // Uninstall
         const nextList = installedProviders.filter((p) => p.value !== item.value);
         setInstalledProviders(nextList);
         if (activeProvider?.value === item.value) {
           setProvider(nextList.length > 0 ? nextList[0] : null);
         }
-        ToastAndroid.show(`Uninstalled ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
+        ToastAndroid.show(`Uninstalled ${item.displayTitle}`, ToastAndroid.SHORT);
       } else {
-        // Install: fetch provider file if external url provided or construct provider object
-        let scriptCode = '';
-        if (item.url) {
+        // Construct full remote raw script URL
+        let scriptUrl = item.url;
+        if (!scriptUrl && activeSource) {
+          const basePath = activeSource.substring(0, activeSource.lastIndexOf('/'));
+          scriptUrl = `${basePath}/${item.value}.js`;
+        }
+
+        let code = '';
+        if (scriptUrl) {
           try {
-            const scriptRes = await axios.get(item.url, { timeout: 8000 });
-            scriptCode = typeof scriptRes.data === 'string' ? scriptRes.data : JSON.stringify(scriptRes.data);
-          } catch {}
+            const codeRes = await axios.get(scriptUrl, { timeout: 10000 });
+            code = typeof codeRes.data === 'string' ? codeRes.data : JSON.stringify(codeRes.data);
+          } catch (err) {
+            console.warn(`[Install] Could not pre-fetch script for ${item.value}`);
+          }
         }
 
         const newProvider: Provider = {
           name: item.name || item.value,
           displayTitle: item.displayTitle || item.name || item.value,
           value: item.value,
-          version: item.version || '1.0.0',
+          version: item.version,
           type: (item.type as any) || 'cloud',
           icon: item.icon,
-          code: scriptCode,
-          sourceUrl: item.url || activeSource,
+          code: code,
+          sourceUrl: scriptUrl || activeSource,
         };
 
         const nextList = [...installedProviders.filter((p) => p.value !== item.value), newProvider];
         setInstalledProviders(nextList);
 
-        // Automatically set as active if no active provider is selected yet
+        // Auto-select provider on first install
         if (!activeProvider) {
           setProvider(newProvider);
         }
@@ -203,7 +269,7 @@ export default function Extensions({ navigation }: any) {
         ToastAndroid.show(`Installed ${newProvider.displayTitle}!`, ToastAndroid.SHORT);
       }
     } catch (e: any) {
-      ToastAndroid.show(e?.message || 'Installation failed', ToastAndroid.LONG);
+      ToastAndroid.show(e?.message || 'Operation failed', ToastAndroid.LONG);
     } finally {
       setInstallingMap((prev) => ({ ...prev, [item.value]: false }));
     }
@@ -211,12 +277,11 @@ export default function Extensions({ navigation }: any) {
 
   return (
     <View style={styles.container}>
-      {/* Top Header */}
       <View style={styles.headerRow}>
         <View>
           <Text style={styles.screenTitle}>Providers & Addons</Text>
           <Text style={styles.screenSubtitle}>
-            Install, update and manage scraper extension repositories
+            Install and manage scraper extension repositories
           </Text>
         </View>
 
@@ -225,7 +290,7 @@ export default function Extensions({ navigation }: any) {
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={10}
-            onPress={() => loadSourcesAndProviders()}
+            onPress={() => loadSources()}
             style={styles.iconBtn}
           >
             {({ focused }) => (
@@ -245,7 +310,7 @@ export default function Extensions({ navigation }: any) {
             onPress={() => setIsModalVisible(true)}
             style={[styles.addSourceBtn, { backgroundColor: primaryColor }]}
           >
-            {({ focused }) => (
+            {() => (
               <View style={styles.btnContent}>
                 <MaterialCommunityIcons name="plus" size={20} color="#FFFFFF" />
                 <Text style={styles.addSourceBtnText}>Add Source</Text>
@@ -255,7 +320,6 @@ export default function Extensions({ navigation }: any) {
         </View>
       </View>
 
-      {/* Active Source Banner */}
       {activeSource ? (
         <View style={styles.sourceBar}>
           <Text style={styles.sourceBarLabel}>Active Source:</Text>
@@ -265,7 +329,6 @@ export default function Extensions({ navigation }: any) {
         </View>
       ) : null}
 
-      {/* Available Providers List */}
       {isRefreshing ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={primaryColor} />
@@ -276,7 +339,7 @@ export default function Extensions({ navigation }: any) {
           <MaterialCommunityIcons name="package-variant" size={72} color="#4B5563" />
           <Text style={styles.emptyTitle}>No providers available</Text>
           <Text style={styles.emptySubtitle}>
-            Add a source repository (e.g. <Text style={styles.highlightText}>vega-org</Text>) to view and install providers.
+            Click "Add Source" above and type <Text style={styles.highlightText}>vega-org</Text> to load available scrapers.
           </Text>
         </View>
       ) : (
@@ -296,11 +359,11 @@ export default function Extensions({ navigation }: any) {
                   </View>
                   <View style={styles.providerInfo}>
                     <View style={styles.titleLine}>
-                      <Text style={styles.providerName}>{item.displayTitle || item.name}</Text>
-                      <Text style={styles.versionBadge}>v{item.version || '1.0.0'}</Text>
+                      <Text style={styles.providerName}>{item.displayTitle}</Text>
+                      <Text style={styles.versionBadge}>v{item.version}</Text>
                     </View>
                     <Text style={styles.providerMeta}>
-                      {item.type || 'Global'} • {item.author || 'Community'}
+                      {item.type || 'Global'} • {item.author || 'Vega-Org'}
                     </Text>
                   </View>
                 </View>
@@ -315,7 +378,7 @@ export default function Extensions({ navigation }: any) {
                     isInstalled ? styles.uninstallBtn : styles.installBtn,
                   ]}
                 >
-                  {({ focused }) => (
+                  {() => (
                     <View style={styles.btnContent}>
                       {isInstalling ? (
                         <ActivityIndicator size="small" color="#FFFFFF" />
@@ -340,70 +403,12 @@ export default function Extensions({ navigation }: any) {
         </ScrollView>
       )}
 
-      {/* Centered Add Source Modal */}
-      <Modal
+      <AddSourceModal
         visible={isModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setIsModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add Source</Text>
-            </View>
-
-            <Text style={styles.modalDesc}>
-              Enter URL of your hosted provider source or GitHub author (e.g.{' '}
-              <Text style={styles.highlightText}>vega-org</Text>):
-            </Text>
-
-            <TextInput
-              value={newSourceInput}
-              onChangeText={setNewSourceInput}
-              placeholder="GitHub author or source URL"
-              placeholderTextColor="#6B7280"
-              style={styles.textInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <View style={styles.modalActions}>
-              <TVFocusablePressable
-                scaleFocused={1.05}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={10}
-                onPress={() => {
-                  setNewSourceInput('');
-                  setIsModalVisible(false);
-                }}
-                style={styles.cancelBtn}
-              >
-                {({ focused }) => <Text style={styles.cancelBtnText}>Cancel</Text>}
-              </TVFocusablePressable>
-
-              <TVFocusablePressable
-                hasTVPreferredFocus={true}
-                scaleFocused={1.05}
-                focusedBorderColor="#FFFFFF"
-                borderRadius={10}
-                onPress={handleAddSource}
-                style={[styles.confirmBtn, { backgroundColor: primaryColor }]}
-              >
-                {({ focused }) => (
-                  <View style={styles.btnContent}>
-                    {isAddingSource ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.confirmBtnText}>Confirm</Text>
-                    )}
-                  </View>
-                )}
-              </TVFocusablePressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        isLoading={isAddingSource}
+        onClose={() => setIsModalVisible(false)}
+        onConfirm={handleAddSource}
+      />
     </View>
   );
 }
@@ -616,6 +621,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   confirmBtn: {
+    backgroundColor: '#8A5CF6',
     paddingVertical: 10,
     paddingHorizontal: 20,
   },
