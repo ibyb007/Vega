@@ -16,10 +16,10 @@ import { updateProvidersService } from './lib/services/UpdateProviders';
 // TV Architecture Components & Screens
 import { TVNavigationRail, TVRoute } from './components/tv/TVNavigationRail';
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
+import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
 import TVSearch from './screens/Search';
-import WatchList from './screens/WatchList';
 import Extensions from './screens/settings/Extensions';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -122,7 +122,11 @@ export default function App() {
                         />
                       )}
 
-                      {currentRoute === 'library' && <WatchList />}
+                      {currentRoute === 'sources' && (
+                        <TVSourceSelectScreen
+                          onNavigateHome={() => setCurrentRoute('home')}
+                        />
+                      )}
 
                       {currentRoute === 'addons' && (
                         <Extensions
