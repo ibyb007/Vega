@@ -6,6 +6,7 @@ import {
   ScrollView,
   Modal,
   TextInput,
+  Image,
   ActivityIndicator,
   ToastAndroid,
 } from 'react-native';
@@ -18,7 +19,7 @@ import { extensionStorage } from '../../lib/storage';
 import { Provider } from '../../lib/providers/types';
 
 interface RepoProviderManifest {
-  name?: string;
+  name: string;
   displayTitle?: string;
   title?: string;
   version: string;
@@ -30,7 +31,6 @@ interface RepoProviderManifest {
   [key: string]: any;
 }
 
-// Sub-component for input to prevent focus loss while typing on TV keyboards
 const AddSourceModal = memo(({
   visible,
   onClose,
@@ -119,7 +119,6 @@ export default function Extensions({ navigation }: any) {
   const activeProvider = useContentStore((state) => state.provider);
 
   const [availableProviders, setAvailableProviders] = useState<RepoProviderManifest[]>([]);
-  const [sourcesList, setSourcesList] = useState<string[]>([]);
   const [activeSource, setActiveSource] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
@@ -144,36 +143,52 @@ export default function Extensions({ navigation }: any) {
     }
   };
 
+  const sanitizeManifestList = (rawList: any[]): RepoProviderManifest[] => {
+    if (!Array.isArray(rawList)) return [];
+    return rawList
+      .filter((item) => item && (item.value || item.name))
+      .map((item) => {
+        const fallbackName = item.name || item.displayTitle || item.title || item.value || 'Provider';
+        return {
+          ...item,
+          name: fallbackName,
+          displayTitle: item.displayTitle || fallbackName,
+          title: item.title || fallbackName,
+          value: item.value || fallbackName.toLowerCase().replace(/\s+/g, '-'),
+          version: String(item.version || '1.0.0'),
+          author: item.author || 'Vega-Org',
+          type: item.type || 'global',
+          icon: item.icon,
+        };
+      })
+      .sort((a, b) => (a.displayTitle || a.name || '').localeCompare(b.displayTitle || b.name || ''));
+  };
+
   const fetchManifest = async (url: string): Promise<RepoProviderManifest[]> => {
     const res = await axios.get(url, {
       timeout: 10000,
       headers: { 'Cache-Control': 'no-cache' },
     });
     const data = res.data;
-    let list: RepoProviderManifest[] = [];
+    let list: any[] = [];
     if (Array.isArray(data)) list = data;
     else if (data?.providers && Array.isArray(data.providers)) list = data.providers;
     else if (data?.extensions && Array.isArray(data.extensions)) list = data.extensions;
 
-    // Sanitize titles and versions to prevent undefined localeCompare crashes
-    return list.map((item) => ({
-      ...item,
-      displayTitle: item.displayTitle || item.title || item.name || item.value || 'Provider',
-      name: item.name || item.displayTitle || item.title || item.value || 'Provider',
-      version: item.version || '1.0.0',
-    }));
+    return sanitizeManifestList(list);
   };
 
   const loadSources = useCallback(async () => {
     setIsRefreshing(true);
     try {
       const saved = getSavedSources();
-      setSourcesList(saved);
       if (saved.length > 0) {
         const src = saved[0];
         setActiveSource(src);
         const provs = await fetchManifest(src);
         setAvailableProviders(provs);
+      } else {
+        setAvailableProviders([]);
       }
     } catch (e) {
       console.warn('[Extensions] Load error:', e);
@@ -202,9 +217,8 @@ export default function Extensions({ navigation }: any) {
         throw new Error('No valid providers found at this URL');
       }
 
-      const updated = Array.from(new Set([...getSavedSources(), finalUrl]));
+      const updated = Array.from(new Set([finalUrl, ...getSavedSources()]));
       saveSources(updated);
-      setSourcesList(updated);
       setActiveSource(finalUrl);
       setAvailableProviders(provs);
 
@@ -230,7 +244,6 @@ export default function Extensions({ navigation }: any) {
         }
         ToastAndroid.show(`Uninstalled ${item.displayTitle}`, ToastAndroid.SHORT);
       } else {
-        // Construct full remote raw script URL
         let scriptUrl = item.url;
         if (!scriptUrl && activeSource) {
           const basePath = activeSource.substring(0, activeSource.lastIndexOf('/'));
@@ -240,16 +253,16 @@ export default function Extensions({ navigation }: any) {
         let code = '';
         if (scriptUrl) {
           try {
-            const codeRes = await axios.get(scriptUrl, { timeout: 10000 });
+            const codeRes = await axios.get(scriptUrl, { timeout: 12000 });
             code = typeof codeRes.data === 'string' ? codeRes.data : JSON.stringify(codeRes.data);
           } catch (err) {
-            console.warn(`[Install] Could not pre-fetch script for ${item.value}`);
+            console.warn(`[Install] Could not download script for ${item.value}`);
           }
         }
 
         const newProvider: Provider = {
-          name: item.name || item.value,
-          displayTitle: item.displayTitle || item.name || item.value,
+          name: item.name,
+          displayTitle: item.displayTitle || item.name,
           value: item.value,
           version: item.version,
           type: (item.type as any) || 'cloud',
@@ -261,7 +274,6 @@ export default function Extensions({ navigation }: any) {
         const nextList = [...installedProviders.filter((p) => p.value !== item.value), newProvider];
         setInstalledProviders(nextList);
 
-        // Auto-select provider on first install
         if (!activeProvider) {
           setProvider(newProvider);
         }
@@ -281,7 +293,7 @@ export default function Extensions({ navigation }: any) {
         <View>
           <Text style={styles.screenTitle}>Providers & Addons</Text>
           <Text style={styles.screenSubtitle}>
-            Install and manage scraper extension repositories
+            Install and manage streaming scraper extension repositories
           </Text>
         </View>
 
@@ -293,11 +305,11 @@ export default function Extensions({ navigation }: any) {
             onPress={() => loadSources()}
             style={styles.iconBtn}
           >
-            {({ focused }) => (
+            {() => (
               <MaterialCommunityIcons
                 name="refresh"
                 size={22}
-                color={focused ? '#FFFFFF' : '#9CA3AF'}
+                color="#FFFFFF"
               />
             )}
           </TVFocusablePressable>
@@ -339,7 +351,7 @@ export default function Extensions({ navigation }: any) {
           <MaterialCommunityIcons name="package-variant" size={72} color="#4B5563" />
           <Text style={styles.emptyTitle}>No providers available</Text>
           <Text style={styles.emptySubtitle}>
-            Click "Add Source" above and type <Text style={styles.highlightText}>vega-org</Text> to load available scrapers.
+            Click "Add Source" and enter <Text style={styles.highlightText}>vega-org</Text> to load extensions.
           </Text>
         </View>
       ) : (
@@ -355,7 +367,11 @@ export default function Extensions({ navigation }: any) {
               <View key={`${item.value}-${index}`} style={styles.providerRow}>
                 <View style={styles.providerLeft}>
                   <View style={styles.providerIconWrapper}>
-                    <MaterialCommunityIcons name="cloud-outline" size={28} color="#8A5CF6" />
+                    {item.icon ? (
+                      <Image source={{ uri: item.icon }} style={styles.providerLogo} resizeMode="contain" />
+                    ) : (
+                      <MaterialCommunityIcons name="cloud-outline" size={28} color="#8A5CF6" />
+                    )}
                   </View>
                   <View style={styles.providerInfo}>
                     <View style={styles.titleLine}>
@@ -503,10 +519,16 @@ const styles = StyleSheet.create({
   providerIconWrapper: {
     width: 48,
     height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(138, 92, 246, 0.12)',
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
+  },
+  providerLogo: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
   },
   providerInfo: {
     gap: 2,
