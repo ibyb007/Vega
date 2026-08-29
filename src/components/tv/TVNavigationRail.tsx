@@ -8,7 +8,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { TVFocusablePressable } from './TVFocusablePressable';
 
-export type TVRoute = 'home' | 'search' | 'discover' | 'library' | 'addons' | 'settings';
+export type TVRoute = 'home' | 'search' | 'discover' | 'sources' | 'addons' | 'settings';
 
 interface TVNavigationRailProps {
   currentRoute: TVRoute;
@@ -19,7 +19,7 @@ const NAV_ITEMS: { id: TVRoute; label: string; icon: keyof typeof MaterialCommun
   { id: 'search', label: 'Search', icon: 'magnify' },
   { id: 'home', label: 'Home', icon: 'home-variant' },
   { id: 'discover', label: 'Discover', icon: 'compass-outline' },
-  { id: 'library', label: 'Library', icon: 'bookmark-outline' },
+  { id: 'sources', label: 'Sources', icon: 'database-outline' },
   { id: 'addons', label: 'Addons', icon: 'puzzle-outline' },
   { id: 'settings', label: 'Settings', icon: 'cog-outline' },
 ];
@@ -68,7 +68,6 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
                 if (focused) setIsExpanded(true);
               }}
               onBlur={() => {
-                // Collapse only if focus leaves sidebar entirely
                 setTimeout(() => setIsExpanded(false), 80);
               }}
               onPress={() => onRouteChange(item.id)}
