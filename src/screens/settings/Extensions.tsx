@@ -1,605 +1,565 @@
-import React, {useState, useEffect, useMemo, useCallback} from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
-  Pressable,
-  StatusBar,
-  FlatList,
-  RefreshControl,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Modal,
+  TextInput,
+  ActivityIndicator,
+  ToastAndroid,
 } from 'react-native';
-import {NativeStackScreenProps} from '@react-navigation/native-stack';
-import {SettingsStackParamList} from '../../App';
-import {MaterialCommunityIcons, FontAwesome6} from '@expo/vector-icons';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
-import {
-  extensionStorage,
-  ProviderExtension,
-  ProviderSource,
-} from '../../lib/storage/extensionStorage';
-import {extensionManager} from '../../lib/services/ExtensionManager';
-import {
-  updateProvidersService,
-  UpdateInfo,
-} from '../../lib/services/UpdateProviders';
-import ProviderSourceManager from './components/ProviderSourceManager';
-import ProviderCard, {ProviderTestStatus} from './components/ProviderCard';
-import {
-  ProviderDiagnosticError,
-  testProvider,
-} from '../../lib/services/providerDiagnostics';
-import AppDialog, {
-  AppDialogAction,
-  AppDialogVariant,
-} from '../../components/AppDialog';
-import ProviderTestProgressDialog, {
-  ProviderTestStepState,
-} from '../../components/ProviderTestProgressDialog';
-import ProviderSettingsModal from './components/ProviderSettingsModal';
-import type {ProviderDiagnosticProgress} from '../../lib/services/providerDiagnostics';
-import AppText from '../../components/ui/Text';
-import {useM3Colors} from '../../theme/M3PaletteContext';
+import useThemeStore from '../../lib/zustand/themeStore';
+import { extensionStorage } from '../../lib/storage';
+import { updateProvidersService } from '../../lib/services/UpdateProviders';
+import { Provider } from '../../lib/providers/types';
 
-type Props = NativeStackScreenProps<SettingsStackParamList, 'Extensions'>;
-
-interface DialogState {
-  title: string;
-  message: string;
-  variant: AppDialogVariant;
-  actions?: AppDialogAction[];
+interface AvailableProviderItem {
+  name: string;
+  displayTitle?: string;
+  version: string;
+  type?: string;
+  author?: string;
+  value: string;
+  icon?: string;
 }
 
-interface ProviderTestState {
-  providerName: string;
-  steps: ProviderTestStepState;
-  resultMessage?: string;
-}
+export default function Extensions({ navigation }: any) {
+  const primaryColor = useThemeStore((state) => state.primaryColor);
+  const installedProviders = useContentStore((state) => state.installedProviders);
+  const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
+  const setProvider = useContentStore((state) => state.setProvider);
+  const activeProvider = useContentStore((state) => state.provider);
 
-const createProviderTestSteps = (): ProviderTestStepState => ({
-  catalog: 'pending',
-  posts: 'pending',
-  metadata: 'pending',
-  playback: 'pending',
-  streams: 'pending',
-});
+  const [availableProviders, setAvailableProviders] = useState<AvailableProviderItem[]>([]);
+  const [sourcesList, setSourcesList] = useState<string[]>([]);
+  const [activeSource, setActiveSource] = useState<string>('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
 
-const isSameProvider = (
-  left: ProviderExtension | undefined,
-  right: ProviderExtension,
-) =>
-  left?.value === right.value && left.source?.author === right.source?.author;
+  // Add Source Modal State
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [newSourceInput, setNewSourceInput] = useState('');
+  const [isAddingSource, setIsAddingSource] = useState(false);
 
-const Extensions = ({navigation}: Props) => {
-  const colors = useM3Colors();
-  const primary = colors.primary;
-  const activeExtensionProvider = useContentStore(state => state.provider);
-  const setActiveExtensionProvider = useContentStore(
-    state => state.setProvider,
-  );
-  const installedProviders = useContentStore(state => state.installedProviders);
-  const availableProviders = useContentStore(state => state.availableProviders);
-  const setInstalledProviders = useContentStore(
-    state => state.setInstalledProviders,
-  );
-  const setAvailableProviders = useContentStore(
-    state => state.setAvailableProviders,
-  );
+  // Load existing repository sources
+  const loadSourcesAndProviders = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const savedSources: string[] = extensionStorage.getArray('providerSources') || [];
+      setSourcesList(savedSources);
 
-  const [installingProvider, setInstallingProvider] = useState<string | null>(
-    null,
-  );
-  const [updatingProvider, setUpdatingProvider] = useState<string | null>(null);
-  const [updateInfos, setUpdateInfos] = useState<UpdateInfo[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [dialog, setDialog] = useState<DialogState | null>(null);
-  const [providerTest, setProviderTest] = useState<ProviderTestState | null>(
-    null,
-  );
-  const [settingsProvider, setSettingsProvider] =
-    useState<ProviderExtension | null>(null);
-  const [providerTestStatuses, setProviderTestStatuses] = useState<
-    Record<string, ProviderTestStatus>
-  >({});
-  const [activeSourceAuthor, setActiveSourceAuthor] = useState<string>(
-    extensionStorage.getProviderSource()?.author || '',
-  );
+      const currentSrc = savedSources[0] || '';
+      setActiveSource(currentSrc);
 
-  const showDialog = (
-    title: string,
-    message: string,
-    variant: AppDialogVariant = 'info',
-    actions?: AppDialogAction[],
-  ) => setDialog({title, message, variant, actions});
-
-  useEffect(() => {
-    const initialSource = extensionStorage.getProviderSource();
-    const initialAuthor = initialSource?.author || '';
-    setActiveSourceAuthor(initialAuthor);
-    loadProviders(initialAuthor);
-
-    const initializeExtensions = async () => {
-      try {
-        await extensionManager.initialize();
-        const currentSource = extensionStorage.getProviderSource();
-        const author = currentSource?.author || '';
-        if (author !== initialAuthor) {
-          setActiveSourceAuthor(author);
-          loadProviders(author);
-        }
-        await checkForUpdates(false);
-        const cachedAvailable = author
-          ? extensionStorage.getAvailableProviders(author)
-          : [];
-        if (author && cachedAvailable.length === 0) {
-          await refreshProviders(author);
-        }
-      } catch (error) {
-        console.warn('Background extensions initialization error:', error);
+      if (currentSrc) {
+        await fetchRepositoryProviders(currentSrc);
       }
-    };
-    initializeExtensions();
+    } catch (e) {
+      console.warn('[Extensions] Load error:', e);
+    } finally {
+      setIsRefreshing(false);
+    }
   }, []);
 
-  const loadProviders = (author?: string) => {
-    const selectedAuthor =
-      author || extensionStorage.getProviderSource()?.author || '';
-    const installed = extensionStorage.getInstalledProviders() || [];
-    const available = selectedAuthor
-      ? extensionStorage.getAvailableProviders(selectedAuthor)
-      : [];
-    setInstalledProviders(installed);
-    setAvailableProviders(available.filter(item => item && !item.disabled));
-    setActiveSourceAuthor(selectedAuthor);
-  };
-
-  const checkForUpdates = async (force = true) => {
-    const source = extensionStorage.getProviderSource();
-    if (!source) {
-      setUpdateInfos([]);
-      return;
-    }
+  const fetchRepositoryProviders = async (sourceUrl: string) => {
     try {
-      const updates = await updateProvidersService.checkForUpdatesManual(force);
-      setUpdateInfos(updates);
-    } catch (error) {
-      console.error('Error checking for updates:', error);
+      const providers = await updateProvidersService.fetchAvailableProviders(sourceUrl);
+      setAvailableProviders(providers || []);
+    } catch (e) {
+      console.warn('[Extensions] Fetch repo providers failed:', e);
+      setAvailableProviders([]);
     }
   };
 
-  const handleUpdateProvider = async (provider: ProviderExtension) => {
-    if (!provider || !provider.value) {
-      showDialog('Error', 'Invalid provider data', 'error');
-      return;
-    }
-    const providerKey = `${provider.source?.author || ''}:${provider.value}`;
-    setUpdatingProvider(providerKey);
+  useEffect(() => {
+    loadSourcesAndProviders();
+  }, [loadSourcesAndProviders]);
+
+  const handleAddSource = async () => {
+    const trimmed = newSourceInput.trim();
+    if (!trimmed) return;
+
+    setIsAddingSource(true);
     try {
-      const success = await updateProvidersService.updateProvider(provider);
-      if (success) {
-        loadProviders();
-        await checkForUpdates();
-        if (
-          activeExtensionProvider?.value === provider.value &&
-          activeExtensionProvider?.source?.author === provider.source?.author
-        ) {
-          setActiveExtensionProvider(provider);
+      let finalUrl = trimmed;
+      if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+        // Handle GitHub author shortcut like vega-org
+        finalUrl = `https://raw.githubusercontent.com/${trimmed}/vega-providers/main/manifest.json`;
+      }
+
+      const updatedSources = Array.from(new Set([...sourcesList, finalUrl]));
+      extensionStorage.setArray('providerSources', updatedSources);
+      setSourcesList(updatedSources);
+      setActiveSource(finalUrl);
+
+      await fetchRepositoryProviders(finalUrl);
+      ToastAndroid.show('Source added successfully', ToastAndroid.SHORT);
+      setNewSourceInput('');
+      setIsModalVisible(false);
+    } catch (err: any) {
+      ToastAndroid.show(err?.message || 'Failed to fetch source', ToastAndroid.LONG);
+    } finally {
+      setIsAddingSource(false);
+    }
+  };
+
+  const handleToggleInstall = async (item: AvailableProviderItem) => {
+    const isInstalled = installedProviders.some((p) => p.value === item.value);
+    setInstallingMap((prev) => ({ ...prev, [item.value]: true }));
+
+    try {
+      if (isInstalled) {
+        // Uninstall provider
+        const nextList = installedProviders.filter((p) => p.value !== item.value);
+        setInstalledProviders(nextList);
+        if (activeProvider?.value === item.value) {
+          setProvider(nextList[0] || null);
         }
+        ToastAndroid.show(`Uninstalled ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
       } else {
-        showDialog(
-          'Error',
-          'Failed to update provider. Please try again.',
-          'error',
-        );
+        // Install provider
+        const fullProvider = await updateProvidersService.installProvider(activeSource, item.value);
+        const nextList = [...installedProviders.filter((p) => p.value !== item.value), fullProvider];
+        setInstalledProviders(nextList);
+        if (!activeProvider) {
+          setProvider(fullProvider);
+        }
+        ToastAndroid.show(`Installed ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
       }
-    } catch (error) {
-      console.error('Update error:', error);
-      showDialog(
-        'Error',
-        'Failed to update provider. Please try again.',
-        'error',
-      );
+    } catch (e: any) {
+      ToastAndroid.show(e?.message || 'Operation failed', ToastAndroid.LONG);
     } finally {
-      setUpdatingProvider(null);
+      setInstallingMap((prev) => ({ ...prev, [item.value]: false }));
     }
   };
-
-  const handleInstallProvider = async (provider: ProviderExtension) => {
-    if (!provider || !provider.value) {
-      showDialog('Error', 'Invalid provider data', 'error');
-      return;
-    }
-    const providerKey = `${provider.source?.author || ''}:${provider.value}`;
-    setInstallingProvider(providerKey);
-    try {
-      await extensionManager.installProvider(provider);
-      loadProviders();
-      const refreshedInstalledProviders =
-        extensionStorage.getInstalledProviders() || [];
-      setInstalledProviders(refreshedInstalledProviders);
-
-      const currentProvider = useContentStore.getState().provider;
-      const currentProviderIsInstalled = refreshedInstalledProviders.some(
-        installedProvider => isSameProvider(installedProvider, currentProvider),
-      );
-      const installedSameValueFromAnotherSource =
-        currentProvider?.value === provider.value &&
-        currentProvider.source?.author !== provider.source?.author;
-      if (
-        !currentProvider?.value ||
-        !currentProviderIsInstalled ||
-        installedSameValueFromAnotherSource
-      ) {
-        setActiveExtensionProvider(provider);
-      }
-    } catch (error) {
-      console.error('Installation error:', error);
-      showDialog(
-        'Error',
-        'Failed to install provider. Please try again.',
-        'error',
-      );
-    } finally {
-      setInstallingProvider(null);
-    }
-  };
-
-  const handleUninstallProvider = (provider: ProviderExtension) => {
-    if (!provider || !provider.value) {
-      showDialog('Error', 'Invalid provider data', 'error');
-      return;
-    }
-    showDialog(
-      'Uninstall Provider',
-      `Are you sure you want to uninstall ${
-        provider.display_name || 'this provider'
-      }?`,
-      'warning',
-      [
-        {label: 'Cancel'},
-        {
-          label: 'Uninstall',
-          variant: 'destructive',
-          testID: `confirm-uninstall-${provider.value}`,
-          onPress: () => {
-            extensionStorage.uninstallProvider(
-              provider.value,
-              provider.source?.author,
-            );
-            loadProviders();
-            setInstalledProviders(
-              extensionStorage.getInstalledProviders() || [],
-            );
-            if (
-              activeExtensionProvider?.value === provider?.value &&
-              activeExtensionProvider?.source?.author ===
-                provider?.source?.author
-            ) {
-              setActiveExtensionProvider(
-                extensionStorage.getInstalledProviders()[0] || {
-                  value: '',
-                  display_name: '',
-                  source: {author: '', url: ''},
-                  type: '',
-                  version: '',
-                },
-              );
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const handleSetActiveProvider = (provider: ProviderExtension) => {
-    if (!provider || !provider.value) {
-      showDialog('Error', 'Invalid provider data', 'error');
-      return;
-    }
-    setActiveExtensionProvider(provider);
-  };
-
-  const handleTestProvider = async (provider: ProviderExtension) => {
-    const providerKey = `${provider.source?.author || ''}:${provider.value}`;
-    setProviderTestStatuses(current => ({
-      ...current,
-      [providerKey]: 'testing',
-    }));
-    setProviderTest({
-      providerName: provider.display_name,
-      steps: createProviderTestSteps(),
-    });
-
-    const handleProgress = (progress: ProviderDiagnosticProgress) => {
-      setProviderTest(current =>
-        current
-          ? {
-              ...current,
-              steps: {
-                ...current.steps,
-                [progress.stage]: progress.status,
-              },
-              resultMessage:
-                progress.status === 'failed'
-                  ? progress.detail
-                  : current.resultMessage,
-            }
-          : current,
-      );
-    };
-
-    try {
-      const result = await testProvider(provider.value, handleProgress);
-      const playableTitle =
-        result.episode?.title || result.directLink?.title || 'Direct stream';
-      setProviderTest(current =>
-        current
-          ? {
-              ...current,
-              resultMessage: [
-                `Provider: ${provider.display_name}`,
-                `Catalog: ${result.catalog.title}`,
-                `List: ${result.post.title}`,
-                `Metadata: ${result.metadata.title}`,
-                `Playback: ${playableTitle}`,
-                `Streams: ${result.streams.length}`,
-              ].join('\n'),
-            }
-          : current,
-      );
-      setProviderTestStatuses(current => ({
-        ...current,
-        [providerKey]: 'working',
-      }));
-    } catch (error) {
-      const stage =
-        error instanceof ProviderDiagnosticError ? error.stage : 'unknown';
-      const message = error instanceof Error ? error.message : String(error);
-      setProviderTest(current =>
-        current
-          ? {
-              ...current,
-              resultMessage: `Stage: ${stage}\n${message}`,
-            }
-          : current,
-      );
-      setProviderTestStatuses(current => ({
-        ...current,
-        [providerKey]: 'failed',
-      }));
-    }
-  };
-
-  const refreshProviders = async (sourceAuthor: string) => {
-    setRefreshing(true);
-    try {
-      if (!sourceAuthor) {
-        setAvailableProviders([]);
-        return;
-      }
-      const source = extensionStorage
-        .getProviderSources()
-        .find(item => item.author === sourceAuthor);
-      if (!source) {
-        setAvailableProviders([]);
-        return;
-      }
-      const providers = await extensionManager.fetchManifest(source, true);
-      setAvailableProviders(providers);
-      loadProviders(sourceAuthor);
-      await checkForUpdates();
-    } catch (error) {
-      console.error('Refresh error:', error);
-      showDialog(
-        'Error',
-        'Failed to refresh providers list. Please check your internet connection.',
-        'error',
-      );
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
-  const handleRefresh = async () => {
-    await refreshProviders(activeSourceAuthor);
-  };
-
-  const currentData = useMemo(() => {
-    const allProviders = [
-      ...(availableProviders || []),
-      ...(installedProviders || []),
-    ].filter(item => item && item.value);
-    const providersMap = new Map<string, ProviderExtension>();
-    for (const item of allProviders) {
-      const key = `${item.source?.author || ''}:${item.value}`;
-      const existing = providersMap.get(key);
-      providersMap.set(key, {
-        ...(existing || {}),
-        ...item,
-        hasSettings: Boolean(item.hasSettings || existing?.hasSettings),
-      });
-    }
-    return Array.from(providersMap.values());
-  }, [availableProviders, installedProviders]);
-
-  const renderProviderCard = useCallback(
-    ({item}: {item: ProviderExtension}) => {
-      if (!item || !item.value) {
-        return null;
-      }
-      const itemKey = `${item.source?.author || ''}:${item.value}`;
-      const isActive =
-        activeExtensionProvider?.value === item.value &&
-        activeExtensionProvider?.source?.author === item.source?.author;
-      const isInstalled = (installedProviders || []).some(installedProvider =>
-        isSameProvider(installedProvider, item),
-      );
-      const isInstalling = installingProvider === itemKey;
-      const isUpdating = updatingProvider === itemKey;
-      const updateInfo = updateInfos.find(
-        info =>
-          info.provider.value === item.value &&
-          info.provider.source?.author === item.source?.author,
-      );
-      const hasUpdate = updateInfo?.hasUpdate || false;
-      return (
-        <ProviderCard
-          provider={item}
-          itemKey={itemKey}
-          installed={isInstalled}
-          active={isActive}
-          installing={isInstalling}
-          updating={isUpdating}
-          testStatus={providerTestStatuses[itemKey] || 'untested'}
-          hasUpdate={hasUpdate}
-          hasSettings={item.hasSettings}
-          primary={primary}
-          onActivate={() => handleSetActiveProvider(item)}
-          onInstall={() => handleInstallProvider(item)}
-          onUpdate={() =>
-            updateInfo && handleUpdateProvider(updateInfo.provider)
-          }
-          onTest={() => handleTestProvider(item)}
-          onUninstall={() => handleUninstallProvider(item)}
-          onOpenSettings={() => setSettingsProvider(item)}
-        />
-      );
-    },
-    [
-      activeExtensionProvider,
-      installedProviders,
-      installingProvider,
-      updatingProvider,
-      updateInfos,
-      providerTestStatuses,
-      primary,
-    ],
-  );
 
   return (
-    <View className="flex-1 bg-m3-background pt-10">
-      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
-      <View className="flex-row items-center justify-between px-4 pb-4 pt-2">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Back to settings"
-          onPress={() => navigation.navigate('Settings')}
-          className="h-12 w-12 items-center justify-center rounded-2xl"
-          style={{backgroundColor: colors.surfaceContainerHigh}}>
-          <FontAwesome6 name="arrow-left" size={20} color={colors.onSurface} />
-        </Pressable>
-        <View className="mx-4 flex-1">
-          <AppText
-            role="headlineSmallEmphasized"
-            className="text-m3-on-background">
-            Providers
-          </AppText>
-          <AppText role="bodySmall" className="text-m3-on-surface-variant">
-            Install and test streaming sources
-          </AppText>
+    <View style={styles.container}>
+      {/* Top Header */}
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.screenTitle}>Providers & Addons</Text>
+          <Text style={styles.screenSubtitle}>
+            Install, update and manage scraper extension repositories
+          </Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Refresh providers"
-          onPress={handleRefresh}
-          className="h-12 w-12 items-center justify-center rounded-2xl"
-          style={({pressed}) => ({
-            backgroundColor: pressed
-              ? colors.secondaryContainer
-              : colors.surfaceContainerHigh,
-          })}>
-          <MaterialCommunityIcons
-            name="refresh"
-            size={22}
-            color={colors.primary}
-          />
-        </Pressable>
-      </View>
-      <ProviderSourceManager
-        visible
-        primary={primary}
-        onSourceChanged={async (source: ProviderSource | undefined) => {
-          const author = source?.author || '';
-          setActiveSourceAuthor(author);
-          loadProviders(author);
-          await refreshProviders(author);
-        }}
-      />
-      <View className="mb-1 mt-6 flex-row items-center justify-between px-5">
-        <AppText role="titleLargeEmphasized" className="text-m3-on-background">
-          Available providers
-        </AppText>
-        <View
-          className="min-w-9 items-center px-2.5 py-1.5"
-          style={{
-            backgroundColor: colors.secondaryContainer,
-            borderRadius: 14,
-          }}>
-          <AppText
-            role="labelMediumEmphasized"
-            style={{color: colors.onSecondaryContainer}}>
-            {currentData.length}
-          </AppText>
+
+        <View style={styles.headerActions}>
+          <TVFocusablePressable
+            scaleFocused={1.05}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={10}
+            onPress={() => loadSourcesAndProviders()}
+            style={styles.iconBtn}
+          >
+            {({ focused }) => (
+              <MaterialCommunityIcons
+                name="refresh"
+                size={22}
+                color={focused ? '#FFFFFF' : '#9CA3AF'}
+              />
+            )}
+          </TVFocusablePressable>
+
+          <TVFocusablePressable
+            hasTVPreferredFocus={availableProviders.length === 0}
+            scaleFocused={1.05}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={12}
+            onPress={() => setIsModalVisible(true)}
+            style={[styles.addSourceBtn, { backgroundColor: primaryColor || '#8A5CF6' }]}
+          >
+            {({ focused }) => (
+              <View style={styles.btnContent}>
+                <MaterialCommunityIcons name="plus" size={20} color="#FFFFFF" />
+                <Text style={styles.addSourceBtnText}>Add Source</Text>
+              </View>
+            )}
+          </TVFocusablePressable>
         </View>
       </View>
-      <FlatList
-        data={currentData}
-        keyExtractor={(item, index) =>
-          `${item?.source?.author || 'none'}:${item?.value || `provider-${index}`}`
-        }
-        renderItem={renderProviderCard}
-        className="mt-3 flex-1"
-        contentContainerStyle={{paddingBottom: 24}}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            colors={[primary]}
-            tintColor={primary}
-            progressBackgroundColor={colors.surfaceContainerHigh}
-          />
-        }
-        ListEmptyComponent={
-          <View className="flex-1 justify-center items-center py-20">
-            <MaterialCommunityIcons
-              name="package-variant"
-              size={64}
-              color={colors.onSecondaryContainer}
+
+      {/* Active Source Bar */}
+      {activeSource ? (
+        <View style={styles.sourceBar}>
+          <Text style={styles.sourceBarLabel}>Active Source:</Text>
+          <Text numberOfLines={1} style={styles.sourceBarUrl}>
+            {activeSource}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Available Providers List */}
+      {isRefreshing ? (
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color={primaryColor || '#8A5CF6'} />
+          <Text style={styles.loadingText}>Fetching available providers...</Text>
+        </View>
+      ) : availableProviders.length === 0 ? (
+        <View style={styles.centerContainer}>
+          <MaterialCommunityIcons name="package-variant" size={72} color="#4B5563" />
+          <Text style={styles.emptyTitle}>No providers available</Text>
+          <Text style={styles.emptySubtitle}>
+            Add or refresh a repository source to check for installable cloud providers.
+          </Text>
+        </View>
+      ) : (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContainer}
+        >
+          {availableProviders.map((item, index) => {
+            const isInstalled = installedProviders.some((p) => p.value === item.value);
+            const isInstalling = installingMap[item.value];
+
+            return (
+              <View key={`${item.value}-${index}`} style={styles.providerRow}>
+                <View style={styles.providerLeft}>
+                  <View style={styles.providerIconWrapper}>
+                    <MaterialCommunityIcons name="cloud-outline" size={28} color="#8A5CF6" />
+                  </View>
+                  <View style={styles.providerInfo}>
+                    <View style={styles.titleLine}>
+                      <Text style={styles.providerName}>{item.displayTitle || item.name}</Text>
+                      <Text style={styles.versionBadge}>v{item.version}</Text>
+                    </View>
+                    <Text style={styles.providerMeta}>
+                      {item.type || 'Global'} • {item.author || 'Community'}
+                    </Text>
+                  </View>
+                </View>
+
+                <TVFocusablePressable
+                  scaleFocused={1.05}
+                  focusedBorderColor="#FFFFFF"
+                  borderRadius={10}
+                  onPress={() => handleToggleInstall(item)}
+                  style={[
+                    styles.actionBtn,
+                    isInstalled ? styles.uninstallBtn : styles.installBtn,
+                  ]}
+                >
+                  {({ focused }) => (
+                    <View style={styles.btnContent}>
+                      {isInstalling ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <>
+                          <MaterialCommunityIcons
+                            name={isInstalled ? 'trash-can-outline' : 'download'}
+                            size={18}
+                            color="#FFFFFF"
+                          />
+                          <Text style={styles.actionBtnText}>
+                            {isInstalled ? 'Uninstall' : 'Install'}
+                          </Text>
+                        </>
+                      )}
+                    </View>
+                  )}
+                </TVFocusablePressable>
+              </View>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {/* Centered Add Source Modal */}
+      <Modal
+        visible={isModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Add Source</Text>
+            </View>
+
+            <Text style={styles.modalDesc}>
+              Enter URL of your hosted provider source or GitHub author (e.g.{' '}
+              <Text style={styles.highlightText}>vega-org</Text>):
+            </Text>
+
+            <TextInput
+              value={newSourceInput}
+              onChangeText={setNewSourceInput}
+              placeholder="GitHub author or source URL"
+              placeholderTextColor="#6B7280"
+              style={styles.textInput}
+              autoCapitalize="none"
+              autoCorrect={false}
             />
-            <AppText
-              role="titleLargeEmphasized"
-              className="mt-4 text-m3-on-surface">
-              No providers available
-            </AppText>
-            <AppText
-              role="bodyMedium"
-              className="mt-2 px-8 text-center text-m3-on-surface-variant">
-              Add or refresh a source to check for available providers
-            </AppText>
+
+            <View style={styles.modalActions}>
+              <TVFocusablePressable
+                scaleFocused={1.05}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={10}
+                onPress={() => {
+                  setNewSourceInput('');
+                  setIsModalVisible(false);
+                }}
+                style={styles.cancelBtn}
+              >
+                {({ focused }) => <Text style={styles.cancelBtnText}>Cancel</Text>}
+              </TVFocusablePressable>
+
+              <TVFocusablePressable
+                hasTVPreferredFocus={true}
+                scaleFocused={1.05}
+                focusedBorderColor="#FFFFFF"
+                borderRadius={10}
+                onPress={handleAddSource}
+                style={[styles.confirmBtn, { backgroundColor: primaryColor || '#8A5CF6' }]}
+              >
+                {({ focused }) => (
+                  <View style={styles.btnContent}>
+                    {isAddingSource ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.confirmBtnText}>Confirm</Text>
+                    )}
+                  </View>
+                )}
+              </TVFocusablePressable>
+            </View>
           </View>
-        }
-      />
-      <AppDialog
-        visible={dialog !== null}
-        title={dialog?.title || ''}
-        message={dialog?.message || ''}
-        primary={primary}
-        variant={dialog?.variant}
-        actions={dialog?.actions}
-        onDismiss={() => setDialog(null)}
-      />
-      <ProviderTestProgressDialog
-        visible={providerTest !== null}
-        providerName={providerTest?.providerName || ''}
-        steps={providerTest?.steps || createProviderTestSteps()}
-        resultMessage={providerTest?.resultMessage}
-        primary={primary}
-        onClose={() => setProviderTest(null)}
-      />
-      <ProviderSettingsModal
-        visible={settingsProvider !== null}
-        provider={settingsProvider}
-        onClose={() => setSettingsProvider(null)}
-      />
+        </View>
+      </Modal>
     </View>
   );
-};
+}
 
-export default Extensions;
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0A0A0E',
+    paddingLeft: 96,
+    paddingRight: 48,
+    paddingTop: 36,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  screenTitle: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  screenSubtitle: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    marginTop: 4,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  iconBtn: {
+    backgroundColor: '#16161E',
+    padding: 12,
+  },
+  addSourceBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+  },
+  addSourceBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  btnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sourceBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#16161E',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginBottom: 20,
+    gap: 10,
+  },
+  sourceBarLabel: {
+    color: '#8A5CF6',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sourceBarUrl: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    flex: 1,
+  },
+  listContainer: {
+    paddingBottom: 40,
+    gap: 12,
+  },
+  providerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#16161E',
+    borderRadius: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  providerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  providerIconWrapper: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(138, 92, 246, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  providerInfo: {
+    gap: 2,
+  },
+  titleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  providerName: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  versionBadge: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  providerMeta: {
+    color: '#6B7280',
+    fontSize: 13,
+  },
+  actionBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+  },
+  installBtn: {
+    backgroundColor: '#8A5CF6',
+  },
+  uninstallBtn: {
+    backgroundColor: 'rgba(239, 68, 68, 0.25)',
+  },
+  actionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingBottom: 60,
+  },
+  loadingText: {
+    color: '#9CA3AF',
+    fontSize: 15,
+    marginTop: 16,
+  },
+  emptyTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 16,
+  },
+  emptySubtitle: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    marginTop: 6,
+    textAlign: 'center',
+    maxWidth: 480,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: 520,
+    backgroundColor: '#16161E',
+    borderRadius: 20,
+    padding: 28,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalHeader: {
+    marginBottom: 12,
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  modalDesc: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  highlightText: {
+    color: '#8A5CF6',
+    fontWeight: '700',
+  },
+  textInput: {
+    backgroundColor: '#0A0A0E',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    color: '#FFFFFF',
+    fontSize: 15,
+    marginBottom: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  confirmBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  confirmBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  cancelBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  cancelBtnText: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+});
