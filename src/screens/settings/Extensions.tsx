@@ -10,14 +10,14 @@ import {
   ToastAndroid,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import axios from 'axios';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useThemeStore from '../../lib/zustand/themeStore';
 import { extensionStorage } from '../../lib/storage';
-import { updateProvidersService } from '../../lib/services/UpdateProviders';
 import { Provider } from '../../lib/providers/types';
 
-interface AvailableProviderItem {
+interface RepoProviderManifest {
   name: string;
   displayTitle?: string;
   version: string;
@@ -25,60 +25,100 @@ interface AvailableProviderItem {
   author?: string;
   value: string;
   icon?: string;
+  url?: string;
+  sourceUrl?: string;
+  [key: string]: any;
 }
 
 export default function Extensions({ navigation }: any) {
-  const primaryColor = useThemeStore((state) => state.primaryColor);
+  const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
   const setProvider = useContentStore((state) => state.setProvider);
   const activeProvider = useContentStore((state) => state.provider);
 
-  const [availableProviders, setAvailableProviders] = useState<AvailableProviderItem[]>([]);
+  const [availableProviders, setAvailableProviders] = useState<RepoProviderManifest[]>([]);
   const [sourcesList, setSourcesList] = useState<string[]>([]);
   const [activeSource, setActiveSource] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
 
-  // Add Source Modal State
+  // Add Source Modal
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [newSourceInput, setNewSourceInput] = useState('');
   const [isAddingSource, setIsAddingSource] = useState(false);
 
-  // Load existing repository sources
+  // Helper: Read sources safely from MMKV
+  const getSavedSources = (): string[] => {
+    try {
+      const raw = extensionStorage.getString('providerSources');
+      if (!raw) return [];
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  };
+
+  // Helper: Save sources safely to MMKV
+  const saveSources = (sources: string[]) => {
+    try {
+      extensionStorage.set('providerSources', JSON.stringify(sources));
+    } catch (e) {
+      console.warn('[Storage] Failed to save sources:', e);
+    }
+  };
+
+  // Fetch Manifest from a Repository URL
+  const fetchManifestFromUrl = async (url: string): Promise<RepoProviderManifest[]> => {
+    const res = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+      },
+    });
+
+    const data = res.data;
+    if (Array.isArray(data)) {
+      return data;
+    }
+    if (data && Array.isArray(data.providers)) {
+      return data.providers;
+    }
+    if (data && Array.isArray(data.extensions)) {
+      return data.extensions;
+    }
+    return [];
+  };
+
+  // Load repositories and active providers
   const loadSourcesAndProviders = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const savedSources: string[] = extensionStorage.getArray('providerSources') || [];
-      setSourcesList(savedSources);
+      const saved = getSavedSources();
+      setSourcesList(saved);
 
-      const currentSrc = savedSources[0] || '';
-      setActiveSource(currentSrc);
-
-      if (currentSrc) {
-        await fetchRepositoryProviders(currentSrc);
+      if (saved.length > 0) {
+        const currentSrc = saved[0];
+        setActiveSource(currentSrc);
+        const providers = await fetchManifestFromUrl(currentSrc);
+        setAvailableProviders(providers);
+      } else {
+        setAvailableProviders([]);
       }
     } catch (e) {
-      console.warn('[Extensions] Load error:', e);
+      console.warn('[Extensions] Error loading sources:', e);
+      setAvailableProviders([]);
     } finally {
       setIsRefreshing(false);
     }
   }, []);
 
-  const fetchRepositoryProviders = async (sourceUrl: string) => {
-    try {
-      const providers = await updateProvidersService.fetchAvailableProviders(sourceUrl);
-      setAvailableProviders(providers || []);
-    } catch (e) {
-      console.warn('[Extensions] Fetch repo providers failed:', e);
-      setAvailableProviders([]);
-    }
-  };
-
   useEffect(() => {
     loadSourcesAndProviders();
   }, [loadSourcesAndProviders]);
 
+  // Handle Adding New Source / Author (e.g. vega-org)
   const handleAddSource = async () => {
     const trimmed = newSourceInput.trim();
     if (!trimmed) return;
@@ -87,51 +127,83 @@ export default function Extensions({ navigation }: any) {
     try {
       let finalUrl = trimmed;
       if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-        // Handle GitHub author shortcut like vega-org
+        // Automatically resolve GitHub organization shortcut
         finalUrl = `https://raw.githubusercontent.com/${trimmed}/vega-providers/main/manifest.json`;
       }
 
-      const updatedSources = Array.from(new Set([...sourcesList, finalUrl]));
-      extensionStorage.setArray('providerSources', updatedSources);
-      setSourcesList(updatedSources);
-      setActiveSource(finalUrl);
+      // Test fetching the manifest before saving
+      const providers = await fetchManifestFromUrl(finalUrl);
 
-      await fetchRepositoryProviders(finalUrl);
-      ToastAndroid.show('Source added successfully', ToastAndroid.SHORT);
+      if (!providers || providers.length === 0) {
+        throw new Error('No valid providers found at this source URL');
+      }
+
+      const updated = Array.from(new Set([...getSavedSources(), finalUrl]));
+      saveSources(updated);
+      setSourcesList(updated);
+      setActiveSource(finalUrl);
+      setAvailableProviders(providers);
+
+      ToastAndroid.show(`Found ${providers.length} available providers!`, ToastAndroid.SHORT);
       setNewSourceInput('');
       setIsModalVisible(false);
     } catch (err: any) {
-      ToastAndroid.show(err?.message || 'Failed to fetch source', ToastAndroid.LONG);
+      const msg = err?.response?.status === 404
+        ? 'Repository manifest.json not found'
+        : err?.message || 'Failed to add source';
+      ToastAndroid.show(msg, ToastAndroid.LONG);
     } finally {
       setIsAddingSource(false);
     }
   };
 
-  const handleToggleInstall = async (item: AvailableProviderItem) => {
+  // Toggle Install / Uninstall
+  const handleToggleInstall = async (item: RepoProviderManifest) => {
     const isInstalled = installedProviders.some((p) => p.value === item.value);
     setInstallingMap((prev) => ({ ...prev, [item.value]: true }));
 
     try {
       if (isInstalled) {
-        // Uninstall provider
+        // Uninstall
         const nextList = installedProviders.filter((p) => p.value !== item.value);
         setInstalledProviders(nextList);
         if (activeProvider?.value === item.value) {
-          setProvider(nextList[0] || null);
+          setProvider(nextList.length > 0 ? nextList[0] : null);
         }
         ToastAndroid.show(`Uninstalled ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
       } else {
-        // Install provider
-        const fullProvider = await updateProvidersService.installProvider(activeSource, item.value);
-        const nextList = [...installedProviders.filter((p) => p.value !== item.value), fullProvider];
-        setInstalledProviders(nextList);
-        if (!activeProvider) {
-          setProvider(fullProvider);
+        // Install: fetch provider file if external url provided or construct provider object
+        let scriptCode = '';
+        if (item.url) {
+          try {
+            const scriptRes = await axios.get(item.url, { timeout: 8000 });
+            scriptCode = typeof scriptRes.data === 'string' ? scriptRes.data : JSON.stringify(scriptRes.data);
+          } catch {}
         }
-        ToastAndroid.show(`Installed ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
+
+        const newProvider: Provider = {
+          name: item.name || item.value,
+          displayTitle: item.displayTitle || item.name || item.value,
+          value: item.value,
+          version: item.version || '1.0.0',
+          type: (item.type as any) || 'cloud',
+          icon: item.icon,
+          code: scriptCode,
+          sourceUrl: item.url || activeSource,
+        };
+
+        const nextList = [...installedProviders.filter((p) => p.value !== item.value), newProvider];
+        setInstalledProviders(nextList);
+
+        // Automatically set as active if no active provider is selected yet
+        if (!activeProvider) {
+          setProvider(newProvider);
+        }
+
+        ToastAndroid.show(`Installed ${newProvider.displayTitle}!`, ToastAndroid.SHORT);
       }
     } catch (e: any) {
-      ToastAndroid.show(e?.message || 'Operation failed', ToastAndroid.LONG);
+      ToastAndroid.show(e?.message || 'Installation failed', ToastAndroid.LONG);
     } finally {
       setInstallingMap((prev) => ({ ...prev, [item.value]: false }));
     }
@@ -171,7 +243,7 @@ export default function Extensions({ navigation }: any) {
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
             onPress={() => setIsModalVisible(true)}
-            style={[styles.addSourceBtn, { backgroundColor: primaryColor || '#8A5CF6' }]}
+            style={[styles.addSourceBtn, { backgroundColor: primaryColor }]}
           >
             {({ focused }) => (
               <View style={styles.btnContent}>
@@ -183,7 +255,7 @@ export default function Extensions({ navigation }: any) {
         </View>
       </View>
 
-      {/* Active Source Bar */}
+      {/* Active Source Banner */}
       {activeSource ? (
         <View style={styles.sourceBar}>
           <Text style={styles.sourceBarLabel}>Active Source:</Text>
@@ -196,15 +268,15 @@ export default function Extensions({ navigation }: any) {
       {/* Available Providers List */}
       {isRefreshing ? (
         <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color={primaryColor || '#8A5CF6'} />
-          <Text style={styles.loadingText}>Fetching available providers...</Text>
+          <ActivityIndicator size="large" color={primaryColor} />
+          <Text style={styles.loadingText}>Loading repository manifest...</Text>
         </View>
       ) : availableProviders.length === 0 ? (
         <View style={styles.centerContainer}>
           <MaterialCommunityIcons name="package-variant" size={72} color="#4B5563" />
           <Text style={styles.emptyTitle}>No providers available</Text>
           <Text style={styles.emptySubtitle}>
-            Add or refresh a repository source to check for installable cloud providers.
+            Add a source repository (e.g. <Text style={styles.highlightText}>vega-org</Text>) to view and install providers.
           </Text>
         </View>
       ) : (
@@ -214,7 +286,7 @@ export default function Extensions({ navigation }: any) {
         >
           {availableProviders.map((item, index) => {
             const isInstalled = installedProviders.some((p) => p.value === item.value);
-            const isInstalling = installingMap[item.value];
+            const isInstalling = Boolean(installingMap[item.value]);
 
             return (
               <View key={`${item.value}-${index}`} style={styles.providerRow}>
@@ -225,7 +297,7 @@ export default function Extensions({ navigation }: any) {
                   <View style={styles.providerInfo}>
                     <View style={styles.titleLine}>
                       <Text style={styles.providerName}>{item.displayTitle || item.name}</Text>
-                      <Text style={styles.versionBadge}>v{item.version}</Text>
+                      <Text style={styles.versionBadge}>v{item.version || '1.0.0'}</Text>
                     </View>
                     <Text style={styles.providerMeta}>
                       {item.type || 'Global'} • {item.author || 'Community'}
@@ -316,7 +388,7 @@ export default function Extensions({ navigation }: any) {
                 focusedBorderColor="#FFFFFF"
                 borderRadius={10}
                 onPress={handleAddSource}
-                style={[styles.confirmBtn, { backgroundColor: primaryColor || '#8A5CF6' }]}
+                style={[styles.confirmBtn, { backgroundColor: primaryColor }]}
               >
                 {({ focused }) => (
                   <View style={styles.btnContent}>
