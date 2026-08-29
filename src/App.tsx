@@ -125,6 +125,7 @@ export default function App() {
                       {currentRoute === 'sources' && (
                         <TVSourceSelectScreen
                           onNavigateHome={() => setCurrentRoute('home')}
+                          onNavigateAddons={() => setCurrentRoute('addons')}
                         />
                       )}
 
