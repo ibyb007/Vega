@@ -1,4 +1,4 @@
-import {MMKV} from 'react-native-mmkv';
+import {createMMKV, type MMKV} from 'react-native-mmkv';
 import type {StateStorage} from 'zustand/middleware';
 
 /**
@@ -24,16 +24,19 @@ export interface IStorageService {
 /**
  * Base storage service that wraps MMKV operations.
  *
- * Uses `react-native-mmkv` (TurboModule-based) instead of the legacy
+ * Uses `react-native-mmkv` v4 (Nitro-based) instead of the legacy
  * `react-native-mmkv-storage`, which predates the New Architecture and
- * throws "undefined is not a function" during module init under
- * newArchEnabled/bridgeless mode.
+ * threw "undefined is not a function" during module init.
+ *
+ * v4 removed the `MMKV` class in favor of the `createMMKV()` factory
+ * function - `new MMKV()` no longer exists and throws
+ * "undefined cannot be used as a constructor".
  */
 export class StorageService implements IStorageService {
   private storage: MMKV;
 
   constructor(instanceId?: string) {
-    this.storage = instanceId ? new MMKV({id: instanceId}) : new MMKV();
+    this.storage = instanceId ? createMMKV({id: instanceId}) : createMMKV();
   }
 
   // String operations
@@ -93,7 +96,8 @@ export class StorageService implements IStorageService {
 
   // Delete operations
   delete(key: string): void {
-    this.storage.delete(key);
+    // v4 renamed delete() -> remove() since `delete` is reserved in C++
+    this.storage.remove(key);
   }
 
   // Check if key exists
