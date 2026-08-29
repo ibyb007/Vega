@@ -24,19 +24,26 @@ export interface IStorageService {
 /**
  * Base storage service that wraps MMKV operations.
  *
- * Uses `react-native-mmkv` v4 (Nitro-based) instead of the legacy
- * `react-native-mmkv-storage`, which predates the New Architecture and
- * threw "undefined is not a function" during module init.
- *
- * v4 removed the `MMKV` class in favor of the `createMMKV()` factory
- * function - `new MMKV()` no longer exists and throws
- * "undefined cannot be used as a constructor".
+ * Uses `react-native-mmkv` v4 (Nitro-based). The underlying native MMKV
+ * instance is created LAZILY on first use rather than in the constructor.
+ * Creating several Nitro MMKV HybridObjects back-to-back at module-load
+ * time (as mainStorage/cacheStorage/providerKvStorage all being
+ * instantiated eagerly would do) has known startup issues on Android
+ * (see https://github.com/mrousavy/react-native-mmkv/issues/937) -
+ * spreading instance creation out over time avoids that.
  */
 export class StorageService implements IStorageService {
-  private storage: MMKV;
+  private _storage: MMKV | undefined;
 
-  constructor(instanceId?: string) {
-    this.storage = instanceId ? createMMKV({id: instanceId}) : createMMKV();
+  constructor(private readonly instanceId?: string) {}
+
+  private get storage(): MMKV {
+    if (!this._storage) {
+      this._storage = this.instanceId
+        ? createMMKV({id: this.instanceId})
+        : createMMKV();
+    }
+    return this._storage;
   }
 
   // String operations
@@ -120,7 +127,8 @@ export class StorageService implements IStorageService {
   }
 }
 
-// Create and export default instances
+// These are cheap JS objects only - the actual native MMKV instance for
+// each isn't created until its first getX/setX/delete/etc call.
 export const mainStorage: IStorageService = new StorageService();
 export const cacheStorage: IStorageService = new StorageService('cache');
 export const providerKvStorage: IStorageService = new StorageService('provider_kv');
