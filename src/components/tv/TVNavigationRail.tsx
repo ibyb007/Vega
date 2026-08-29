@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import Animated, {
@@ -25,50 +25,71 @@ const NAV_ITEMS: { id: TVRoute; label: string; icon: keyof typeof MaterialCommun
 ];
 
 const COLLAPSED_WIDTH = 68;
-const EXPANDED_WIDTH = 210;
+const EXPANDED_WIDTH = 220;
 
 export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
   currentRoute,
   onRouteChange,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleItemFocus = () => {
+    // Clear any scheduled collapse immediately when any item gains focus
+    if (blurTimeoutRef.current) {
+      clearTimeout(blurTimeoutRef.current);
+      blurTimeoutRef.current = null;
+    }
+    setIsExpanded(true);
+  };
+
+  const handleItemBlur = () => {
+    // Debounce collapse so moving between adjacent items (Up/Down) doesn't jitter
+    if (blurTimeoutRef.current) {
+      clearTimeout(blurTimeoutRef.current);
+    }
+    blurTimeoutRef.current = setTimeout(() => {
+      setIsExpanded(false);
+    }, 120);
+  };
 
   const containerStyle = useAnimatedStyle(() => {
     return {
       width: withTiming(isExpanded ? EXPANDED_WIDTH : COLLAPSED_WIDTH, {
-        duration: 220,
-        easing: Easing.out(Easing.cubic),
+        duration: 180,
+        easing: Easing.out(Easing.quad),
       }),
       backgroundColor: withTiming(
-        isExpanded ? 'rgba(15, 15, 20, 0.96)' : 'rgba(10, 10, 14, 0.5)',
-        { duration: 200 }
+        isExpanded ? '#111116' : '#0A0A0E',
+        { duration: 180 }
       ),
     };
   }, [isExpanded]);
 
   return (
     <Animated.View style={[styles.container, containerStyle]}>
-      {/* Brand Logo Header */}
+      {/* Brand Header */}
       <View style={styles.header}>
         <MaterialCommunityIcons name="play-circle" size={32} color="#8A5CF6" />
         {isExpanded && <Text style={styles.brandText}>VEGA TV</Text>}
       </View>
 
-      {/* Navigation Options */}
+      {/* Navigation Items */}
       <View style={styles.menuContainer}>
         {NAV_ITEMS.map((item) => {
           const isActive = currentRoute === item.id;
           return (
             <TVFocusablePressable
               key={item.id}
-              scaleFocused={1.02}
+              scaleFocused={1.03}
               focusedBorderColor="#8A5CF6"
-              borderRadius={10}
+              borderRadius={12}
               onFocusChange={(focused) => {
-                if (focused) setIsExpanded(true);
-              }}
-              onBlur={() => {
-                setTimeout(() => setIsExpanded(false), 80);
+                if (focused) {
+                  handleItemFocus();
+                } else {
+                  handleItemBlur();
+                }
               }}
               onPress={() => onRouteChange(item.id)}
               style={[
@@ -111,17 +132,18 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     bottom: 0,
-    zIndex: 100,
+    zIndex: 999,
     paddingVertical: 24,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderRightWidth: 1,
     borderRightColor: 'rgba(255, 255, 255, 0.08)',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: 28,
     paddingHorizontal: 6,
+    height: 36,
   },
   brandText: {
     color: '#FFFFFF',
@@ -132,12 +154,12 @@ const styles = StyleSheet.create({
   },
   menuContainer: {
     flex: 1,
-    gap: 8,
+    gap: 6,
   },
   navItem: {
     paddingVertical: 12,
     paddingHorizontal: 10,
-    marginVertical: 2,
+    marginVertical: 1,
   },
   itemInner: {
     flexDirection: 'row',
