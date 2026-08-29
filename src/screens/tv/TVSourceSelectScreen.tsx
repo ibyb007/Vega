@@ -5,168 +5,187 @@ import {
   StyleSheet,
   ScrollView,
   Modal,
-  TextInput,
-  ActivityIndicator,
+  ToastAndroid,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
+import useThemeStore from '../../lib/zustand/themeStore';
 import { Provider } from '../../lib/providers/types';
-import { updateProvidersService } from '../../lib/services/UpdateProviders';
 
 interface TVSourceSelectScreenProps {
-  onSelectSource?: (provider: Provider) => void;
   onNavigateHome?: () => void;
+  onNavigateAddons?: () => void;
 }
 
 export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
-  onSelectSource,
   onNavigateHome,
+  onNavigateAddons,
 }) => {
+  const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const provider = useContentStore((state) => state.provider);
   const setProvider = useContentStore((state) => state.setProvider);
   const installedProviders = useContentStore((state) => state.installedProviders);
+  const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
 
-  const [isModalVisible, setIsModalVisible] = useState(false);
-  const [sourceInput, setSourceInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [providerToDelete, setProviderToDelete] = useState<Provider | null>(null);
 
   const handleSelectProvider = (item: Provider) => {
     setProvider(item);
-    if (onSelectSource) {
-      onSelectSource(item);
-    }
+    ToastAndroid.show(`Active source: ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
     if (onNavigateHome) {
       onNavigateHome();
     }
   };
 
-  const handleInstallSource = async () => {
-    const trimmed = sourceInput.trim();
-    if (!trimmed) return;
+  const handleConfirmDelete = () => {
+    if (!providerToDelete) return;
+    const remaining = installedProviders.filter((p) => p.value !== providerToDelete.value);
+    setInstalledProviders(remaining);
 
-    setIsLoading(true);
-    setStatusMessage(null);
-    try {
-      await updateProvidersService.addProviderByUrl(trimmed);
-      setStatusMessage('Provider installed successfully!');
-      setSourceInput('');
-      setTimeout(() => {
-        setIsModalVisible(false);
-        setStatusMessage(null);
-      }, 1000);
-    } catch (err: any) {
-      setStatusMessage(err?.message || 'Failed to install provider');
-    } finally {
-      setIsLoading(false);
+    if (provider?.value === providerToDelete.value) {
+      setProvider(remaining.length > 0 ? remaining[0] : null);
     }
+
+    ToastAndroid.show(`Removed ${providerToDelete.displayTitle || providerToDelete.name}`, ToastAndroid.SHORT);
+    setProviderToDelete(null);
   };
 
   return (
     <View style={styles.container}>
-      {/* Top Header & Actions */}
+      {/* Top Header */}
       <View style={styles.headerRow}>
-        <View>
-          <Text style={styles.headerTitle}>Media Sources & Repositories</Text>
+        <View style={styles.headerTitles}>
+          <Text style={styles.headerTitle}>Select Provider Source</Text>
           <Text style={styles.headerSubtitle}>
-            Select a provider to load its catalog onto the Home Screen
+            Choose which provider supplies the catalog and search results on your Home Screen
           </Text>
         </View>
 
-        <TVFocusablePressable
-          hasTVPreferredFocus={installedProviders.length === 0}
-          scaleFocused={1.05}
-          focusedBorderColor="#8A5CF6"
-          borderRadius={12}
-          onPress={() => setIsModalVisible(true)}
-          style={styles.addButton}
-        >
-          {({ focused }) => (
-            <View style={styles.btnInner}>
-              <MaterialCommunityIcons
-                name="plus-circle-outline"
-                size={22}
-                color={focused ? '#FFFFFF' : '#DDD6FE'}
-              />
-              <Text style={styles.addBtnText}>Add Source URL</Text>
-            </View>
-          )}
-        </TVFocusablePressable>
+        {onNavigateAddons && (
+          <TVFocusablePressable
+            scaleFocused={1.05}
+            focusedBorderColor="#FFFFFF"
+            borderRadius={12}
+            onPress={onNavigateAddons}
+            style={[styles.addonsButton, { backgroundColor: primaryColor }]}
+          >
+            {({ focused }) => (
+              <View style={styles.btnInner}>
+                <MaterialCommunityIcons name="puzzle-outline" size={20} color="#FFFFFF" />
+                <Text style={styles.addonsButtonText}>Add / Manage Addons</Text>
+              </View>
+            )}
+          </TVFocusablePressable>
+        )}
       </View>
 
       {/* Grid of Installed Providers */}
       {installedProviders.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <MaterialCommunityIcons
-            name="cloud-download-outline"
-            size={72}
-            color="#4B5563"
-          />
-          <Text style={styles.emptyText}>No Cloud Providers Installed</Text>
-          <Text style={styles.emptySubtext}>
-            Click "Add Source URL" above to install an extension repository.
+        <View style={styles.emptyState}>
+          <View style={styles.emptyIconCircle}>
+            <MaterialCommunityIcons name="cloud-search-outline" size={64} color="#6B7280" />
+          </View>
+          <Text style={styles.emptyTitle}>No Cloud Providers Installed</Text>
+          <Text style={styles.emptyDescription}>
+            You haven't installed any provider extensions yet. Go to the Addons tab to add a source repository (e.g. vega-org).
           </Text>
+          {onNavigateAddons && (
+            <TVFocusablePressable
+              hasTVPreferredFocus={true}
+              scaleFocused={1.06}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={12}
+              onPress={onNavigateAddons}
+              style={[styles.emptyActionBtn, { backgroundColor: primaryColor }]}
+            >
+              {({ focused }) => (
+                <View style={styles.btnInner}>
+                  <MaterialCommunityIcons name="download" size={20} color="#FFFFFF" />
+                  <Text style={styles.emptyActionBtnText}>Install Providers Now</Text>
+                </View>
+              )}
+            </TVFocusablePressable>
+          )}
         </View>
       ) : (
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.gridContainer}
+          contentContainerStyle={styles.scrollGrid}
         >
           {installedProviders.map((item, index) => {
             const isSelected = provider?.value === item.value;
+
             return (
               <TVFocusablePressable
                 key={`${item.value}-${index}`}
-                hasTVPreferredFocus={index === 0}
-                scaleFocused={1.04}
-                focusedBorderColor="#8A5CF6"
+                hasTVPreferredFocus={isSelected || index === 0}
+                scaleFocused={1.03}
+                focusedBorderColor={primaryColor}
                 borderRadius={16}
                 onPress={() => handleSelectProvider(item)}
                 style={[
-                  styles.providerCard,
-                  isSelected && styles.providerCardSelected,
+                  styles.card,
+                  isSelected && {
+                    backgroundColor: 'rgba(138, 92, 246, 0.14)',
+                    borderColor: primaryColor,
+                  },
                 ]}
               >
                 {({ focused }) => (
-                  <View style={styles.cardContent}>
+                  <View style={styles.cardInner}>
+                    {/* Top Status Badges */}
                     <View style={styles.cardHeader}>
-                      <View
-                        style={[
-                          styles.iconBadge,
-                          isSelected && styles.iconBadgeSelected,
-                        ]}
-                      >
+                      <View style={[styles.avatar, isSelected && { backgroundColor: primaryColor }]}>
                         <MaterialCommunityIcons
                           name="server-network"
-                          size={28}
-                          color={isSelected || focused ? '#8A5CF6' : '#9CA3AF'}
+                          size={24}
+                          color={isSelected ? '#FFFFFF' : '#9CA3AF'}
                         />
                       </View>
-                      {isSelected && (
-                        <View style={styles.activePill}>
-                          <MaterialCommunityIcons
-                            name="check-circle"
-                            size={14}
-                            color="#FFFFFF"
-                          />
-                          <Text style={styles.activePillText}>Active</Text>
-                        </View>
-                      )}
+
+                      <View style={styles.headerBadges}>
+                        {isSelected ? (
+                          <View style={[styles.activeTag, { backgroundColor: primaryColor }]}>
+                            <MaterialCommunityIcons name="check" size={12} color="#FFFFFF" />
+                            <Text style={styles.activeTagText}>Active</Text>
+                          </View>
+                        ) : null}
+
+                        <TVFocusablePressable
+                          scaleFocused={1.1}
+                          focusedBorderColor="#EF4444"
+                          borderRadius={8}
+                          onPress={() => setProviderToDelete(item)}
+                          style={styles.deleteIconBtn}
+                        >
+                          {({ focused: deleteFocused }) => (
+                            <MaterialCommunityIcons
+                              name="trash-can-outline"
+                              size={18}
+                              color={deleteFocused ? '#EF4444' : '#6B7280'}
+                            />
+                          )}
+                        </TVFocusablePressable>
+                      </View>
                     </View>
 
+                    {/* Provider Info */}
                     <View style={styles.cardBody}>
                       <Text numberOfLines={1} style={styles.providerName}>
                         {item.displayTitle || item.name}
                       </Text>
-                      <Text numberOfLines={1} style={styles.providerVersion}>
+                      <Text numberOfLines={1} style={styles.providerMeta}>
                         v{item.version || '1.0.0'} • {item.type || 'Cloud'}
                       </Text>
                     </View>
 
-                    <Text style={styles.cardActionText}>
-                      {isSelected ? 'Currently Selected' : 'Press OK to Select'}
-                    </Text>
+                    {/* Bottom Prompt */}
+                    <View style={styles.cardFooter}>
+                      <Text style={[styles.footerText, isSelected && { color: primaryColor, fontWeight: '700' }]}>
+                        {isSelected ? 'Loaded on Home Screen' : 'Press OK to Switch'}
+                      </Text>
+                    </View>
                   </View>
                 )}
               </TVFocusablePressable>
@@ -175,93 +194,41 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
         </ScrollView>
       )}
 
-      {/* TV-Optimized Centered Add Source Modal */}
+      {/* Delete Confirmation Dialog */}
       <Modal
-        visible={isModalVisible}
+        visible={Boolean(providerToDelete)}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setIsModalVisible(false)}
+        onRequestClose={() => setProviderToDelete(null)}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <MaterialCommunityIcons
-                name="cloud-plus"
-                size={28}
-                color="#8A5CF6"
-              />
-              <Text style={styles.modalTitle}>Add Provider Source</Text>
-            </View>
-
-            <Text style={styles.modalInstruction}>
-              Enter repository URL or raw provider manifest link:
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <MaterialCommunityIcons name="alert-circle-outline" size={40} color="#EF4444" />
+            <Text style={styles.modalTitle}>Remove Provider</Text>
+            <Text style={styles.modalText}>
+              Are you sure you want to uninstall {providerToDelete?.displayTitle || providerToDelete?.name}?
             </Text>
 
-            <TextInput
-              value={sourceInput}
-              onChangeText={setSourceInput}
-              placeholder="https://example.com/manifest.json"
-              placeholderTextColor="#6B7280"
-              style={styles.modalInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            {statusMessage && (
-              <Text
-                style={[
-                  styles.statusText,
-                  statusMessage.includes('success')
-                    ? styles.statusSuccess
-                    : styles.statusError,
-                ]}
-              >
-                {statusMessage}
-              </Text>
-            )}
-
-            <View style={styles.modalButtonRow}>
+            <View style={styles.modalActions}>
               <TVFocusablePressable
                 hasTVPreferredFocus={true}
                 scaleFocused={1.05}
-                focusedBorderColor="#FFFFFF"
+                focusedBorderColor="#8A5CF6"
                 borderRadius={10}
-                onPress={handleInstallSource}
-                style={styles.confirmButton}
+                onPress={() => setProviderToDelete(null)}
+                style={styles.cancelBtn}
               >
-                {({ focused }) => (
-                  <View style={styles.btnInner}>
-                    {isLoading ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <>
-                        <MaterialCommunityIcons
-                          name="download"
-                          size={20}
-                          color="#FFFFFF"
-                        />
-                        <Text style={styles.confirmBtnText}>Install Source</Text>
-                      </>
-                    )}
-                  </View>
-                )}
+                {({ focused }) => <Text style={styles.cancelBtnText}>Cancel</Text>}
               </TVFocusablePressable>
 
               <TVFocusablePressable
                 scaleFocused={1.05}
-                focusedBorderColor="#8A5CF6"
+                focusedBorderColor="#FFFFFF"
                 borderRadius={10}
-                onPress={() => {
-                  setIsModalVisible(false);
-                  setStatusMessage(null);
-                }}
-                style={styles.cancelButton}
+                onPress={handleConfirmDelete}
+                style={styles.deleteBtn}
               >
-                {({ focused }) => (
-                  <View style={styles.btnInner}>
-                    <Text style={styles.cancelBtnText}>Cancel</Text>
-                  </View>
-                )}
+                {({ focused }) => <Text style={styles.deleteBtnText}>Uninstall</Text>}
               </TVFocusablePressable>
             </View>
           </View>
@@ -277,59 +244,59 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0A0E',
     paddingLeft: 96,
     paddingRight: 48,
-    paddingTop: 40,
+    paddingTop: 36,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: 28,
+  },
+  headerTitles: {
+    flex: 1,
+    marginRight: 16,
   },
   headerTitle: {
     color: '#FFFFFF',
     fontSize: 26,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
   },
   headerSubtitle: {
     color: '#9CA3AF',
     fontSize: 14,
     marginTop: 4,
   },
-  addButton: {
-    backgroundColor: '#8A5CF6',
+  addonsButton: {
     paddingVertical: 12,
-    paddingHorizontal: 20,
+    paddingHorizontal: 18,
+  },
+  addonsButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   btnInner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  addBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  gridContainer: {
+  scrollGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 20,
+    gap: 18,
     paddingBottom: 40,
   },
-  providerCard: {
-    width: 250,
-    height: 150,
+  card: {
+    width: 255,
+    height: 165,
     backgroundColor: '#16161E',
+    borderRadius: 16,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.08)',
     padding: 16,
   },
-  providerCardSelected: {
-    backgroundColor: '#1E1B2E',
-    borderColor: '#8A5CF6',
-  },
-  cardContent: {
+  cardInner: {
     flex: 1,
     justifyContent: 'space-between',
   },
@@ -338,30 +305,35 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  iconBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  avatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  iconBadgeSelected: {
-    backgroundColor: 'rgba(138, 92, 246, 0.15)',
+  headerBadges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  activePill: {
+  activeTag: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#8A5CF6',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 12,
   },
-  activePillText: {
+  activeTagText: {
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '700',
+  },
+  deleteIconBtn: {
+    padding: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
   },
   cardBody: {
     marginVertical: 4,
@@ -371,109 +343,112 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
-  providerVersion: {
+  providerMeta: {
     color: '#9CA3AF',
     fontSize: 12,
     marginTop: 2,
   },
-  cardActionText: {
+  cardFooter: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
+    paddingTop: 8,
+  },
+  footerText: {
     color: '#6B7280',
     fontSize: 12,
     fontWeight: '500',
   },
-  emptyContainer: {
+  emptyState: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingBottom: 80,
   },
-  emptyText: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: 16,
+  emptyIconCircle: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
   },
-  emptySubtext: {
+  emptyTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  emptyDescription: {
     color: '#9CA3AF',
     fontSize: 14,
-    marginTop: 6,
+    textAlign: 'center',
+    maxWidth: 480,
+    marginTop: 8,
+    lineHeight: 22,
+    marginBottom: 28,
   },
-  modalBackdrop: {
+  emptyActionBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+  },
+  emptyActionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  modalCard: {
-    width: 540,
+  modalBox: {
+    width: 440,
     backgroundColor: '#16161E',
-    borderRadius: 20,
-    padding: 32,
+    borderRadius: 18,
+    padding: 24,
+    alignItems: 'center',
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
-  },
   modalTitle: {
     color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: 12,
   },
-  modalInstruction: {
+  modalText: {
     color: '#9CA3AF',
     fontSize: 14,
-    marginBottom: 16,
-  },
-  modalInput: {
-    backgroundColor: '#0A0A0E',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    color: '#FFFFFF',
-    fontSize: 15,
-    marginBottom: 16,
-  },
-  statusText: {
-    fontSize: 13,
-    marginBottom: 14,
     textAlign: 'center',
-  },
-  statusSuccess: {
-    color: '#10B981',
-  },
-  statusError: {
-    color: '#EF4444',
-  },
-  modalButtonRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
     marginTop: 8,
+    marginBottom: 24,
+    lineHeight: 20,
   },
-  confirmButton: {
-    backgroundColor: '#8A5CF6',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+    justifyContent: 'center',
   },
-  confirmBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  cancelButton: {
+  cancelBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 20,
   },
   cancelBtnText: {
     color: '#D1D5DB',
     fontSize: 14,
     fontWeight: '600',
+  },
+  deleteBtn: {
+    backgroundColor: '#EF4444',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  deleteBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
