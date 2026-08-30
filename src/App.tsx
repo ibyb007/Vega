@@ -12,6 +12,7 @@ import ProviderSandboxHost from './components/ProviderSandboxHost';
 import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
+import useContentStore from './lib/zustand/contentStore';
 
 // TV Components & Screens
 import { TVNavigationRail, TVRoute } from './components/tv/TVNavigationRail';
@@ -19,7 +20,7 @@ import { TVHomeScreen } from './screens/tv/TVHomeScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
-import { TVDetailsScreen } from './screens/tv/TVDetailsScreen';
+import { TVInfoScreen } from './screens/tv/TVInfoScreen';
 import TVSearch from './screens/Search';
 import Extensions from './screens/settings/Extensions';
 
@@ -28,6 +29,7 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 export interface ActiveStreamPayload {
   url: string;
   title: string;
+  headers?: Record<string, string>;
 }
 
 export default function App() {
@@ -35,6 +37,7 @@ export default function App() {
   const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
+  const currentProvider = useContentStore(state => state.provider);
 
   useEffect(() => {
     BootSplash.hide({ fade: false }).catch(() => {});
@@ -112,23 +115,28 @@ export default function App() {
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
+                    headers={activeStream.headers}
                     onClose={() => setActiveStream(null)}
                   />
                 ) : selectedItem ? (
                   /* TV Details, Episode & Quality Selector Screen */
-                  <TVDetailsScreen
+                  <TVInfoScreen
                     item={selectedItem}
+                    providerValue={selectedItem.provider || currentProvider?.value}
                     onBack={() => setSelectedItem(null)}
-                    onPlayStream={(streamUrl, title) =>
-                      setActiveStream({
-                        url: streamUrl,
-                        title: title || selectedItem.title,
-                      })
-                    }
+                    onPlay={(payload) => {
+                      setActiveStream(payload);
+                      setSelectedItem(null);
+                    }}
                   />
                 ) : (
-                  /* Master TV Layout with Stremio-Style Overlay Drawer */
+                  /* Master TV Layout: Rail + Viewport */
                   <View style={styles.layout}>
+                    <TVNavigationRail
+                      currentRoute={currentRoute}
+                      onRouteChange={navigateTo}
+                    />
+
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
@@ -169,12 +177,6 @@ export default function App() {
 
                       {currentRoute === 'settings' && <TVSettingsScreen />}
                     </View>
-
-                    {/* Absolute Sidebar Overlay */}
-                    <TVNavigationRail
-                      currentRoute={currentRoute}
-                      onRouteChange={navigateTo}
-                    />
                   </View>
                 )}
 
@@ -198,7 +200,7 @@ const styles = StyleSheet.create({
   },
   layout: {
     flex: 1,
-    position: 'relative',
+    flexDirection: 'row',
     width: '100%',
     height: '100%',
   },
@@ -206,6 +208,5 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     backgroundColor: '#0A0A0E',
-    paddingLeft: 70, // Fixed width matching collapsed rail
   },
 });
