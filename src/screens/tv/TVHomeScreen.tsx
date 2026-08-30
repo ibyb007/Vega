@@ -1,12 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Image,
+  ActivityIndicator,
+} from 'react-native';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
 import { Post } from '../../lib/providers/types';
-import { TVRoute } from '../../components/tv/TVNavigationRail';
+import { TVRoute } from '../../components/tv/TVNavigationRail';[cite: 8]
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
@@ -17,32 +24,33 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onSelectItem,
   onNavigateRoute,
 }) => {
-  const provider = useContentStore((state) => state.provider);
-  const installedProviders = useContentStore((state) => state.installedProviders);
-  const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
+  const provider = useContentStore((state) => state.provider);[cite: 4]
+  const installedProviders = useContentStore((state) => state.installedProviders);[cite: 4]
+  const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);[cite: 4]
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
-  );
+  );[cite: 4]
 
   const { data: homeData = [], isLoading } = useHomePageData({
     provider,
     enabled: hasProviders,
-  });
+  });[cite: 4]
 
   useEffect(() => {
-    if (homeData && homeData.length > 0) {
-      const hero = getRandomHeroPost(homeData, provider?.value);
+    if (homeData && homeData.length > 0) {[cite: 4]
+      const hero = getRandomHeroPost(homeData, provider?.value);[cite: 4]
       if (hero) {
         setActiveHero({
           title: hero.title,
           backdropUrl: hero.image,
           posterUrl: hero.image,
-          overview: 'Select title to browse stream links and episodes.',
+          overview: hero.extra || 'Select title to browse stream links and playback streams.',
+          year: '2024',
         });
       }
     }
-  }, [homeData, provider?.value]);
+  }, [homeData, provider?.value]);[cite: 4]
 
   if (!hasProviders) {
     return (
@@ -50,77 +58,85 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         onInstallProviders={() => onNavigateRoute?.('addons')}
         onOpenSettings={() => onNavigateRoute?.('settings')}
       />
-    );
+    );[cite: 4]
   }
 
   if (isLoading && homeData.length === 0) {
     return (
       <View style={styles.centerLoading}>
         <ActivityIndicator size="large" color="#8A5CF6" />
-        <Text style={styles.loadingText}>Loading {provider?.displayTitle || provider?.name} catalog...</Text>
+        <Text style={styles.loadingText}>
+          Loading {provider?.displayTitle || provider?.name} catalog...
+        </Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <TVHeroMeta media={activeHero} />
-
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.rowsWrapper}
+        contentContainerStyle={styles.verticalScrollContent}
       >
-        {homeData.map((row, index) => (
-          <View key={`${row.filter || row.title}-${index}`} style={styles.rowContainer}>
-            <Text style={styles.rowTitle}>{row.title}</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.rowScroll}
-            >
-              {(row.Posts || []).map((item, pIndex) => (
-                <TVFocusablePressable
-                  key={`${item.link}-${pIndex}`}
-                  hasTVPreferredFocus={index === 0 && pIndex === 0}
-                  scaleFocused={1.08}
-                  focusedBorderColor="#8A5CF6"
-                  borderRadius={8}
-                  onFocus={() =>
-                    setActiveHero({
-                      title: item.title,
-                      backdropUrl: item.image,
-                      posterUrl: item.image,
-                      overview: 'Select title to browse stream links.',
-                    })
-                  }
-                  onPress={() => onSelectItem(item)}
-                  style={styles.card}
+        {/* Dynamic Full-Bleed Hero Section */}
+        <TVHeroMeta media={activeHero} />[cite: 4]
+
+        {/* Media Rows */}
+        <View style={styles.rowsWrapper}>
+          {homeData.map((row, index) => {
+            const rowPosts = row.Posts || [];
+            if (rowPosts.length === 0) return null;
+
+            return (
+              <View key={`${row.filter || row.title}-${index}`} style={styles.rowContainer}>
+                <Text style={styles.rowCategoryTitle}>{row.title}</Text>
+
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.horizontalRowScroll}
                 >
-                  {({ focused }) => (
-                    <View style={styles.cardInner}>
-                      <Image
-                        source={{
-                          uri:
-                            item.image ||
-                            'https://placehold.jp/24/363636/ffffff/100x150.png?text=Vega',
-                        }}
-                        style={styles.cardPoster}
-                        resizeMode="cover"
-                      />
-                      {focused && (
-                        <View style={styles.cardBadge}>
-                          <Text numberOfLines={1} style={styles.cardTitle}>
-                            {item.title}
-                          </Text>
+                  {rowPosts.map((item, pIndex) => (
+                    <TVFocusablePressable
+                      key={`${item.link}-${pIndex}`}
+                      hasTVPreferredFocus={index === 0 && pIndex === 0}
+                      scaleFocused={1.08}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={10}
+                      onFocus={() =>
+                        setActiveHero({
+                          title: item.title,
+                          backdropUrl: item.image,
+                          posterUrl: item.image,
+                          overview: item.extra || 'Select title to browse stream links.',
+                        })
+                      }
+                      onPress={() => onSelectItem(item)}[cite: 4]
+                      style={styles.card}[cite: 4]
+                    >
+                      {({ focused }) => (
+                        <View style={styles.cardInner}>
+                          <Image
+                            source={{
+                              uri:
+                                item.image ||
+                                'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+                            }}
+                            style={styles.cardPoster}
+                            resizeMode="cover"
+                          />
+                          {focused && (
+                            <View style={styles.focusBorderGlow} />
+                          )}
                         </View>
                       )}
-                    </View>
-                  )}
-                </TVFocusablePressable>
-              ))}
-            </ScrollView>
-          </View>
-        ))}
+                    </TVFocusablePressable>
+                  ))}
+                </ScrollView>
+              </View>
+            );
+          })}
+        </View>
       </ScrollView>
     </View>
   );
@@ -136,58 +152,56 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#0A0A0E',
-    paddingLeft: 32,
+    paddingLeft: 84,
   },
   loadingText: {
     color: '#9CA3AF',
     fontSize: 16,
     marginTop: 16,
   },
+  verticalScrollContent: {
+    paddingBottom: 60,
+  },
   rowsWrapper: {
-    paddingBottom: 40,
-    paddingLeft: 32,
+    paddingLeft: 96,
+    marginTop: -10,
   },
   rowContainer: {
     marginBottom: 28,
   },
-  rowTitle: {
+  rowCategoryTitle: {
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '700',
     marginBottom: 12,
     letterSpacing: 0.3,
   },
-  rowScroll: {
-    paddingRight: 40,
+  horizontalRowScroll: {
+    paddingRight: 60,
     gap: 16,
+    paddingVertical: 10,
   },
   card: {
-    width: 140,
-    height: 210,
+    width: 155,
+    height: 232,
+    backgroundColor: '#16161E',
+    borderRadius: 10,
   },
   cardInner: {
     flex: 1,
+    borderRadius: 10,
+    overflow: 'hidden',
     position: 'relative',
   },
   cardPoster: {
     width: '100%',
     height: '100%',
-    borderRadius: 8,
+    borderRadius: 10,
   },
-  cardBadge: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderBottomLeftRadius: 8,
-    borderBottomRightRadius: 8,
-  },
-  cardTitle: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '600',
+  focusBorderGlow: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 10,
+    borderWidth: 2.5,
+    borderColor: '#8A5CF6',
   },
 });
