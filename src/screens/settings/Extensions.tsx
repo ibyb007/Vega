@@ -11,25 +11,16 @@ import {
   ToastAndroid,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import axios from 'axios';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useThemeStore from '../../lib/zustand/themeStore';
-import { extensionStorage } from '../../lib/storage';
-import { Provider } from '../../lib/providers/types';
-
-interface RepoProviderManifest {
-  name: string;
-  displayTitle?: string;
-  title?: string;
-  version: string;
-  type?: string;
-  author?: string;
-  value: string;
-  icon?: string;
-  url?: string;
-  [key: string]: any;
-}
+import {
+  extensionStorage,
+  ProviderExtension,
+  ProviderSource,
+} from '../../lib/storage/extensionStorage';
+import { extensionManager } from '../../lib/services/ExtensionManager';
+import { createProviderSource } from '../../lib/utils/helpers';
 
 const AddSourceModal = memo(({
   visible,
@@ -118,88 +109,49 @@ export default function Extensions({ navigation }: any) {
   const setProvider = useContentStore((state) => state.setProvider);
   const activeProvider = useContentStore((state) => state.provider);
 
-  const [availableProviders, setAvailableProviders] = useState<RepoProviderManifest[]>([]);
-  const [activeSource, setActiveSource] = useState<string>('');
+  const [availableProviders, setAvailableProviders] = useState<ProviderExtension[]>([]);
+  const [activeSource, setActiveSource] = useState<ProviderSource | undefined>();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isAddingSource, setIsAddingSource] = useState(false);
 
-  const getSavedSources = (): string[] => {
-    try {
-      const raw = extensionStorage.getString('providerSources');
-      if (!raw) return [];
-      return JSON.parse(raw);
-    } catch {
-      return [];
+  // Re-reads installed providers from real persisted storage (MMKV via
+  // extensionStorage) so the list is always in sync with what
+  // ProviderManager can actually find, instead of drifting from an
+  // in-memory-only list.
+  const syncInstalledProviders = useCallback(() => {
+    setInstalledProviders(extensionStorage.getInstalledProviders());
+  }, [setInstalledProviders]);
+
+  const loadManifest = useCallback(async (source?: ProviderSource, force = false) => {
+    if (!source) {
+      setAvailableProviders([]);
+      return;
     }
-  };
-
-  const saveSources = (sources: string[]) => {
-    try {
-      extensionStorage.set('providerSources', JSON.stringify(sources));
-    } catch (e) {
-      console.warn('[Storage] Error:', e);
-    }
-  };
-
-  const sanitizeManifestList = (rawList: any[]): RepoProviderManifest[] => {
-    if (!Array.isArray(rawList)) return [];
-    return rawList
-      .filter((item) => item && (item.value || item.name))
-      .map((item) => {
-        const fallbackName = item.name || item.displayTitle || item.title || item.value || 'Provider';
-        return {
-          ...item,
-          name: fallbackName,
-          displayTitle: item.displayTitle || fallbackName,
-          title: item.title || fallbackName,
-          value: item.value || fallbackName.toLowerCase().replace(/\s+/g, '-'),
-          version: String(item.version || '1.0.0'),
-          author: item.author || 'Vega-Org',
-          type: item.type || 'global',
-          icon: item.icon,
-        };
-      })
-      .sort((a, b) => (a.displayTitle || a.name || '').localeCompare(b.displayTitle || b.name || ''));
-  };
-
-  const fetchManifest = async (url: string): Promise<RepoProviderManifest[]> => {
-    const res = await axios.get(url, {
-      timeout: 10000,
-      headers: { 'Cache-Control': 'no-cache' },
-    });
-    const data = res.data;
-    let list: any[] = [];
-    if (Array.isArray(data)) list = data;
-    else if (data?.providers && Array.isArray(data.providers)) list = data.providers;
-    else if (data?.extensions && Array.isArray(data.extensions)) list = data.extensions;
-
-    return sanitizeManifestList(list);
-  };
-
-  const loadSources = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const saved = getSavedSources();
-      if (saved.length > 0) {
-        const src = saved[0];
-        setActiveSource(src);
-        const provs = await fetchManifest(src);
-        setAvailableProviders(provs);
-      } else {
-        setAvailableProviders([]);
-      }
-    } catch (e) {
-      console.warn('[Extensions] Load error:', e);
+      const providers = await extensionManager.fetchManifest(source, force);
+      setAvailableProviders(providers);
+    } catch (e: any) {
+      console.warn('[Extensions] Manifest load error:', e);
+      ToastAndroid.show(e?.message || 'Failed to load provider source', ToastAndroid.LONG);
+      setAvailableProviders([]);
     } finally {
       setIsRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    loadSources();
-  }, [loadSources]);
+    const source = extensionStorage.getProviderSource();
+    setActiveSource(source);
+    if (source) {
+      loadManifest(source);
+    }
+    // Storage is the source of truth for installed providers on mount too,
+    // in case something changed while this screen was unmounted.
+    syncInstalledProviders();
+  }, [loadManifest, syncInstalledProviders]);
 
   const handleAddSource = async (rawInput: string) => {
     const trimmed = rawInput.trim();
@@ -207,22 +159,19 @@ export default function Extensions({ navigation }: any) {
 
     setIsAddingSource(true);
     try {
-      let finalUrl = trimmed;
-      if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-        finalUrl = `https://raw.githubusercontent.com/${trimmed}/vega-providers/main/manifest.json`;
+      const parsedSource = createProviderSource(trimmed);
+      const providers = await extensionManager.fetchManifest(parsedSource, true);
+      if (!providers || providers.length === 0) {
+        throw new Error('No valid providers found at this source');
       }
 
-      const provs = await fetchManifest(finalUrl);
-      if (!provs || provs.length === 0) {
-        throw new Error('No valid providers found at this URL');
-      }
+      extensionStorage.addProviderSources(parsedSource.author, parsedSource.url);
+      extensionStorage.setDefaultProviderSource(parsedSource.author);
 
-      const updated = Array.from(new Set([finalUrl, ...getSavedSources()]));
-      saveSources(updated);
-      setActiveSource(finalUrl);
-      setAvailableProviders(provs);
+      setActiveSource(parsedSource);
+      setAvailableProviders(providers);
 
-      ToastAndroid.show(`Found ${provs.length} available providers!`, ToastAndroid.SHORT);
+      ToastAndroid.show(`Found ${providers.length} available providers!`, ToastAndroid.SHORT);
       setIsModalVisible(false);
     } catch (err: any) {
       ToastAndroid.show(err?.message || 'Failed to add source', ToastAndroid.LONG);
@@ -231,54 +180,44 @@ export default function Extensions({ navigation }: any) {
     }
   };
 
-  const handleToggleInstall = async (item: RepoProviderManifest) => {
+  const handleToggleInstall = async (item: ProviderExtension) => {
     const isInstalled = installedProviders.some((p) => p.value === item.value);
     setInstallingMap((prev) => ({ ...prev, [item.value]: true }));
 
     try {
       if (isInstalled) {
-        const nextList = installedProviders.filter((p) => p.value !== item.value);
-        setInstalledProviders(nextList);
+        extensionManager.uninstallProvider(item.value, item.source?.author);
+        syncInstalledProviders();
+
         if (activeProvider?.value === item.value) {
-          setProvider(nextList.length > 0 ? nextList[0] : null);
+          const remaining = extensionStorage.getInstalledProviders();
+          setProvider(remaining[0] ?? {
+            value: '',
+            display_name: '',
+            type: 'global',
+            installed: false,
+            disabled: false,
+            version: '0.0.1',
+            icon: '',
+            source: { author: '', url: '' },
+            installedAt: 0,
+            lastUpdated: 0,
+          });
         }
-        ToastAndroid.show(`Uninstalled ${item.displayTitle}`, ToastAndroid.SHORT);
+        ToastAndroid.show(`Uninstalled ${item.display_name}`, ToastAndroid.SHORT);
       } else {
-        let scriptUrl = item.url;
-        if (!scriptUrl && activeSource) {
-          const basePath = activeSource.substring(0, activeSource.lastIndexOf('/'));
-          scriptUrl = `${basePath}/${item.value}.js`;
+        // installProvider downloads catalog/posts/meta/stream modules from
+        // `${source.url}/dist/${value}/*.js` and writes the install record
+        // to extensionStorage — this is what ProviderManager reads from
+        // when it later builds the home screen catalog.
+        await extensionManager.installProvider({ ...item, source: item.source || activeSource! });
+        syncInstalledProviders();
+
+        if (!activeProvider?.value) {
+          setProvider(item);
         }
 
-        let code = '';
-        if (scriptUrl) {
-          try {
-            const codeRes = await axios.get(scriptUrl, { timeout: 12000 });
-            code = typeof codeRes.data === 'string' ? codeRes.data : JSON.stringify(codeRes.data);
-          } catch (err) {
-            console.warn(`[Install] Could not download script for ${item.value}`);
-          }
-        }
-
-        const newProvider: Provider = {
-          name: item.name,
-          displayTitle: item.displayTitle || item.name,
-          value: item.value,
-          version: item.version,
-          type: (item.type as any) || 'cloud',
-          icon: item.icon,
-          code: code,
-          sourceUrl: scriptUrl || activeSource,
-        };
-
-        const nextList = [...installedProviders.filter((p) => p.value !== item.value), newProvider];
-        setInstalledProviders(nextList);
-
-        if (!activeProvider) {
-          setProvider(newProvider);
-        }
-
-        ToastAndroid.show(`Installed ${newProvider.displayTitle}!`, ToastAndroid.SHORT);
+        ToastAndroid.show(`Installed ${item.display_name}!`, ToastAndroid.SHORT);
       }
     } catch (e: any) {
       ToastAndroid.show(e?.message || 'Operation failed', ToastAndroid.LONG);
@@ -302,7 +241,7 @@ export default function Extensions({ navigation }: any) {
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={10}
-            onPress={() => loadSources()}
+            onPress={() => loadManifest(activeSource, true)}
             style={styles.iconBtn}
           >
             {() => (
@@ -336,7 +275,7 @@ export default function Extensions({ navigation }: any) {
         <View style={styles.sourceBar}>
           <Text style={styles.sourceBarLabel}>Active Source:</Text>
           <Text numberOfLines={1} style={styles.sourceBarUrl}>
-            {activeSource}
+            {activeSource.author}
           </Text>
         </View>
       ) : null}
@@ -375,11 +314,11 @@ export default function Extensions({ navigation }: any) {
                   </View>
                   <View style={styles.providerInfo}>
                     <View style={styles.titleLine}>
-                      <Text style={styles.providerName}>{item.displayTitle}</Text>
+                      <Text style={styles.providerName}>{item.display_name}</Text>
                       <Text style={styles.versionBadge}>v{item.version}</Text>
                     </View>
                     <Text style={styles.providerMeta}>
-                      {item.type || 'Global'} • {item.author || 'Vega-Org'}
+                      {item.type || 'Global'} • {item.source?.author || 'Vega-Org'}
                     </Text>
                   </View>
                 </View>
