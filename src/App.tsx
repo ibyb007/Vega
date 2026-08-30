@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, StatusBar, Dimensions } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, StyleSheet, StatusBar, Dimensions, BackHandler } from 'react-native';
 import BootSplash from 'react-native-bootsplash';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/client';
@@ -12,12 +12,10 @@ import ProviderSandboxHost from './components/ProviderSandboxHost';
 import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
-import useContentStore from './lib/zustand/contentStore';
 
 // TV Architecture Components & Screens
 import { TVNavigationRail, TVRoute } from './components/tv/TVNavigationRail';
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
-import { TVInfoScreen, TVInfoItem } from './screens/tv/TVInfoScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
@@ -29,20 +27,16 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 export interface ActiveStreamPayload {
   url: string;
   title: string;
-  headers?: Record<string, string>;
+  tracks?: any[];
 }
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<TVRoute>('home');
-  const [selectedItem, setSelectedItem] = useState<TVInfoItem | null>(null);
+  const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
-  const currentProvider = useContentStore(state => state.provider);
 
   useEffect(() => {
-    // 1. Hide native bootsplash immediately
     BootSplash.hide({ fade: false }).catch(() => {});
-
-    // 2. Initialize background network & provider tasks safely
     syncDohSettings().catch((e) => console.warn('[DoH] Startup error:', e));
     try {
       updateProvidersService.startAutomaticUpdateCheck();
@@ -57,6 +51,45 @@ export default function App() {
     };
   }, []);
 
+  const navigateTo = useCallback((route: TVRoute) => {
+    setCurrentRoute((prev) => {
+      if (prev !== route) {
+        setRouteHistory((history) => [...history, route]);
+      }
+      return route;
+    });
+  }, []);
+
+  // Back button handler for TV remote
+  useEffect(() => {
+    const handleBackPress = () => {
+      if (activeStream) {
+        setActiveStream(null);
+        return true;
+      }
+
+      if (routeHistory.length > 1) {
+        const nextHistory = [...routeHistory];
+        nextHistory.pop();
+        const prevRoute = nextHistory[nextHistory.length - 1] || 'home';
+        setRouteHistory(nextHistory);
+        setCurrentRoute(prevRoute);
+        return true;
+      }
+
+      if (currentRoute !== 'home') {
+        setCurrentRoute('home');
+        setRouteHistory(['home']);
+        return true;
+      }
+
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
+    return () => sub.remove();
+  }, [activeStream, routeHistory, currentRoute]);
+
   return (
     <SafeAreaProvider style={styles.rootContainer}>
       <GestureHandlerRootView style={styles.rootContainer}>
@@ -68,64 +101,69 @@ export default function App() {
                 <AppDialogHost />
 
                 {activeStream ? (
-                  /* Fullscreen TV Player */
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
-                    headers={activeStream.headers}
                     onClose={() => setActiveStream(null)}
                   />
-                ) : selectedItem ? (
-                  /* Fullscreen Info screen: seasons/episodes/quality picker,
-                     shown before playback (mirrors the mobile app's Info screen). */
-                  <TVInfoScreen
-                    item={selectedItem}
-                    providerValue={selectedItem.provider || currentProvider?.value}
-                    onBack={() => setSelectedItem(null)}
-                    onPlay={(payload) => {
-                      setActiveStream(payload);
-                      setSelectedItem(null);
-                    }}
-                  />
                 ) : (
-                  /* Master TV Layout: Collapsible Rail + Viewport */
                   <View style={styles.layout}>
                     <TVNavigationRail
                       currentRoute={currentRoute}
-                      onRouteChange={(route) => setCurrentRoute(route)}
+                      onRouteChange={navigateTo}
                     />
 
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
-                          onNavigateRoute={(route) => setCurrentRoute(route)}
-                          onSelectItem={(item) => setSelectedItem(item)}
+                          onNavigateRoute={navigateTo}
+                          onSelectItem={(item) =>
+                            setActiveStream({
+                              url:
+                                item.streamUrl ||
+                                item.link ||
+                                'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+                              title: item.title,
+                            })
+                          }
                         />
                       )}
 
                       {currentRoute === 'search' && (
-                        <TVSearch onSelectItem={(item) => setSelectedItem(item)} />
+                        <TVSearch
+                          onSelectItem={(item) =>
+                            setActiveStream({
+                              url: item.streamUrl || item.link,
+                              title: item.title,
+                            })
+                          }
+                        />
                       )}
 
                       {currentRoute === 'discover' && (
                         <TVHomeScreen
-                          onNavigateRoute={(route) => setCurrentRoute(route)}
-                          onSelectItem={(item) => setSelectedItem(item)}
+                          onNavigateRoute={navigateTo}
+                          onSelectItem={(item) =>
+                            setActiveStream({
+                              url: item.streamUrl || item.link,
+                              title: item.title,
+                            })
+                          }
                         />
                       )}
 
                       {currentRoute === 'sources' && (
                         <TVSourceSelectScreen
-                          onNavigateHome={() => setCurrentRoute('home')}
-                          onNavigateAddons={() => setCurrentRoute('addons')}
+                          onNavigateHome={() => navigateTo('home')}
+                          onNavigateAddons={() => navigateTo('addons')}
                         />
                       )}
 
                       {currentRoute === 'addons' && (
                         <Extensions
                           navigation={{
-                            navigate: (screen: string) => setCurrentRoute(screen.toLowerCase() as any),
-                            goBack: () => setCurrentRoute('home'),
+                            navigate: (screen: string) => navigateTo(screen.toLowerCase() as any),
+                            goBack: () => navigateTo('home'),
                           } as any}
                           route={{} as any}
                         />
@@ -136,7 +174,6 @@ export default function App() {
                   </View>
                 )}
 
-                {/* Scraper Isolation Sandbox */}
                 <WafWebViewDialog />
                 <ProviderSandboxHost />
               </View>
