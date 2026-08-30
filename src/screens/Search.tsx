@@ -183,7 +183,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0A0E',
   },
   searchBarWrapper: {
-    paddingLeft: 96,
+    paddingLeft: 32,
     paddingRight: 48,
     marginBottom: 16,
     zIndex: 20,
@@ -207,7 +207,7 @@ const styles = StyleSheet.create({
   resultsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    paddingLeft: 96,
+    paddingLeft: 32,
     paddingRight: 48,
     paddingBottom: 40,
     gap: 16,
