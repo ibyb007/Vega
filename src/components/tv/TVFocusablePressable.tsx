@@ -1,10 +1,11 @@
-import React, { useState, forwardRef } from 'react';
+import React, { useState, forwardRef, useImperativeHandle, useRef } from 'react';
 import {
   Pressable,
   PressableProps,
-  StyleSheet,
-  ViewStyle,
   StyleProp,
+  ViewStyle,
+  StyleSheet,
+  findNodeHandle,
 } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -12,14 +13,14 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 
-interface TVFocusablePressableProps extends PressableProps {
-  children: React.ReactNode | ((state: { focused: boolean }) => React.ReactNode);
+interface TVFocusablePressableProps extends Omit<PressableProps, 'style' | 'children'> {
+  children: ((state: { focused: boolean }) => React.ReactNode) | React.ReactNode;
+  style?: StyleProp<ViewStyle>;
   scaleFocused?: number;
   focusedBorderColor?: string;
   borderRadius?: number;
-  hasTVPreferredFocus?: boolean;
-  style?: StyleProp<ViewStyle>;
   onFocusChange?: (focused: boolean) => void;
+  trapFocusLeft?: boolean;
 }
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -28,60 +29,57 @@ export const TVFocusablePressable = forwardRef<any, TVFocusablePressableProps>(
   (
     {
       children,
-      scaleFocused = 1.06,
-      focusedBorderColor = '#FFFFFF',
-      borderRadius = 8,
-      hasTVPreferredFocus = false,
       style,
+      scaleFocused = 1.04,
+      focusedBorderColor = '#8A5CF6',
+      borderRadius = 12,
+      onFocusChange,
+      trapFocusLeft = false,
       onFocus,
       onBlur,
-      onFocusChange,
       ...rest
     },
     ref
   ) => {
     const [isFocused, setIsFocused] = useState(false);
+    const localRef = useRef<any>(null);
+
+    useImperativeHandle(ref, () => localRef.current);
 
     const animatedStyle = useAnimatedStyle(() => {
       return {
         transform: [
           {
-            scale: withTiming(isFocused ? scaleFocused : 1.0, {
-              duration: 180,
+            scale: withTiming(isFocused ? scaleFocused : 1, {
+              duration: 160,
               easing: Easing.out(Easing.quad),
             }),
           },
         ],
-        borderWidth: withTiming(isFocused ? 2.5 : 0, { duration: 150 }),
+        borderWidth: withTiming(isFocused ? 2 : 0, { duration: 120 }),
         borderColor: isFocused ? focusedBorderColor : 'transparent',
       };
     }, [isFocused]);
 
-    const handleFocus = (e: any) => {
-      setIsFocused(true);
-      onFocusChange?.(true);
-      onFocus?.(e);
-    };
-
-    const handleBlur = (e: any) => {
-      setIsFocused(false);
-      onFocusChange?.(false);
-      onBlur?.(e);
-    };
-
     return (
       <AnimatedPressable
-        ref={ref}
+        ref={localRef}
         focusable={true}
-        hasTVPreferredFocus={hasTVPreferredFocus}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        style={[
-          styles.base,
-          { borderRadius },
-          animatedStyle,
-          style,
-        ]}
+        hasTVPreferredFocus={rest.hasTVPreferredFocus}
+        onFocus={(e) => {
+          setIsFocused(true);
+          onFocusChange?.(true);
+          onFocus?.(e);
+        }}
+        onBlur={(e) => {
+          setIsFocused(false);
+          onFocusChange?.(false);
+          onBlur?.(e);
+        }}
+        {...(trapFocusLeft
+          ? { nextFocusLeft: findNodeHandle(localRef.current) ?? undefined }
+          : {})}
+        style={[styles.base, { borderRadius }, style, animatedStyle]}
         {...rest}
       >
         {typeof children === 'function' ? children({ focused: isFocused }) : children}
