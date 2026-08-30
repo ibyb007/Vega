@@ -8,12 +8,14 @@ import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 interface TVPlayerScreenProps {
   streamUrl: string;
   title: string;
+  headers?: Record<string, string>;
   onClose: () => void;
 }
 
 export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   streamUrl,
   title,
+  headers,
   onClose,
 }) => {
   const videoRef = useRef<VideoRef>(null);
@@ -36,7 +38,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     <View style={styles.container}>
       <Video
         ref={videoRef}
-        source={{ uri: streamUrl }}
+        source={{ uri: streamUrl, headers }}
         style={StyleSheet.absoluteFillObject}
         resizeMode="contain"
         paused={paused}
