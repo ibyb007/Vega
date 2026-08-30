@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { extensionStorage } from '../storage';
+import { mainStorage } from '../storage';
 
 export type VideoPlayerType = 'inbuilt' | 'vlc' | 'external';
 
@@ -10,7 +10,7 @@ interface SettingsState {
 
 const getStoredPlayer = (): VideoPlayerType => {
   try {
-    const saved = extensionStorage.getString('defaultPlayer');
+    const saved = mainStorage.getString('defaultPlayer');
     if (saved === 'vlc' || saved === 'external' || saved === 'inbuilt') {
       return saved;
     }
@@ -22,7 +22,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   defaultPlayer: getStoredPlayer(),
   setDefaultPlayer: (player: VideoPlayerType) => {
     try {
-      extensionStorage.set('defaultPlayer', player);
+      mainStorage.setString('defaultPlayer', player);
     } catch (e) {
       console.warn('[SettingsStore] Failed to persist defaultPlayer:', e);
     }
