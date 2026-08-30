@@ -13,7 +13,7 @@ import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
 import { Post } from '../../lib/providers/types';
-import { TVRoute } from '../../components/tv/TVNavigationRail';[cite: 8]
+import { TVRoute } from '../../components/tv/TVNavigationRail';
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
@@ -24,22 +24,22 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onSelectItem,
   onNavigateRoute,
 }) => {
-  const provider = useContentStore((state) => state.provider);[cite: 4]
-  const installedProviders = useContentStore((state) => state.installedProviders);[cite: 4]
-  const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);[cite: 4]
+  const provider = useContentStore((state) => state.provider);
+  const installedProviders = useContentStore((state) => state.installedProviders);
+  const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
-  );[cite: 4]
+  );
 
   const { data: homeData = [], isLoading } = useHomePageData({
     provider,
     enabled: hasProviders,
-  });[cite: 4]
+  });
 
   useEffect(() => {
-    if (homeData && homeData.length > 0) {[cite: 4]
-      const hero = getRandomHeroPost(homeData, provider?.value);[cite: 4]
+    if (homeData && homeData.length > 0) {
+      const hero = getRandomHeroPost(homeData, provider?.value);
       if (hero) {
         setActiveHero({
           title: hero.title,
@@ -50,7 +50,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         });
       }
     }
-  }, [homeData, provider?.value]);[cite: 4]
+  }, [homeData, provider?.value]);
 
   if (!hasProviders) {
     return (
@@ -58,7 +58,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         onInstallProviders={() => onNavigateRoute?.('addons')}
         onOpenSettings={() => onNavigateRoute?.('settings')}
       />
-    );[cite: 4]
+    );
   }
 
   if (isLoading && homeData.length === 0) {
@@ -78,10 +78,8 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.verticalScrollContent}
       >
-        {/* Dynamic Full-Bleed Hero Section */}
-        <TVHeroMeta media={activeHero} />[cite: 4]
+        <TVHeroMeta media={activeHero} />
 
-        {/* Media Rows */}
         <View style={styles.rowsWrapper}>
           {homeData.map((row, index) => {
             const rowPosts = row.Posts || [];
@@ -111,8 +109,8 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                           overview: item.extra || 'Select title to browse stream links.',
                         })
                       }
-                      onPress={() => onSelectItem(item)}[cite: 4]
-                      style={styles.card}[cite: 4]
+                      onPress={() => onSelectItem(item)}
+                      style={styles.card}
                     >
                       {({ focused }) => (
                         <View style={styles.cardInner}>
@@ -125,9 +123,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                             style={styles.cardPoster}
                             resizeMode="cover"
                           />
-                          {focused && (
-                            <View style={styles.focusBorderGlow} />
-                          )}
+                          {focused && <View style={styles.focusBorderGlow} />}
                         </View>
                       )}
                     </TVFocusablePressable>
