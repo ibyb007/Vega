@@ -35,7 +35,6 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
   const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleItemFocus = () => {
-    // Clear any scheduled collapse immediately when any item gains focus
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
       blurTimeoutRef.current = null;
@@ -44,7 +43,6 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
   };
 
   const handleItemBlur = () => {
-    // Debounce collapse so moving between adjacent items (Up/Down) doesn't jitter
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
     }
@@ -68,13 +66,11 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
 
   return (
     <Animated.View style={[styles.container, containerStyle]}>
-      {/* Brand Header */}
       <View style={styles.header}>
         <MaterialCommunityIcons name="play-circle" size={32} color="#8A5CF6" />
         {isExpanded && <Text style={styles.brandText}>VEGA TV</Text>}
       </View>
 
-      {/* Navigation Items */}
       <View style={styles.menuContainer}>
         {NAV_ITEMS.map((item) => {
           const isActive = currentRoute === item.id;
@@ -85,11 +81,8 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
               focusedBorderColor="#8A5CF6"
               borderRadius={12}
               onFocusChange={(focused) => {
-                if (focused) {
-                  handleItemFocus();
-                } else {
-                  handleItemBlur();
-                }
+                if (focused) handleItemFocus();
+                else handleItemBlur();
               }}
               onPress={() => onRouteChange(item.id)}
               style={[
@@ -128,12 +121,15 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    height: '100%',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 9999, // Render on top of everything
     paddingVertical: 24,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     borderRightWidth: 1,
     borderRightColor: 'rgba(255, 255, 255, 0.08)',
-    overflow: 'hidden',
   },
   header: {
     flexDirection: 'row',
