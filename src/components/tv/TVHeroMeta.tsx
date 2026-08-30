@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Image, Dimensions } from 'react-native';
-import LinearGradient from 'react-native-linear-gradient';
+import { LinearGradient } from 'expo-linear-gradient';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -25,19 +25,20 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 
   return (
     <View style={styles.container}>
-      {/* Dynamic Fullscreen Backdrop Image */}
       {imageUrl ? (
-        <Image
-          source={{ uri: imageUrl }}
-          style={styles.backdropImage}
-          resizeMode="cover"
-        />
+        <View style={styles.backdropWrapper}>
+          <Image
+            source={{ uri: imageUrl }}
+            style={styles.backdropImage}
+            resizeMode="cover"
+          />
+        </View>
       ) : null}
 
-      {/* Gradients to blend seamlessly into UI background */}
+      {/* Stremio-Style Bottom & Left Vignette Gradients */}
       <LinearGradient
-        colors={['transparent', 'rgba(10, 10, 14, 0.7)', '#0A0A0E']}
-        locations={[0, 0.65, 1]}
+        colors={['transparent', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
+        locations={[0, 0.6, 1]}
         style={styles.bottomGradient}
       />
       <LinearGradient
@@ -47,7 +48,6 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
         style={styles.leftGradient}
       />
 
-      {/* Text Metadata Details */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media.title}
@@ -66,7 +66,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
         </View>
 
         <Text numberOfLines={3} style={styles.overview}>
-          {media.overview || 'Select title to browse stream links and playback streams.'}
+          {media.overview || 'Select title to browse stream links and episodes.'}
         </Text>
       </View>
     </View>
@@ -75,15 +75,19 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 310,
+    height: 330,
     width: '100%',
     position: 'relative',
     justifyContent: 'flex-end',
   },
-  backdropImage: {
+  backdropWrapper: {
     ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+  backdropImage: {
     width: SCREEN_WIDTH,
-    height: 310,
+    height: 330,
+    aspectRatio: 16 / 9,
   },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -94,17 +98,17 @@ const styles = StyleSheet.create({
   },
   contentWrapper: {
     paddingLeft: 96,
-    paddingBottom: 16,
-    maxWidth: 680,
+    paddingBottom: 20,
+    maxWidth: 720,
     zIndex: 10,
   },
   title: {
     color: '#FFFFFF',
     fontSize: 34,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
     marginBottom: 8,
-    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowColor: 'rgba(0, 0, 0, 0.85)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
   },
@@ -118,8 +122,8 @@ const styles = StyleSheet.create({
     color: '#D1D5DB',
     fontSize: 13,
     fontWeight: '600',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    paddingHorizontal: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 4,
   },
@@ -142,6 +146,6 @@ const styles = StyleSheet.create({
   overview: {
     color: '#9CA3AF',
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 21,
   },
 });
