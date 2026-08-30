@@ -19,9 +19,9 @@ import { TVHomeScreen } from './screens/tv/TVHomeScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
+import { TVDetailsScreen } from './screens/tv/TVDetailsScreen';
 import TVSearch from './screens/Search';
 import Extensions from './screens/settings/Extensions';
-import Details from './screens/Details';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -62,7 +62,7 @@ export default function App() {
     });
   }, []);
 
-  // Back button handling: closes Player -> closes Details/Quality Picker -> pops Route -> closes App
+  // Back button handling: Player -> Details Screen -> Route History -> App Exit
   useEffect(() => {
     const handleBackPress = () => {
       if (activeStream) {
@@ -115,25 +115,20 @@ export default function App() {
                     onClose={() => setActiveStream(null)}
                   />
                 ) : selectedItem ? (
-                  /* Details, Episode & Quality Selector */
-                  <Details
-                    route={{ params: { link: selectedItem.link, post: selectedItem } } as any}
-                    navigation={{
-                      goBack: () => setSelectedItem(null),
-                      navigate: (screen: string, params: any) => {
-                        if (params?.streamUrl || params?.link) {
-                          setActiveStream({
-                            url: params.streamUrl || params.link,
-                            title: params.title || selectedItem.title,
-                          });
-                        }
-                      },
-                    } as any}
+                  /* TV Details, Episode & Quality Selector Screen */
+                  <TVDetailsScreen
+                    item={selectedItem}
+                    onBack={() => setSelectedItem(null)}
+                    onPlayStream={(streamUrl, title) =>
+                      setActiveStream({
+                        url: streamUrl,
+                        title: title || selectedItem.title,
+                      })
+                    }
                   />
                 ) : (
-                  /* Master TV Layout */
+                  /* Master TV Layout with Stremio-Style Overlay Drawer */
                   <View style={styles.layout}>
-                    {/* Viewport has fixed left padding so opening sidebar overlays without moving UI */}
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
@@ -175,7 +170,7 @@ export default function App() {
                       {currentRoute === 'settings' && <TVSettingsScreen />}
                     </View>
 
-                    {/* Absolute overlay sidebar */}
+                    {/* Absolute Sidebar Overlay */}
                     <TVNavigationRail
                       currentRoute={currentRoute}
                       onRouteChange={navigateTo}
