@@ -1,80 +1,73 @@
 import React from 'react';
-import { View, Text, Image, StyleSheet } from 'react-native';
-import LinearGradient from 'react-native-linear-gradient';
+import { View, Text, StyleSheet, Image, Dimensions } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export interface TVHeroMedia {
   title: string;
   backdropUrl?: string;
   posterUrl?: string;
-  year?: string | number;
-  rating?: string | number;
-  duration?: string;
-  genres?: string[];
   overview?: string;
+  year?: string;
+  rating?: string;
+  genres?: string[];
 }
 
 interface TVHeroMetaProps {
-  media?: TVHeroMedia | null;
+  media: TVHeroMedia | null;
 }
 
 export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
-  if (!media) {
-    return <View style={styles.placeholder} />;
-  }
+  if (!media) return <View style={styles.container} />;
+
+  const imageUrl = media.backdropUrl || media.posterUrl;
 
   return (
     <View style={styles.container}>
-      {/* Dynamic Fanart Backdrop Image */}
-      {media.backdropUrl ? (
+      {/* Dynamic Fullscreen Backdrop Image */}
+      {imageUrl ? (
         <Image
-          source={{ uri: media.backdropUrl }}
-          style={StyleSheet.absoluteFillObject}
+          source={{ uri: imageUrl }}
+          style={styles.backdropImage}
           resizeMode="cover"
         />
       ) : null}
 
-      {/* Dark Vignette Gradients for Text Readability */}
+      {/* Gradients to blend seamlessly into UI background */}
       <LinearGradient
-        colors={['transparent', 'rgba(0, 0, 0, 0.7)', '#0A0A0E']}
-        style={StyleSheet.absoluteFillObject}
-        start={{ x: 0.5, y: 0.2 }}
-        end={{ x: 0.5, y: 1.0 }}
+        colors={['transparent', 'rgba(10, 10, 14, 0.7)', '#0A0A0E']}
+        locations={[0, 0.65, 1]}
+        style={styles.bottomGradient}
       />
       <LinearGradient
         colors={['#0A0A0E', 'rgba(10, 10, 14, 0.85)', 'transparent']}
-        style={StyleSheet.absoluteFillObject}
-        start={{ x: 0.0, y: 0.5 }}
-        end={{ x: 0.75, y: 0.5 }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.leftGradient}
       />
 
-      {/* Metadata Overview Block */}
-      <View style={styles.metaContent}>
+      {/* Text Metadata Details */}
+      <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media.title}
         </Text>
 
-        {/* Badges / Chips */}
-        <View style={styles.badgeRow}>
-          {media.duration ? <Text style={styles.metaBadge}>{media.duration}</Text> : null}
+        <View style={styles.metaRow}>
           {media.year ? <Text style={styles.metaBadge}>{media.year}</Text> : null}
           {media.rating ? (
             <View style={styles.ratingBadge}>
               <Text style={styles.ratingText}>★ {media.rating}</Text>
             </View>
           ) : null}
-          {media.genres?.slice(0, 3).map((genre, idx) => (
-            <Text key={idx} style={styles.genreText}>
-              {genre} {idx < Math.min(media.genres?.length || 0, 3) - 1 ? '•' : ''}
-            </Text>
-          ))}
+          {media.genres && media.genres.length > 0 ? (
+            <Text style={styles.genreText}>{media.genres.join(' • ')}</Text>
+          ) : null}
         </View>
 
-        {/* Short Synopsis */}
-        {media.overview ? (
-          <Text numberOfLines={3} style={styles.overview}>
-            {media.overview}
-          </Text>
-        ) : null}
+        <Text numberOfLines={3} style={styles.overview}>
+          {media.overview || 'Select title to browse stream links and playback streams.'}
+        </Text>
       </View>
     </View>
   );
@@ -82,55 +75,64 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 330,
+    height: 310,
     width: '100%',
+    position: 'relative',
     justifyContent: 'flex-end',
-    paddingLeft: 32,
-    paddingRight: 48,
-    paddingBottom: 24,
   },
-  placeholder: {
-    height: 330,
-    width: '100%',
-    backgroundColor: '#0A0A0E',
+  backdropImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: SCREEN_WIDTH,
+    height: 310,
   },
-  metaContent: {
-    maxWidth: 700,
+  bottomGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  leftGradient: {
+    ...StyleSheet.absoluteFillObject,
+    width: '65%',
+  },
+  contentWrapper: {
+    paddingLeft: 96,
+    paddingBottom: 16,
+    maxWidth: 680,
     zIndex: 10,
   },
   title: {
     color: '#FFFFFF',
     fontSize: 34,
-    fontWeight: '900',
-    letterSpacing: 0.4,
+    fontWeight: '800',
+    letterSpacing: 0.5,
     marginBottom: 8,
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
   },
-  badgeRow: {
+  metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
     gap: 10,
-    marginBottom: 12,
+    marginBottom: 8,
   },
   metaBadge: {
     color: '#D1D5DB',
     fontSize: 13,
     fontWeight: '600',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    paddingHorizontal: 7,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
   ratingBadge: {
-    backgroundColor: '#EAB308',
-    paddingHorizontal: 7,
+    backgroundColor: '#F59E0B',
+    paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
   ratingText: {
     color: '#000000',
-    fontWeight: '800',
     fontSize: 12,
+    fontWeight: '800',
   },
   genreText: {
     color: '#9CA3AF',
