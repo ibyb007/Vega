@@ -136,7 +136,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#0A0A0E',
-    paddingLeft: 84,
+    paddingLeft: 32,
   },
   loadingText: {
     color: '#9CA3AF',
@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
   },
   rowsWrapper: {
     paddingBottom: 40,
-    paddingLeft: 84,
+    paddingLeft: 32,
   },
   rowContainer: {
     marginBottom: 28,

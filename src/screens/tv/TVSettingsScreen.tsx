@@ -90,7 +90,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0A0E',
   },
   content: {
-    paddingLeft: 96,
+    paddingLeft: 32,
     paddingRight: 48,
     paddingTop: 36,
     paddingBottom: 48,
