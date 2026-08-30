@@ -12,10 +12,12 @@ import ProviderSandboxHost from './components/ProviderSandboxHost';
 import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
+import useContentStore from './lib/zustand/contentStore';
 
 // TV Architecture Components & Screens
 import { TVNavigationRail, TVRoute } from './components/tv/TVNavigationRail';
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
+import { TVInfoScreen, TVInfoItem } from './screens/tv/TVInfoScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
@@ -27,11 +29,14 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 export interface ActiveStreamPayload {
   url: string;
   title: string;
+  headers?: Record<string, string>;
 }
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<TVRoute>('home');
+  const [selectedItem, setSelectedItem] = useState<TVInfoItem | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
+  const currentProvider = useContentStore(state => state.provider);
 
   useEffect(() => {
     // 1. Hide native bootsplash immediately
@@ -67,7 +72,20 @@ export default function App() {
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
+                    headers={activeStream.headers}
                     onClose={() => setActiveStream(null)}
+                  />
+                ) : selectedItem ? (
+                  /* Fullscreen Info screen: seasons/episodes/quality picker,
+                     shown before playback (mirrors the mobile app's Info screen). */
+                  <TVInfoScreen
+                    item={selectedItem}
+                    providerValue={selectedItem.provider || currentProvider?.value}
+                    onBack={() => setSelectedItem(null)}
+                    onPlay={(payload) => {
+                      setActiveStream(payload);
+                      setSelectedItem(null);
+                    }}
                   />
                 ) : (
                   /* Master TV Layout: Collapsible Rail + Viewport */
@@ -81,44 +99,18 @@ export default function App() {
                       {currentRoute === 'home' && (
                         <TVHomeScreen
                           onNavigateRoute={(route) => setCurrentRoute(route)}
-                          onSelectItem={(item) =>
-                            setActiveStream({
-                              url:
-                                item.streamUrl ||
-                                item.link ||
-                                'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-                              title: item.title,
-                            })
-                          }
+                          onSelectItem={(item) => setSelectedItem(item)}
                         />
                       )}
 
                       {currentRoute === 'search' && (
-                        <TVSearch
-                          onSelectItem={(item) =>
-                            setActiveStream({
-                              url:
-                                item.streamUrl ||
-                                item.link ||
-                                'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-                              title: item.title,
-                            })
-                          }
-                        />
+                        <TVSearch onSelectItem={(item) => setSelectedItem(item)} />
                       )}
 
                       {currentRoute === 'discover' && (
                         <TVHomeScreen
                           onNavigateRoute={(route) => setCurrentRoute(route)}
-                          onSelectItem={(item) =>
-                            setActiveStream({
-                              url:
-                                item.streamUrl ||
-                                item.link ||
-                                'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-                              title: item.title,
-                            })
-                          }
+                          onSelectItem={(item) => setSelectedItem(item)}
                         />
                       )}
 
