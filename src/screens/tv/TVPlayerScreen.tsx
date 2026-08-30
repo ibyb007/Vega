@@ -10,7 +10,7 @@ import Video, { VideoRef } from 'react-native-video';
 import * as IntentLauncher from 'expo-intent-launcher';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
-import useSettingsStore from '../../lib/zustand/settingsStore';
+import { useSettingsStore } from '../../lib/zustand/settingsStore';
 
 interface TVPlayerScreenProps {
   streamUrl: string;
@@ -24,14 +24,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   onClose,
 }) => {
   const videoRef = useRef<VideoRef>(null);
-  const defaultPlayer = useSettingsStore((state: any) => state.defaultPlayer) || 'inbuilt';
+  const defaultPlayer = useSettingsStore((state) => state.defaultPlayer);
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [showControls, setShowControls] = useState(true);
 
-  // Auto-launch external player if chosen in settings
   useEffect(() => {
     if (defaultPlayer === 'vlc' || defaultPlayer === 'external') {
       launchExternalPlayer(streamUrl, title);
@@ -90,7 +89,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* TV OSD Controls */}
       {showControls && (
         <View style={styles.osdContainer}>
           <View style={styles.topBar}>
