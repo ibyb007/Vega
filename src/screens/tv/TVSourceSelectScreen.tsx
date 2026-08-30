@@ -12,7 +12,8 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useThemeStore from '../../lib/zustand/themeStore';
-import { Provider } from '../../lib/providers/types';
+import { extensionStorage, ProviderExtension } from '../../lib/storage/extensionStorage';
+import { extensionManager } from '../../lib/services/ExtensionManager';
 
 interface TVSourceSelectScreenProps {
   onNavigateHome?: () => void;
@@ -29,11 +30,11 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
 
-  const [providerToDelete, setProviderToDelete] = useState<Provider | null>(null);
+  const [providerToDelete, setProviderToDelete] = useState<ProviderExtension | null>(null);
 
-  const handleSelectProvider = (item: Provider) => {
+  const handleSelectProvider = (item: ProviderExtension) => {
     setProvider(item);
-    ToastAndroid.show(`Active source: ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
+    ToastAndroid.show(`Active source: ${item.display_name}`, ToastAndroid.SHORT);
     if (onNavigateHome) {
       onNavigateHome();
     }
@@ -41,14 +42,32 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
   const handleConfirmDelete = () => {
     if (!providerToDelete) return;
-    const remaining = installedProviders.filter((p) => p.value !== providerToDelete.value);
+
+    // Persist the uninstall to storage first — ProviderManager and the
+    // store's own rehydration both read from extensionStorage, so removing
+    // it only from zustand would make it reappear after a restart.
+    extensionManager.uninstallProvider(providerToDelete.value, providerToDelete.source?.author);
+    const remaining = extensionStorage.getInstalledProviders();
     setInstalledProviders(remaining);
 
     if (provider?.value === providerToDelete.value) {
-      setProvider(remaining.length > 0 ? remaining[0] : null);
+      setProvider(
+        remaining[0] ?? {
+          value: '',
+          display_name: '',
+          type: 'global',
+          installed: false,
+          disabled: false,
+          version: '0.0.1',
+          icon: '',
+          source: { author: '', url: '' },
+          installedAt: 0,
+          lastUpdated: 0,
+        },
+      );
     }
 
-    ToastAndroid.show(`Removed ${providerToDelete.displayTitle || providerToDelete.name}`, ToastAndroid.SHORT);
+    ToastAndroid.show(`Removed ${providerToDelete.display_name}`, ToastAndroid.SHORT);
     setProviderToDelete(null);
   };
 
@@ -174,7 +193,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
                     <View style={styles.cardBody}>
                       <Text numberOfLines={1} style={styles.providerName}>
-                        {item.displayTitle || item.name}
+                        {item.display_name}
                       </Text>
                       <Text numberOfLines={1} style={styles.providerMeta}>
                         v{item.version || '1.0.0'} • {item.type || 'Cloud'}
@@ -205,7 +224,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
             <MaterialCommunityIcons name="alert-circle-outline" size={40} color="#EF4444" />
             <Text style={styles.modalTitle}>Remove Provider</Text>
             <Text style={styles.modalText}>
-              Are you sure you want to uninstall {providerToDelete?.displayTitle || providerToDelete?.name}?
+              Are you sure you want to uninstall {providerToDelete?.display_name}?
             </Text>
 
             <View style={styles.modalActions}>
