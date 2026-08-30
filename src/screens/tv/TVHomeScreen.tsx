@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
-  findNodeHandle,
 } from 'react-native';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
@@ -27,9 +26,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
-
-  // Store refs of first items in each row
-  const rowFirstItemRefs = useRef<Array<any>>([]);
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
@@ -103,13 +99,11 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                     return (
                       <TVFocusablePressable
                         key={`${item.link}-${pIndex}`}
-                        ref={isFirstInRow ? (el) => (rowFirstItemRefs.current[rowIndex] = el) : undefined}
                         hasTVPreferredFocus={rowIndex === 0 && isFirstInRow}
                         scaleFocused={1.08}
                         focusedBorderColor="#8A5CF6"
                         borderRadius={10}
-                        // Focus stays within row unless at the very first poster
-                        trapFocusLeft={!isFirstInRow}
+                        trapFocusLeft={!isFirstInRow} // Only allow focus to escape left on index 0
                         onFocus={() =>
                           setActiveHero({
                             title: item.title,
@@ -158,7 +152,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#0A0A0E',
-    paddingLeft: 84,
   },
   loadingText: {
     color: '#9CA3AF',
@@ -169,7 +162,7 @@ const styles = StyleSheet.create({
     paddingBottom: 60,
   },
   rowsWrapper: {
-    paddingLeft: 96,
+    paddingLeft: 24, // Clean, tight margin next to the rail
     marginTop: -8,
   },
   rowContainer: {
