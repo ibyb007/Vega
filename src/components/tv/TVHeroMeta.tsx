@@ -26,7 +26,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
   return (
     <View style={styles.container}>
       {imageUrl ? (
-        <View style={styles.backdropWrapper}>
+        <View style={styles.backdropContainer}>
           <Image
             source={{ uri: imageUrl }}
             style={styles.backdropImage}
@@ -35,10 +35,10 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
         </View>
       ) : null}
 
-      {/* Stremio-Style Bottom & Left Vignette Gradients */}
+      {/* Gradients blending into the background */}
       <LinearGradient
-        colors={['transparent', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
-        locations={[0, 0.6, 1]}
+        colors={['transparent', 'rgba(10, 10, 14, 0.7)', '#0A0A0E']}
+        locations={[0, 0.65, 1]}
         style={styles.bottomGradient}
       />
       <LinearGradient
@@ -76,30 +76,30 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 const styles = StyleSheet.create({
   container: {
     height: 330,
-    width: '100%',
+    width: SCREEN_WIDTH,
+    marginLeft: -70, // Align seamlessly to physical screen edge
     position: 'relative',
     justifyContent: 'flex-end',
   },
-  backdropWrapper: {
+  backdropContainer: {
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
   },
   backdropImage: {
-    width: SCREEN_WIDTH,
-    height: 330,
-    aspectRatio: 16 / 9,
+    width: '100%',
+    height: '100%',
   },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '65%',
+    width: '60%',
   },
   contentWrapper: {
     paddingLeft: 96,
-    paddingBottom: 20,
-    maxWidth: 720,
+    paddingBottom: 24,
+    maxWidth: 750,
     zIndex: 10,
   },
   title: {
@@ -108,7 +108,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.4,
     marginBottom: 8,
-    textShadowColor: 'rgba(0, 0, 0, 0.85)',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
   },
