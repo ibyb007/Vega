@@ -15,12 +15,14 @@ import { useSettingsStore } from '../../lib/zustand/settingsStore';
 interface TVPlayerScreenProps {
   streamUrl: string;
   title: string;
+  headers?: Record<string, string>;
   onClose: () => void;
 }
 
 export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   streamUrl,
   title,
+  headers,
   onClose,
 }) => {
   const videoRef = useRef<VideoRef>(null);
@@ -39,12 +41,23 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   const launchExternalPlayer = async (url: string, mediaTitle: string) => {
     try {
+      const extra: Record<string, any> = { title: mediaTitle };
+
+      if (headers && Object.keys(headers).length > 0) {
+        Object.assign(extra, headers);
+        extra['android.media.intent.extra.HTTP_HEADERS'] = headers;
+        extra.headers = headers;
+
+        const referer = headers['Referer'] || headers['referer'];
+        if (referer) {
+          extra['android.intent.extra.REFERRER'] = referer;
+        }
+      }
+
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
         data: url,
         type: 'video/*',
-        extra: {
-          title: mediaTitle,
-        },
+        extra,
       });
     } catch (e) {
       ToastAndroid.show('No external video player found. Falling back to internal player.', ToastAndroid.LONG);
@@ -67,7 +80,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     <View style={styles.container}>
       <Video
         ref={videoRef}
-        source={{ uri: streamUrl }}
+        source={{ uri: streamUrl, headers }}
         style={StyleSheet.absoluteFill}
         resizeMode="contain"
         paused={paused}
