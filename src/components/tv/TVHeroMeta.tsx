@@ -85,7 +85,7 @@ const styles = StyleSheet.create({
     height: 330,
     width: '100%',
     justifyContent: 'flex-end',
-    paddingLeft: 96,
+    paddingLeft: 32,
     paddingRight: 48,
     paddingBottom: 24,
   },
