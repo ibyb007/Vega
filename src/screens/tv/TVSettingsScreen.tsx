@@ -2,22 +2,20 @@ import React from 'react';
 import { View, Text, StyleSheet, ScrollView, ToastAndroid } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
-import useSettingsStore from '../../lib/zustand/settingsStore';
+import { useSettingsStore, VideoPlayerType } from '../../lib/zustand/settingsStore';
 
 export const TVSettingsScreen: React.FC = () => {
-  const defaultPlayer = useSettingsStore((state: any) => state.defaultPlayer) || 'inbuilt';
-  const setDefaultPlayer = useSettingsStore((state: any) => state.setDefaultPlayer);
+  const defaultPlayer = useSettingsStore((state) => state.defaultPlayer);
+  const setDefaultPlayer = useSettingsStore((state) => state.setDefaultPlayer);
 
-  const players = [
-    { id: 'inbuilt', title: 'Inbuilt ExoPlayer', desc: 'Standard Android TV video engine' },
-    { id: 'vlc', title: 'VLC Player', desc: 'External app playback via Android Intent' },
-    { id: 'external', title: 'Chooser / Just Player', desc: 'Prompt app picker on playback' },
+  const players: { id: VideoPlayerType; title: string; desc: string }[] = [
+    { id: 'inbuilt', title: 'Inbuilt ExoPlayer', desc: 'Standard Android TV video player' },
+    { id: 'vlc', title: 'VLC Player', desc: 'Launch external VLC Android app via Intent' },
+    { id: 'external', title: 'System Chooser / Just Player', desc: 'Prompt app picker on playback' },
   ];
 
-  const handleSelectPlayer = (id: string) => {
-    if (setDefaultPlayer) {
-      setDefaultPlayer(id);
-    }
+  const handleSelectPlayer = (id: VideoPlayerType) => {
+    setDefaultPlayer(id);
     ToastAndroid.show(`Default player set to: ${id.toUpperCase()}`, ToastAndroid.SHORT);
   };
 
