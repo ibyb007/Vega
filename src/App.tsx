@@ -13,7 +13,7 @@ import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
 
-// TV Architecture Components & Screens
+// TV Components & Screens
 import { TVNavigationRail, TVRoute } from './components/tv/TVNavigationRail';
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
@@ -21,18 +21,19 @@ import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
 import TVSearch from './screens/Search';
 import Extensions from './screens/settings/Extensions';
+import Details from './screens/Details';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export interface ActiveStreamPayload {
   url: string;
   title: string;
-  tracks?: any[];
 }
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<TVRoute>('home');
   const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
+  const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
 
   useEffect(() => {
@@ -52,19 +53,25 @@ export default function App() {
   }, []);
 
   const navigateTo = useCallback((route: TVRoute) => {
+    setSelectedItem(null);
     setCurrentRoute((prev) => {
       if (prev !== route) {
-        setRouteHistory((history) => [...history, route]);
+        setRouteHistory((h) => [...h, route]);
       }
       return route;
     });
   }, []);
 
-  // Back button handler for TV remote
+  // Back button handling: closes Player -> closes Details/Quality Picker -> pops Route -> closes App
   useEffect(() => {
     const handleBackPress = () => {
       if (activeStream) {
         setActiveStream(null);
+        return true;
+      }
+
+      if (selectedItem) {
+        setSelectedItem(null);
         return true;
       }
 
@@ -88,7 +95,7 @@ export default function App() {
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => sub.remove();
-  }, [activeStream, routeHistory, currentRoute]);
+  }, [activeStream, selectedItem, routeHistory, currentRoute]);
 
   return (
     <SafeAreaProvider style={styles.rootContainer}>
@@ -101,54 +108,50 @@ export default function App() {
                 <AppDialogHost />
 
                 {activeStream ? (
+                  /* Fullscreen TV Player */
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
                     onClose={() => setActiveStream(null)}
                   />
+                ) : selectedItem ? (
+                  /* Details, Episode & Quality Selector */
+                  <Details
+                    route={{ params: { link: selectedItem.link, post: selectedItem } } as any}
+                    navigation={{
+                      goBack: () => setSelectedItem(null),
+                      navigate: (screen: string, params: any) => {
+                        if (params?.streamUrl || params?.link) {
+                          setActiveStream({
+                            url: params.streamUrl || params.link,
+                            title: params.title || selectedItem.title,
+                          });
+                        }
+                      },
+                    } as any}
+                  />
                 ) : (
+                  /* Master TV Layout */
                   <View style={styles.layout}>
-                    <TVNavigationRail
-                      currentRoute={currentRoute}
-                      onRouteChange={navigateTo}
-                    />
-
+                    {/* Viewport has fixed left padding so opening sidebar overlays without moving UI */}
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
-                          onSelectItem={(item) =>
-                            setActiveStream({
-                              url:
-                                item.streamUrl ||
-                                item.link ||
-                                'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-                              title: item.title,
-                            })
-                          }
+                          onSelectItem={(item) => setSelectedItem(item)}
                         />
                       )}
 
                       {currentRoute === 'search' && (
                         <TVSearch
-                          onSelectItem={(item) =>
-                            setActiveStream({
-                              url: item.streamUrl || item.link,
-                              title: item.title,
-                            })
-                          }
+                          onSelectItem={(item) => setSelectedItem(item)}
                         />
                       )}
 
                       {currentRoute === 'discover' && (
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
-                          onSelectItem={(item) =>
-                            setActiveStream({
-                              url: item.streamUrl || item.link,
-                              title: item.title,
-                            })
-                          }
+                          onSelectItem={(item) => setSelectedItem(item)}
                         />
                       )}
 
@@ -171,6 +174,12 @@ export default function App() {
 
                       {currentRoute === 'settings' && <TVSettingsScreen />}
                     </View>
+
+                    {/* Absolute overlay sidebar */}
+                    <TVNavigationRail
+                      currentRoute={currentRoute}
+                      onRouteChange={navigateTo}
+                    />
                   </View>
                 )}
 
@@ -194,7 +203,7 @@ const styles = StyleSheet.create({
   },
   layout: {
     flex: 1,
-    flexDirection: 'row',
+    position: 'relative',
     width: '100%',
     height: '100%',
   },
@@ -202,5 +211,6 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     backgroundColor: '#0A0A0E',
+    paddingLeft: 70, // Fixed width matching collapsed rail
   },
 });
