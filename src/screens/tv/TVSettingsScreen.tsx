@@ -1,86 +1,66 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Switch } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet, ScrollView, ToastAndroid } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
-import { settingsStorage } from '../../lib/storage';
-import { syncDohSettings } from '../../lib/services/dohService';
+import useSettingsStore from '../../lib/zustand/settingsStore';
 
 export const TVSettingsScreen: React.FC = () => {
-  const [dohEnabled, setDohEnabled] = useState(true);
+  const defaultPlayer = useSettingsStore((state: any) => state.defaultPlayer) || 'inbuilt';
+  const setDefaultPlayer = useSettingsStore((state: any) => state.setDefaultPlayer);
 
-  useEffect(() => {
-    const isDoH = settingsStorage?.isDoHActive ? settingsStorage.isDoHActive() : true;
-    setDohEnabled(isDoH);
-  }, []);
+  const players = [
+    { id: 'inbuilt', title: 'Inbuilt ExoPlayer', desc: 'Standard Android TV video engine' },
+    { id: 'vlc', title: 'VLC Player', desc: 'External app playback via Android Intent' },
+    { id: 'external', title: 'Chooser / Just Player', desc: 'Prompt app picker on playback' },
+  ];
 
-  const toggleDoH = async () => {
-    const nextState = !dohEnabled;
-    setDohEnabled(nextState);
-    if (settingsStorage?.setDoHActive) {
-      settingsStorage.setDoHActive(nextState);
+  const handleSelectPlayer = (id: string) => {
+    if (setDefaultPlayer) {
+      setDefaultPlayer(id);
     }
-    await syncDohSettings().catch((e) => console.warn('[DoH] Sync error:', e));
+    ToastAndroid.show(`Default player set to: ${id.toUpperCase()}`, ToastAndroid.SHORT);
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.header}>Settings</Text>
+    <View style={styles.container}>
+      <Text style={styles.screenTitle}>Settings</Text>
 
-      {/* Network & DoH Section */}
-      <Text style={styles.sectionHeader}>Network & DNS</Text>
-      <TVFocusablePressable
-        scaleFocused={1.02}
-        focusedBorderColor="#8A5CF6"
-        borderRadius={10}
-        onPress={toggleDoH}
-        style={styles.settingCard}
-      >
-        {({ focused }) => (
-          <View style={styles.cardRow}>
-            <View style={styles.iconContainer}>
-              <MaterialCommunityIcons name="shield-lock-outline" size={26} color="#8A5CF6" />
-            </View>
-            <View style={styles.textContainer}>
-              <Text style={styles.settingTitle}>Cloudflare 1.1.1.1 DNS-over-HTTPS</Text>
-              <Text style={styles.settingSubtitle}>
-                Bypass ISP streaming throttling & unblock media provider domains
-              </Text>
-            </View>
-            <Switch
-              value={dohEnabled}
-              onValueChange={toggleDoH}
-              thumbColor={dohEnabled ? '#8A5CF6' : '#9CA3AF'}
-              trackColor={{ false: '#374151', true: '#4C1D95' }}
-            />
-          </View>
-        )}
-      </TVFocusablePressable>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <Text style={styles.sectionHeader}>Default Video Player</Text>
 
-      {/* Playback Configuration */}
-      <Text style={styles.sectionHeader}>Player & Decoders</Text>
-      <TVFocusablePressable
-        scaleFocused={1.02}
-        focusedBorderColor="#8A5CF6"
-        borderRadius={10}
-        onPress={() => {}}
-        style={styles.settingCard}
-      >
-        {({ focused }) => (
-          <View style={styles.cardRow}>
-            <View style={styles.iconContainer}>
-              <MaterialCommunityIcons name="play-circle-outline" size={26} color="#8A5CF6" />
-            </View>
-            <View style={styles.textContainer}>
-              <Text style={styles.settingTitle}>External Player Intent</Text>
-              <Text style={styles.settingSubtitle}>
-                Toggle direct stream pass-through to VLC or Just Player
-              </Text>
-            </View>
-            <Text style={styles.statusText}>Built-in ExoPlayer</Text>
-          </View>
-        )}
-      </TVFocusablePressable>
-    </ScrollView>
+        <View style={styles.optionList}>
+          {players.map((item, index) => {
+            const isSelected = defaultPlayer === item.id;
+            return (
+              <TVFocusablePressable
+                key={item.id}
+                hasTVPreferredFocus={index === 0}
+                scaleFocused={1.03}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={14}
+                onPress={() => handleSelectPlayer(item.id)}
+                style={[styles.settingRow, isSelected && styles.settingRowSelected]}
+              >
+                {() => (
+                  <View style={styles.rowInner}>
+                    <View style={styles.rowText}>
+                      <Text style={styles.rowTitle}>{item.title}</Text>
+                      <Text style={styles.rowDesc}>{item.desc}</Text>
+                    </View>
+
+                    <MaterialCommunityIcons
+                      name={isSelected ? 'radiobox-marked' : 'radiobox-blank'}
+                      size={24}
+                      color={isSelected ? '#8A5CF6' : '#6B7280'}
+                    />
+                  </View>
+                )}
+              </TVFocusablePressable>
+            );
+          })}
+        </View>
+      </ScrollView>
+    </View>
   );
 };
 
@@ -88,56 +68,57 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0A0A0E',
-  },
-  content: {
-    paddingLeft: 32,
+    paddingLeft: 96,
     paddingRight: 48,
     paddingTop: 36,
-    paddingBottom: 48,
   },
-  header: {
+  screenTitle: {
     color: '#FFFFFF',
     fontSize: 28,
     fontWeight: '800',
     marginBottom: 24,
+  },
+  content: {
+    paddingBottom: 40,
+    maxWidth: 700,
   },
   sectionHeader: {
     color: '#9CA3AF',
     fontSize: 14,
     fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginTop: 18,
+    letterSpacing: 0.8,
     marginBottom: 12,
   },
-  settingCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    padding: 16,
-    marginBottom: 12,
+  optionList: {
+    gap: 12,
   },
-  cardRow: {
+  settingRow: {
+    backgroundColor: '#16161E',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    padding: 18,
+  },
+  settingRowSelected: {
+    borderColor: '#8A5CF6',
+    backgroundColor: '#1E1B2E',
+  },
+  rowInner: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
   },
-  iconContainer: {
-    marginRight: 16,
-  },
-  textContainer: {
+  rowText: {
     flex: 1,
   },
-  settingTitle: {
+  rowTitle: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 4,
+    fontWeight: '700',
   },
-  settingSubtitle: {
+  rowDesc: {
     color: '#9CA3AF',
     fontSize: 13,
-  },
-  statusText: {
-    color: '#8A5CF6',
-    fontWeight: '600',
-    fontSize: 14,
+    marginTop: 2,
   },
 });
