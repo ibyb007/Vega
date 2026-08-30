@@ -3,6 +3,9 @@ name: Build Android TV Release APK
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-tv:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -28,6 +33,32 @@ jobs:
 
       - name: Setup Gradle Build Cache
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Extract Version & Generate Changelog
+        id: release_meta
+        run: |
+          VERSION_NAME=$(node -p "require('./package.json').version || '4.0.5'")
+          VERSION_CODE=${{ github.run_number }}
+          TAG_NAME="v${VERSION_NAME}-tv-${VERSION_CODE}"
+
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"* %s (%h)")
+          else
+            CHANGELOG=$(git log --pretty=format:"* %s (%h)" -n 10)
+          fi
+
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="* TV UI optimizations and bug fixes."
+          fi
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Install dependencies
         run: npm ci
@@ -61,9 +92,29 @@ jobs:
           find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" -exec cp {} output_apks/ \;
           ls -la output_apks/
 
-      - name: Upload Android TV APKs
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Vega-TV-Release-APKs
           path: output_apks/*.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag_name }}
+          name: Vega TV ${{ steps.release_meta.outputs.tag_name }}
+          body: |
+            ## What's Changed
+            ${{ steps.release_meta.outputs.changelog }}
+
+            ---
+            * **Version Name**: `${{ steps.release_meta.outputs.version_name }}`
+            * **Version Code**: `${{ steps.release_meta.outputs.version_code }}`
+            * **Target Platform**: Android TV (`armeabi-v7a`, `arm64-v8a`)
+          files: output_apks/*.apk
+          generate_release_notes: false
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
