@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,13 +6,13 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  findNodeHandle,
 } from 'react-native';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
-import { Post } from '../../lib/providers/types';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 
 interface TVHomeScreenProps {
@@ -27,6 +27,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
+
+  // Store refs of first items in each row
+  const rowFirstItemRefs = useRef<Array<any>>([]);
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
@@ -45,7 +48,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           title: hero.title,
           backdropUrl: hero.image,
           posterUrl: hero.image,
-          overview: hero.extra || 'Select title to browse stream links and playback streams.',
+          overview: hero.extra || 'Select title to browse stream links and episodes.',
           year: '2024',
         });
       }
@@ -81,12 +84,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         <TVHeroMeta media={activeHero} />
 
         <View style={styles.rowsWrapper}>
-          {homeData.map((row, index) => {
+          {homeData.map((row, rowIndex) => {
             const rowPosts = row.Posts || [];
             if (rowPosts.length === 0) return null;
 
             return (
-              <View key={`${row.filter || row.title}-${index}`} style={styles.rowContainer}>
+              <View key={`${row.filter || row.title}-${rowIndex}`} style={styles.rowContainer}>
                 <Text style={styles.rowCategoryTitle}>{row.title}</Text>
 
                 <ScrollView
@@ -94,40 +97,47 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.horizontalRowScroll}
                 >
-                  {rowPosts.map((item, pIndex) => (
-                    <TVFocusablePressable
-                      key={`${item.link}-${pIndex}`}
-                      hasTVPreferredFocus={index === 0 && pIndex === 0}
-                      scaleFocused={1.08}
-                      focusedBorderColor="#8A5CF6"
-                      borderRadius={10}
-                      onFocus={() =>
-                        setActiveHero({
-                          title: item.title,
-                          backdropUrl: item.image,
-                          posterUrl: item.image,
-                          overview: item.extra || 'Select title to browse stream links.',
-                        })
-                      }
-                      onPress={() => onSelectItem(item)}
-                      style={styles.card}
-                    >
-                      {({ focused }) => (
-                        <View style={styles.cardInner}>
-                          <Image
-                            source={{
-                              uri:
-                                item.image ||
-                                'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                            }}
-                            style={styles.cardPoster}
-                            resizeMode="cover"
-                          />
-                          {focused && <View style={styles.focusBorderGlow} />}
-                        </View>
-                      )}
-                    </TVFocusablePressable>
-                  ))}
+                  {rowPosts.map((item, pIndex) => {
+                    const isFirstInRow = pIndex === 0;
+
+                    return (
+                      <TVFocusablePressable
+                        key={`${item.link}-${pIndex}`}
+                        ref={isFirstInRow ? (el) => (rowFirstItemRefs.current[rowIndex] = el) : undefined}
+                        hasTVPreferredFocus={rowIndex === 0 && isFirstInRow}
+                        scaleFocused={1.08}
+                        focusedBorderColor="#8A5CF6"
+                        borderRadius={10}
+                        // Focus stays within row unless at the very first poster
+                        trapFocusLeft={!isFirstInRow}
+                        onFocus={() =>
+                          setActiveHero({
+                            title: item.title,
+                            backdropUrl: item.image,
+                            posterUrl: item.image,
+                            overview: item.extra || 'Select title to browse stream links.',
+                          })
+                        }
+                        onPress={() => onSelectItem(item)}
+                        style={styles.card}
+                      >
+                        {({ focused }) => (
+                          <View style={styles.cardInner}>
+                            <Image
+                              source={{
+                                uri:
+                                  item.image ||
+                                  'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+                              }}
+                              style={styles.cardPoster}
+                              resizeMode="cover"
+                            />
+                            {focused && <View style={styles.focusBorderGlow} />}
+                          </View>
+                        )}
+                      </TVFocusablePressable>
+                    );
+                  })}
                 </ScrollView>
               </View>
             );
@@ -160,7 +170,7 @@ const styles = StyleSheet.create({
   },
   rowsWrapper: {
     paddingLeft: 96,
-    marginTop: -10,
+    marginTop: -8,
   },
   rowContainer: {
     marginBottom: 28,
