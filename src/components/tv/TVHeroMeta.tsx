@@ -25,6 +25,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 
   return (
     <View style={styles.container}>
+      {/* Full-width fixed backdrop */}
       {imageUrl ? (
         <View style={styles.backdropContainer}>
           <Image
@@ -37,17 +38,19 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 
       {/* Gradients blending into the background */}
       <LinearGradient
-        colors={['transparent', 'rgba(10, 10, 14, 0.7)', '#0A0A0E']}
-        locations={[0, 0.65, 1]}
+        colors={['transparent', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
+        locations={[0, 0.6, 1]}
         style={styles.bottomGradient}
       />
       <LinearGradient
-        colors={['#0A0A0E', 'rgba(10, 10, 14, 0.85)', 'transparent']}
+        colors={['rgba(10, 10, 14, 0.95)', 'rgba(10, 10, 14, 0.7)', 'transparent']}
+        locations={[0, 0.45, 0.85]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 0 }}
         style={styles.leftGradient}
       />
 
+      {/* Hero Metadata Overlaid On Top Of Backdrop */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media.title}
@@ -75,9 +78,9 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 330,
+    height: 340,
     width: SCREEN_WIDTH,
-    marginLeft: -70, // Align seamlessly to physical screen edge
+    marginLeft: -70, // Aligns to screen edge past the collapsed sidebar
     position: 'relative',
     justifyContent: 'flex-end',
   },
@@ -88,18 +91,22 @@ const styles = StyleSheet.create({
   backdropImage: {
     width: '100%',
     height: '100%',
+    position: 'absolute',
+    right: 0,
+    top: 0,
   },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '60%',
+    width: '75%',
   },
   contentWrapper: {
-    paddingLeft: 96,
-    paddingBottom: 24,
-    maxWidth: 750,
+    position: 'absolute',
+    bottom: 20,
+    left: 96,
+    maxWidth: 680,
     zIndex: 10,
   },
   title: {
@@ -110,7 +117,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     textShadowColor: 'rgba(0, 0, 0, 0.9)',
     textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 6,
+    textShadowRadius: 8,
   },
   metaRow: {
     flexDirection: 'row',
@@ -122,7 +129,7 @@ const styles = StyleSheet.create({
     color: '#D1D5DB',
     fontSize: 13,
     fontWeight: '600',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 4,
@@ -144,8 +151,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   overview: {
-    color: '#9CA3AF',
+    color: '#D1D5DB',
     fontSize: 14,
     lineHeight: 21,
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
 });
