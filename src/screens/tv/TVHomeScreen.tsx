@@ -13,11 +13,84 @@ import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
+import { useActiveRailFocusHandle } from '../../lib/tv/tvFocusRegistry';
+import { useFocusChain } from '../../lib/tv/useFocusChain';
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
   onNavigateRoute?: (route: TVRoute) => void;
 }
+
+interface TVHomeRowProps {
+  title: string;
+  posts: any[];
+  isFirstRow: boolean;
+  railFocusHandle?: number;
+  onFocusItem: (item: any) => void;
+  onSelectItem: (item: any) => void;
+}
+
+const TVHomeRow: React.FC<TVHomeRowProps> = ({
+  title,
+  posts,
+  isFirstRow,
+  railFocusHandle,
+  onFocusItem,
+  onSelectItem,
+}) => {
+  const { getFocusProps } = useFocusChain(posts.length);
+
+  return (
+    <View style={styles.rowContainer}>
+      <Text style={styles.rowCategoryTitle}>{title}</Text>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.horizontalRowScroll}
+      >
+        {posts.map((item, pIndex) => {
+          const isFirstInRow = pIndex === 0;
+          const { ref, nextFocusLeft, nextFocusRight } = getFocusProps(pIndex, {
+            nextFocusLeft: isFirstInRow ? railFocusHandle : undefined,
+          });
+
+          return (
+            <TVFocusablePressable
+              key={`${item.link}-${pIndex}`}
+              ref={ref}
+              hasTVPreferredFocus={isFirstRow && isFirstInRow}
+              scaleFocused={1.08}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={10}
+              trapFocusLeft={false}
+              nextFocusLeft={nextFocusLeft}
+              nextFocusRight={nextFocusRight}
+              onFocus={() => onFocusItem(item)}
+              onPress={() => onSelectItem(item)}
+              style={styles.card}
+            >
+              {({ focused }) => (
+                <View style={styles.cardInner}>
+                  <Image
+                    source={{
+                      uri:
+                        item.image ||
+                        'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+                    }}
+                    style={styles.cardPoster}
+                    resizeMode="cover"
+                  />
+                  {focused && <View style={styles.focusBorderGlow} />}
+                </View>
+              )}
+            </TVFocusablePressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+};
 
 export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onSelectItem,
@@ -26,6 +99,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
+  const railFocusHandle = useActiveRailFocusHandle();
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
@@ -85,55 +159,22 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             if (rowPosts.length === 0) return null;
 
             return (
-              <View key={`${row.filter || row.title}-${rowIndex}`} style={styles.rowContainer}>
-                <Text style={styles.rowCategoryTitle}>{row.title}</Text>
-
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.horizontalRowScroll}
-                >
-                  {rowPosts.map((item, pIndex) => {
-                    const isFirstInRow = pIndex === 0;
-
-                    return (
-                      <TVFocusablePressable
-                        key={`${item.link}-${pIndex}`}
-                        hasTVPreferredFocus={rowIndex === 0 && isFirstInRow}
-                        scaleFocused={1.08}
-                        focusedBorderColor="#8A5CF6"
-                        borderRadius={10}
-                        trapFocusLeft={!isFirstInRow} // Only allow focus to escape left on index 0
-                        onFocus={() =>
-                          setActiveHero({
-                            title: item.title,
-                            backdropUrl: item.image,
-                            posterUrl: item.image,
-                            overview: item.extra || 'Select title to browse stream links.',
-                          })
-                        }
-                        onPress={() => onSelectItem(item)}
-                        style={styles.card}
-                      >
-                        {({ focused }) => (
-                          <View style={styles.cardInner}>
-                            <Image
-                              source={{
-                                uri:
-                                  item.image ||
-                                  'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                              }}
-                              style={styles.cardPoster}
-                              resizeMode="cover"
-                            />
-                            {focused && <View style={styles.focusBorderGlow} />}
-                          </View>
-                        )}
-                      </TVFocusablePressable>
-                    );
-                  })}
-                </ScrollView>
-              </View>
+              <TVHomeRow
+                key={`${row.filter || row.title}-${rowIndex}`}
+                title={row.title}
+                posts={rowPosts}
+                isFirstRow={rowIndex === 0}
+                railFocusHandle={railFocusHandle}
+                onFocusItem={(item) =>
+                  setActiveHero({
+                    title: item.title,
+                    backdropUrl: item.image,
+                    posterUrl: item.image,
+                    overview: item.extra || 'Select title to browse stream links.',
+                  })
+                }
+                onSelectItem={onSelectItem}
+              />
             );
           })}
         </View>
