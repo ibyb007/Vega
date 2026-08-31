@@ -48,7 +48,7 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
     }
     blurTimeoutRef.current = setTimeout(() => {
       setIsExpanded(false);
-    }, 120);
+    }, 150);
   };
 
   const containerStyle = useAnimatedStyle(() => {
@@ -121,11 +121,15 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
 
 const styles = StyleSheet.create({
   container: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 9999,
     paddingVertical: 24,
     paddingHorizontal: 8,
     borderRightWidth: 1,
     borderRightColor: 'rgba(255, 255, 255, 0.08)',
-    overflow: 'hidden',
   },
   header: {
     flexDirection: 'row',
