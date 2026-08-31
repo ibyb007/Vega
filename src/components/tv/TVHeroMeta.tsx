@@ -25,7 +25,6 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
 
   return (
     <View style={styles.container}>
-      {/* Full-width fixed backdrop */}
       {imageUrl ? (
         <View style={styles.backdropContainer}>
           <Image
@@ -36,7 +35,6 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
         </View>
       ) : null}
 
-      {/* Gradients blending into the background */}
       <LinearGradient
         colors={['transparent', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
         locations={[0, 0.6, 1]}
@@ -50,22 +48,22 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
         style={styles.leftGradient}
       />
 
-      {/* Hero Metadata Overlaid On Top Of Backdrop */}
+      {/* Hero text positioned safely to the right of the navigation rail */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media.title}
         </Text>
 
         <View style={styles.metaRow}>
-          {media.year ? <Text style={styles.metaBadge}>{media.year}</Text> : null}
-          {media.rating ? (
+          {media.year && <Text style={styles.metaBadge}>{media.year}</Text>}
+          {media.rating && (
             <View style={styles.ratingBadge}>
               <Text style={styles.ratingText}>★ {media.rating}</Text>
             </View>
-          ) : null}
-          {media.genres && media.genres.length > 0 ? (
+          )}
+          {media.genres && media.genres.length > 0 && (
             <Text style={styles.genreText}>{media.genres.join(' • ')}</Text>
-          ) : null}
+          )}
         </View>
 
         <Text numberOfLines={3} style={styles.overview}>
@@ -80,7 +78,6 @@ const styles = StyleSheet.create({
   container: {
     height: 340,
     width: SCREEN_WIDTH,
-    marginLeft: -70, // Aligns to screen edge past the collapsed sidebar
     position: 'relative',
     justifyContent: 'flex-end',
   },
@@ -104,8 +101,8 @@ const styles = StyleSheet.create({
   },
   contentWrapper: {
     position: 'absolute',
-    bottom: 20,
-    left: 96,
+    bottom: 24,
+    left: 88, // Inset past the sidebar
     maxWidth: 680,
     zIndex: 10,
   },
