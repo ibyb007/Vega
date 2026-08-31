@@ -25,6 +25,7 @@ export interface TVStreamSelection {
   url: string;
   title: string;
   headers?: any;
+  qualities?: { label: string; url: string; headers?: any }[];
 }
 
 interface TVInfoScreenProps {
@@ -81,7 +82,12 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
           return;
         }
         const best = streams[0];
-        onPlay({ url: best.link, title, headers: best.headers });
+        const qualities = streams.map((s, idx) => ({
+          label: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
+          url: s.link,
+          headers: s.headers,
+        }));
+        onPlay({ url: best.link, title, headers: best.headers, qualities });
       } catch (e: any) {
         ToastAndroid.show(
           e?.message || 'Failed to load stream',
