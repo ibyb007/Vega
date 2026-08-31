@@ -11,6 +11,7 @@ import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
+import useWatchHistoryStore from '../../lib/zustand/watchHistoryStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 
@@ -25,6 +26,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 }) => {
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
+  const watchHistory = useWatchHistoryStore((state) => state.watchHistory) || [];
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
   const initialFocusSetRef = useRef(false);
 
@@ -82,6 +84,73 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         <TVHeroMeta media={activeHero} />
 
         <View style={styles.rowsWrapper}>
+          {/* Continue Watching Row */}
+          {watchHistory.length > 0 && (
+            <View style={styles.rowContainer}>
+              <Text style={styles.rowCategoryTitle}>Continue Watching</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.horizontalRowScroll}
+                removeClippedSubviews={false}
+                nestedScrollEnabled={true}
+              >
+                {watchHistory.map((item: any, pIndex: number) => {
+                  const progressPercent = item.duration
+                    ? Math.min(100, Math.round((item.currentTime / item.duration) * 100))
+                    : 0;
+
+                  return (
+                    <TVFocusablePressable
+                      key={`history-${item.link || item.id}-${pIndex}`}
+                      hasTVPreferredFocus={!initialFocusSetRef.current && pIndex === 0}
+                      scaleFocused={1.08}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={10}
+                      onFocus={() => {
+                        initialFocusSetRef.current = true;
+                        setActiveHero({
+                          title: item.title,
+                          backdropUrl: item.image,
+                          posterUrl: item.image,
+                          overview: item.extra || `Resume watching (${progressPercent}%)`,
+                        });
+                      }}
+                      onPress={() => onSelectItem(item)}
+                      style={styles.card}
+                    >
+                      {({ focused }) => (
+                        <View style={styles.cardInner}>
+                          <Image
+                            source={{
+                              uri:
+                                item.image ||
+                                'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+                            }}
+                            style={styles.cardPoster}
+                            resizeMode="cover"
+                          />
+                          {progressPercent > 0 && (
+                            <View style={styles.progressBarTrack}>
+                              <View
+                                style={[
+                                  styles.progressBarFill,
+                                  { width: `${progressPercent}%` },
+                                ]}
+                              />
+                            </View>
+                          )}
+                          {focused && <View style={styles.focusBorderGlow} />}
+                        </View>
+                      )}
+                    </TVFocusablePressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* Provider Catalog Rows */}
           {homeData.map((row, rowIndex) => {
             const rowPosts = row.Posts || [];
             if (rowPosts.length === 0) return null;
@@ -98,7 +167,11 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   nestedScrollEnabled={true}
                 >
                   {rowPosts.map((item, pIndex) => {
-                    const shouldInitialFocus = !initialFocusSetRef.current && rowIndex === 0 && pIndex === 0;
+                    const shouldInitialFocus =
+                      !initialFocusSetRef.current &&
+                      watchHistory.length === 0 &&
+                      rowIndex === 0 &&
+                      pIndex === 0;
 
                     return (
                       <TVFocusablePressable
@@ -200,6 +273,18 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     borderRadius: 10,
+  },
+  progressBarTrack: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#8A5CF6',
   },
   focusBorderGlow: {
     ...StyleSheet.absoluteFillObject,
