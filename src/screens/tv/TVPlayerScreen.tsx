@@ -8,14 +8,13 @@ import {
   Modal,
   BackHandler,
   ScrollView,
-  useTVEventHandler,
-  HWEvent,
 } from 'react-native';
 import Video, { VideoRef, SelectedTrackType } from 'react-native-video';
 import LinearGradient from 'react-native-linear-gradient';
 import * as IntentLauncher from 'expo-intent-launcher';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import useContentStore from '../../lib/zustand/contentStore';
 
 interface EpisodeItem {
   id?: string | number;
@@ -23,38 +22,47 @@ interface EpisodeItem {
   link?: string;
   url?: string;
   type?: string;
+  image?: string;
+  poster?: string;
 }
 
 interface TVPlayerScreenProps {
   streamUrl: string;
   title: string;
+  posterUrl?: string;
+  itemLink?: string;
+  providerValue?: string;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string }[];
-  qualities?: { name: string; url: string }[];
   onSelectNextEpisode?: (nextEpisode: EpisodeItem) => void;
   onSelectServer?: (serverUrl: string) => void;
-  onSelectQuality?: (qualityUrl: string) => void;
   onClose: () => void;
 }
 
 type AspectRatioMode = 'contain' | 'cover' | 'stretch';
-type DialogType = 'subtitles' | 'audio' | 'server' | 'quality' | null;
+type DialogType = 'subtitles' | 'audio' | 'server' | null;
 
 export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   streamUrl,
   title,
+  posterUrl,
+  itemLink,
+  providerValue,
   episodes = [],
   currentEpisodeIndex = 0,
   servers = [],
-  qualities = [],
   onSelectNextEpisode,
   onSelectServer,
-  onSelectQuality,
   onClose,
 }) => {
   const videoRef = useRef<VideoRef>(null);
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
+  const lastSyncTimeRef = useRef<number>(0);
+  const currentProgRef = useRef<{ currentTime: number; duration: number }>({
+    currentTime: 0,
+    duration: 0,
+  });
 
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(true);
@@ -66,12 +74,63 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
   const [audioTracks, setAudioTracks] = useState<any[]>([]);
   const [textTracks, setTextTracks] = useState<any[]>([]);
-  const [selectedAudio, setSelectedAudio] = useState<any>({ type: SelectedTrackType.INDEX, value: 0 });
-  const [selectedSub, setSelectedSub] = useState<any>({ type: SelectedTrackType.DISABLED });
-  const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
+  const [selectedAudio, setSelectedAudio] = useState<any>({
+    type: SelectedTrackType.INDEX,
+    value: 0,
+  });
+  const [selectedSub, setSelectedSub] = useState<any>({
+    type: SelectedTrackType.DISABLED,
+  });
+  const [selectedServerUrl, setSelectedServerUrl] = useState<string>(streamUrl);
 
   // Active Menu Dialog
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
+
+  // Sync playback timestamp to contentStore MMKV
+  const syncProgressToStore = useCallback(
+    (timeSec: number, totalDur: number) => {
+      if (totalDur <= 0 || timeSec <= 0) return;
+
+      const storeState: any = useContentStore.getState();
+      const currentEpisode = episodes[currentEpisodeIndex];
+
+      const historyItem = {
+        id: currentEpisode?.link || itemLink || streamUrl,
+        title: currentEpisode?.title || title,
+        image: currentEpisode?.image || currentEpisode?.poster || posterUrl || '',
+        link: currentEpisode?.link || itemLink || streamUrl,
+        provider: providerValue || storeState.provider?.value || '',
+        currentTime: Math.floor(timeSec),
+        duration: Math.floor(totalDur),
+        lastWatched: Date.now(),
+      };
+
+      if (typeof storeState.updateWatchHistory === 'function') {
+        storeState.updateWatchHistory(historyItem);
+      } else if (typeof storeState.setWatchHistory === 'function') {
+        const existingHistory = Array.isArray(storeState.watchHistory)
+          ? [...storeState.watchHistory]
+          : [];
+        const filtered = existingHistory.filter(
+          (h: any) => h.id !== historyItem.id && h.link !== historyItem.link
+        );
+        storeState.setWatchHistory([historyItem, ...filtered]);
+      }
+    },
+    [episodes, currentEpisodeIndex, itemLink, streamUrl, title, posterUrl, providerValue]
+  );
+
+  // Flush progress on unmount / exit
+  useEffect(() => {
+    return () => {
+      if (currentProgRef.current.duration > 0) {
+        syncProgressToStore(
+          currentProgRef.current.currentTime,
+          currentProgRef.current.duration
+        );
+      }
+    };
+  }, [syncProgressToStore]);
 
   // 3-Second Auto-Hide Control Overlay
   const resetInactivityTimer = useCallback(() => {
@@ -81,10 +140,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     setShowControls(true);
     hideControlsTimer.current = setTimeout(() => {
       setShowControls((prev) => {
-        if (activeDialog) return true; // keep open while inside dropdown menu
+        if (activeDialog) return true;
         return false;
       });
-    }, 3500);
+    }, 3000);
   }, [activeDialog]);
 
   useEffect(() => {
@@ -94,44 +153,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     };
   }, [resetInactivityTimer]);
 
-  const handleSeek = useCallback((delta: number) => {
-    resetInactivityTimer();
-    setCurrentTime((curr) => {
-      const next = Math.max(0, Math.min(duration, curr + delta));
-      videoRef.current?.seek(next);
-      return next;
-    });
-  }, [duration, resetInactivityTimer]);
-
-  // Global D-Pad Key Listener for TV Remotes
-  useTVEventHandler((evt: HWEvent) => {
-    if (!evt || !evt.eventType) return;
-
-    if (activeDialog) return; // Allow normal modal navigation
-
-    const eventType = evt.eventType;
-
-    if (!showControls) {
-      // When controls are hidden, capture keys to wake up UI & perform action
-      if (eventType === 'select' || eventType === 'playPause') {
-        setPaused((prev) => !prev);
-        resetInactivityTimer();
-      } else if (eventType === 'left') {
-        handleSeek(-10);
-      } else if (eventType === 'right') {
-        handleSeek(10);
-      } else if (eventType === 'up' || eventType === 'down') {
-        resetInactivityTimer();
-      }
-    } else {
-      // When controls are visible, reset inactivity countdown on interaction
-      if (['up', 'down', 'left', 'right', 'select'].includes(eventType)) {
-        resetInactivityTimer();
-      }
-    }
-  });
-
-  // Remote Back Button Handler
+  // TV Remote Back Button Interception
   useEffect(() => {
     const handleBackPress = () => {
       if (activeDialog) {
@@ -144,19 +166,22 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
         return true;
       }
+      syncProgressToStore(
+        currentProgRef.current.currentTime,
+        currentProgRef.current.duration
+      );
       onClose();
       return true;
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => sub.remove();
-  }, [activeDialog, showControls, onClose, resetInactivityTimer]);
+  }, [activeDialog, showControls, onClose, resetInactivityTimer, syncProgressToStore]);
 
-  // Open in External VLC
   const openInVLC = async () => {
     try {
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: activeMediaUrl || streamUrl,
+        data: streamUrl,
         type: 'video/*',
         packageName: 'org.videolan.vlc',
         extra: { title },
@@ -164,7 +189,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     } catch {
       try {
         await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-          data: activeMediaUrl || streamUrl,
+          data: streamUrl,
           type: 'video/*',
           extra: { title },
         });
@@ -175,14 +200,30 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   };
 
   const handleNextEpisode = () => {
+    syncProgressToStore(
+      currentProgRef.current.currentTime,
+      currentProgRef.current.duration
+    );
     const nextIndex = currentEpisodeIndex + 1;
     if (episodes.length > nextIndex) {
       const nextEp = episodes[nextIndex];
       onSelectNextEpisode?.(nextEp);
-      ToastAndroid.show(`Loading next episode: ${nextEp.title || `Episode ${nextIndex + 1}`}`, ToastAndroid.SHORT);
+      ToastAndroid.show(
+        `Loading next episode: ${nextEp.title || `Episode ${nextIndex + 1}`}`,
+        ToastAndroid.SHORT
+      );
     } else {
       ToastAndroid.show('No next episode available.', ToastAndroid.SHORT);
     }
+  };
+
+  const handleSeek = (delta: number) => {
+    resetInactivityTimer();
+    const next = Math.max(0, Math.min(duration, currentTime + delta));
+    videoRef.current?.seek(next);
+    setCurrentTime(next);
+    currentProgRef.current.currentTime = next;
+    syncProgressToStore(next, duration);
   };
 
   const toggleAspectRatio = () => {
@@ -204,22 +245,37 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     <View style={styles.container}>
       <Video
         ref={videoRef}
-        source={{ uri: activeMediaUrl || streamUrl }}
+        source={{ uri: selectedServerUrl || streamUrl }}
         style={StyleSheet.absoluteFill}
         resizeMode={resizeMode}
         paused={paused}
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
         onLoad={(meta: any) => {
-          setDuration(meta.duration || 0);
+          const totalDur = meta.duration || 0;
+          setDuration(totalDur);
+          currentProgRef.current.duration = totalDur;
           setAudioTracks(meta.audioTracks || []);
           setTextTracks(meta.textTracks || []);
           setBuffering(false);
         }}
-        onProgress={(prog) => setCurrentTime(prog.currentTime)}
+        onProgress={(prog) => {
+          setCurrentTime(prog.currentTime);
+          currentProgRef.current.currentTime = prog.currentTime;
+
+          // Throttled sync every 3 seconds during playback
+          const now = Date.now();
+          if (now - lastSyncTimeRef.current > 3000) {
+            lastSyncTimeRef.current = now;
+            syncProgressToStore(prog.currentTime, duration);
+          }
+        }}
         onBuffer={(buf) => setBuffering(buf.isBuffering)}
         onError={(err) => {
-          ToastAndroid.show(`Playback error: ${err.error?.errorString || 'Failed to play stream'}`, ToastAndroid.LONG);
+          ToastAndroid.show(
+            `Playback error: ${err.error?.errorString || 'Failed to play stream'}`,
+            ToastAndroid.LONG
+          );
           setBuffering(false);
         }}
       />
@@ -240,7 +296,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           />
 
           <View style={styles.controlsContent}>
-            {/* Title */}
             <Text numberOfLines={1} style={styles.mediaTitle}>
               {title}
             </Text>
@@ -261,7 +316,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               </View>
             </View>
 
-            {/* Bottom Controls Row */}
+            {/* Action Buttons Row */}
             <View style={styles.actionRow}>
               {/* Play / Pause */}
               <TVFocusablePressable
@@ -271,7 +326,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 borderRadius={8}
                 onFocus={() => resetInactivityTimer()}
                 onPress={() => {
-                  setPaused(!paused);
+                  const nextPaused = !paused;
+                  setPaused(nextPaused);
+                  syncProgressToStore(currentTime, duration);
                   resetInactivityTimer();
                 }}
                 style={styles.controlBtn}
@@ -285,7 +342,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 )}
               </TVFocusablePressable>
 
-              {/* 10s Rewind */}
+              {/* Rewind 10s */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -294,10 +351,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 onPress={() => handleSeek(-10)}
                 style={styles.controlBtn}
               >
-                {() => <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />}
+                {() => (
+                  <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />
+                )}
               </TVFocusablePressable>
 
-              {/* 10s Forward */}
+              {/* Forward 10s */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -306,7 +365,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 onPress={() => handleSeek(10)}
                 style={styles.controlBtn}
               >
-                {() => <MaterialCommunityIcons name="fast-forward-10" size={24} color="#FFFFFF" />}
+                {() => (
+                  <MaterialCommunityIcons
+                    name="fast-forward-10"
+                    size={24}
+                    color="#FFFFFF"
+                  />
+                )}
               </TVFocusablePressable>
 
               {/* Next Episode Button */}
@@ -319,7 +384,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   onPress={handleNextEpisode}
                   style={styles.controlBtn}
                 >
-                  {() => <MaterialCommunityIcons name="skip-next" size={26} color="#FFFFFF" />}
+                  {() => (
+                    <MaterialCommunityIcons name="skip-next" size={26} color="#FFFFFF" />
+                  )}
                 </TVFocusablePressable>
               )}
 
@@ -368,15 +435,21 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               >
                 {() => (
                   <View style={styles.pillInner}>
-                    <MaterialCommunityIcons name="subtitles-outline" size={20} color="#FFFFFF" />
+                    <MaterialCommunityIcons
+                      name="subtitles-outline"
+                      size={20}
+                      color="#FFFFFF"
+                    />
                     <Text style={styles.pillText}>
-                      {selectedSub.type === SelectedTrackType.DISABLED ? 'Subtitles Off' : 'Subtitles'}
+                      {selectedSub.type === SelectedTrackType.DISABLED
+                        ? 'Subtitles Off'
+                        : 'Subtitles'}
                     </Text>
                   </View>
                 )}
               </TVFocusablePressable>
 
-              {/* Server Selector */}
+              {/* Quality / Server Selector */}
               {servers.length > 0 && (
                 <TVFocusablePressable
                   scaleFocused={1.08}
@@ -388,27 +461,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 >
                   {() => (
                     <View style={styles.pillInner}>
-                      <MaterialCommunityIcons name="server-network" size={20} color="#FFFFFF" />
+                      <MaterialCommunityIcons
+                        name="server-network"
+                        size={20}
+                        color="#FFFFFF"
+                      />
                       <Text style={styles.pillText}>Server</Text>
-                    </View>
-                  )}
-                </TVFocusablePressable>
-              )}
-
-              {/* Quality Selector */}
-              {qualities.length > 0 && (
-                <TVFocusablePressable
-                  scaleFocused={1.08}
-                  focusedBorderColor="#8A5CF6"
-                  borderRadius={8}
-                  onFocus={() => resetInactivityTimer()}
-                  onPress={() => setActiveDialog('quality')}
-                  style={styles.controlPillBtn}
-                >
-                  {() => (
-                    <View style={styles.pillInner}>
-                      <MaterialCommunityIcons name="tune-variant" size={20} color="#FFFFFF" />
-                      <Text style={styles.pillText}>Quality</Text>
                     </View>
                   )}
                 </TVFocusablePressable>
@@ -425,7 +483,11 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               >
                 {() => (
                   <View style={styles.pillInner}>
-                    <MaterialCommunityIcons name="aspect-ratio" size={20} color="#FFFFFF" />
+                    <MaterialCommunityIcons
+                      name="aspect-ratio"
+                      size={20}
+                      color="#FFFFFF"
+                    />
                     <Text style={styles.pillText}>{resizeMode.toUpperCase()}</Text>
                   </View>
                 )}
@@ -450,8 +512,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             <Text style={styles.dialogTitle}>
               {activeDialog === 'subtitles' && 'Subtitles'}
               {activeDialog === 'audio' && 'Audio Tracks'}
-              {activeDialog === 'server' && 'Select Server'}
-              {activeDialog === 'quality' && 'Select Quality'}
+              {activeDialog === 'server' && 'Select Server / Quality'}
             </Text>
 
             <ScrollView contentContainerStyle={styles.dialogList}>
@@ -470,7 +531,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     }}
                     style={[
                       styles.dialogItem,
-                      selectedSub.type === SelectedTrackType.DISABLED && styles.dialogItemSelected,
+                      selectedSub.type === SelectedTrackType.DISABLED &&
+                        styles.dialogItemSelected,
                     ]}
                   >
                     {() => <Text style={styles.dialogItemText}>Off / Disabled</Text>}
@@ -528,7 +590,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   </TVFocusablePressable>
                 ))}
 
-              {/* Server Options */}
+              {/* Server / Quality Options */}
               {activeDialog === 'server' &&
                 servers.map((srv, i) => (
                   <TVFocusablePressable
@@ -538,41 +600,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     focusedBorderColor="#8A5CF6"
                     borderRadius={8}
                     onPress={() => {
-                      setActiveMediaUrl(srv.url);
+                      setSelectedServerUrl(srv.url);
                       onSelectServer?.(srv.url);
                       setActiveDialog(null);
                       resetInactivityTimer();
                     }}
                     style={[
                       styles.dialogItem,
-                      activeMediaUrl === srv.url && styles.dialogItemSelected,
+                      selectedServerUrl === srv.url && styles.dialogItemSelected,
                     ]}
                   >
                     {() => <Text style={styles.dialogItemText}>{srv.name}</Text>}
-                  </TVFocusablePressable>
-                ))}
-
-              {/* Quality Options */}
-              {activeDialog === 'quality' &&
-                qualities.map((q, i) => (
-                  <TVFocusablePressable
-                    key={`quality-${i}`}
-                    hasTVPreferredFocus={i === 0}
-                    scaleFocused={1.03}
-                    focusedBorderColor="#8A5CF6"
-                    borderRadius={8}
-                    onPress={() => {
-                      setActiveMediaUrl(q.url);
-                      onSelectQuality?.(q.url);
-                      setActiveDialog(null);
-                      resetInactivityTimer();
-                    }}
-                    style={[
-                      styles.dialogItem,
-                      activeMediaUrl === q.url && styles.dialogItemSelected,
-                    ]}
-                  >
-                    {() => <Text style={styles.dialogItemText}>{q.name}</Text>}
                   </TVFocusablePressable>
                 ))}
             </ScrollView>
