@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  Image,
   Modal,
   ToastAndroid,
 } from 'react-native';
@@ -12,8 +11,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useThemeStore from '../../lib/zustand/themeStore';
-import { extensionStorage, ProviderExtension } from '../../lib/storage/extensionStorage';
-import { extensionManager } from '../../lib/services/ExtensionManager';
+import { Provider } from '../../lib/providers/types';
 
 interface TVSourceSelectScreenProps {
   onNavigateHome?: () => void;
@@ -30,11 +28,11 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
 
-  const [providerToDelete, setProviderToDelete] = useState<ProviderExtension | null>(null);
+  const [providerToDelete, setProviderToDelete] = useState<Provider | null>(null);
 
-  const handleSelectProvider = (item: ProviderExtension) => {
+  const handleSelectProvider = (item: Provider) => {
     setProvider(item);
-    ToastAndroid.show(`Active source: ${item.display_name}`, ToastAndroid.SHORT);
+    ToastAndroid.show(`Active source: ${item.displayTitle || item.name}`, ToastAndroid.SHORT);
     if (onNavigateHome) {
       onNavigateHome();
     }
@@ -42,37 +40,20 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
   const handleConfirmDelete = () => {
     if (!providerToDelete) return;
-
-    // Persist the uninstall to storage first — ProviderManager and the
-    // store's own rehydration both read from extensionStorage, so removing
-    // it only from zustand would make it reappear after a restart.
-    extensionManager.uninstallProvider(providerToDelete.value, providerToDelete.source?.author);
-    const remaining = extensionStorage.getInstalledProviders();
+    const remaining = installedProviders.filter((p) => p.value !== providerToDelete.value);
     setInstalledProviders(remaining);
 
     if (provider?.value === providerToDelete.value) {
-      setProvider(
-        remaining[0] ?? {
-          value: '',
-          display_name: '',
-          type: 'global',
-          installed: false,
-          disabled: false,
-          version: '0.0.1',
-          icon: '',
-          source: { author: '', url: '' },
-          installedAt: 0,
-          lastUpdated: 0,
-        },
-      );
+      setProvider(remaining.length > 0 ? remaining[0] : null);
     }
 
-    ToastAndroid.show(`Removed ${providerToDelete.display_name}`, ToastAndroid.SHORT);
+    ToastAndroid.show(`Removed ${providerToDelete.displayTitle || providerToDelete.name}`, ToastAndroid.SHORT);
     setProviderToDelete(null);
   };
 
   return (
     <View style={styles.container}>
+      {/* Top Header */}
       <View style={styles.headerRow}>
         <View style={styles.headerTitles}>
           <Text style={styles.headerTitle}>Select Provider Source</Text>
@@ -99,14 +80,13 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
         )}
       </View>
 
+      {/* Grid of Installed Providers */}
       {installedProviders.length === 0 ? (
         <View style={styles.emptyState}>
-          <View style={styles.emptyIconCircle}>
-            <MaterialCommunityIcons name="cloud-search-outline" size={64} color="#6B7280" />
-          </View>
-          <Text style={styles.emptyTitle}>No Providers Installed</Text>
+          <MaterialCommunityIcons name="cloud-search-outline" size={64} color="#6B7280" />
+          <Text style={styles.emptyTitle}>No Cloud Providers Installed</Text>
           <Text style={styles.emptyDescription}>
-            You haven't installed any provider extensions yet. Go to the Addons tab and type vega-org to install some.
+            You haven't installed any provider extensions yet. Go to the Addons tab to add a source repository.
           </Text>
           {onNavigateAddons && (
             <TVFocusablePressable
@@ -154,24 +134,20 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                   <View style={styles.cardInner}>
                     <View style={styles.cardHeader}>
                       <View style={[styles.avatar, isSelected && { backgroundColor: primaryColor }]}>
-                        {item.icon ? (
-                          <Image source={{ uri: item.icon }} style={styles.providerLogo} resizeMode="contain" />
-                        ) : (
-                          <MaterialCommunityIcons
-                            name="server-network"
-                            size={24}
-                            color={isSelected ? '#FFFFFF' : '#9CA3AF'}
-                          />
-                        )}
+                        <MaterialCommunityIcons
+                          name="server-network"
+                          size={24}
+                          color={isSelected ? '#FFFFFF' : '#9CA3AF'}
+                        />
                       </View>
 
                       <View style={styles.headerBadges}>
-                        {isSelected ? (
+                        {isSelected && (
                           <View style={[styles.activeTag, { backgroundColor: primaryColor }]}>
                             <MaterialCommunityIcons name="check" size={12} color="#FFFFFF" />
                             <Text style={styles.activeTagText}>Active</Text>
                           </View>
-                        ) : null}
+                        )}
 
                         <TVFocusablePressable
                           scaleFocused={1.1}
@@ -193,10 +169,10 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
                     <View style={styles.cardBody}>
                       <Text numberOfLines={1} style={styles.providerName}>
-                        {item.display_name}
+                        {item.displayTitle || item.name}
                       </Text>
                       <Text numberOfLines={1} style={styles.providerMeta}>
-                        v{item.version || '1.0.0'} • {item.type || 'Cloud'}
+                        v{item.version || '1.0.0'} • {item.type || 'global'}
                       </Text>
                     </View>
 
@@ -213,6 +189,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
         </ScrollView>
       )}
 
+      {/* Delete Confirmation Modal */}
       <Modal
         visible={Boolean(providerToDelete)}
         transparent={true}
@@ -224,7 +201,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
             <MaterialCommunityIcons name="alert-circle-outline" size={40} color="#EF4444" />
             <Text style={styles.modalTitle}>Remove Provider</Text>
             <Text style={styles.modalText}>
-              Are you sure you want to uninstall {providerToDelete?.display_name}?
+              Are you sure you want to remove {providerToDelete?.displayTitle || providerToDelete?.name}?
             </Text>
 
             <View style={styles.modalActions}>
@@ -260,15 +237,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0A0A0E',
-    paddingLeft: 32,
+    paddingLeft: 88, // Inset past the collapsed navigation rail
     paddingRight: 48,
-    paddingTop: 36,
+    paddingTop: 32,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 28,
+    marginBottom: 24,
   },
   headerTitles: {
     flex: 1,
@@ -278,7 +255,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 26,
     fontWeight: '800',
-    letterSpacing: 0.4,
+    letterSpacing: 0.3,
   },
   headerSubtitle: {
     color: '#9CA3AF',
@@ -326,16 +303,10 @@ const styles = StyleSheet.create({
   avatar: {
     width: 42,
     height: 42,
-    borderRadius: 10,
+    borderRadius: 21,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
     justifyContent: 'center',
     alignItems: 'center',
-    overflow: 'hidden',
-  },
-  providerLogo: {
-    width: 32,
-    height: 32,
-    borderRadius: 6,
   },
   headerBadges: {
     flexDirection: 'row',
@@ -388,19 +359,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 80,
   },
-  emptyIconCircle: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
   emptyTitle: {
     color: '#FFFFFF',
     fontSize: 22,
     fontWeight: '700',
+    marginTop: 16,
   },
   emptyDescription: {
     color: '#9CA3AF',
@@ -409,7 +372,7 @@ const styles = StyleSheet.create({
     maxWidth: 480,
     marginTop: 8,
     lineHeight: 22,
-    marginBottom: 28,
+    marginBottom: 24,
   },
   emptyActionBtn: {
     paddingVertical: 14,
