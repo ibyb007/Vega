@@ -48,7 +48,6 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
         style={styles.leftGradient}
       />
 
-      {/* Hero text positioned safely to the right of the navigation rail */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media.title}
@@ -102,7 +101,7 @@ const styles = StyleSheet.create({
   contentWrapper: {
     position: 'absolute',
     bottom: 24,
-    left: 88, // Inset past the sidebar
+    left: 88, // Inset past the navigation rail
     maxWidth: 680,
     zIndex: 10,
   },
