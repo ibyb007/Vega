@@ -30,6 +30,7 @@ export interface ActiveStreamPayload {
   url: string;
   title: string;
   headers?: Record<string, string>;
+  qualities?: { label: string; url: string; headers?: any }[];
 }
 
 export default function App() {
@@ -116,6 +117,7 @@ export default function App() {
                     streamUrl={activeStream.url}
                     title={activeStream.title}
                     headers={activeStream.headers}
+                    qualities={activeStream.qualities}
                     onClose={() => setActiveStream(null)}
                   />
                 ) : selectedItem ? (
