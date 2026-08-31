@@ -20,7 +20,7 @@ import { TVHomeScreen } from './screens/tv/TVHomeScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
-import { TVInfoScreen } from './screens/tv/TVInfoScreen';
+import { TVDetailsScreen } from './screens/tv/TVDetailsScreen';
 import TVSearch from './screens/Search';
 import Extensions from './screens/settings/Extensions';
 
@@ -29,8 +29,14 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 export interface ActiveStreamPayload {
   url: string;
   title: string;
+  posterUrl?: string;
+  itemLink?: string;
+  providerValue?: string;
+  episodes?: any[];
+  currentEpisodeIndex?: number;
+  servers?: { name: string; url: string }[];
+  qualities?: { name: string; url: string }[];
   headers?: Record<string, string>;
-  qualities?: { label: string; url: string; headers?: any }[];
 }
 
 export default function App() {
@@ -38,7 +44,7 @@ export default function App() {
   const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
-  const currentProvider = useContentStore(state => state.provider);
+  const currentProvider = useContentStore((state) => state.provider);
 
   useEffect(() => {
     BootSplash.hide({ fade: false }).catch(() => {});
@@ -116,20 +122,43 @@ export default function App() {
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
-                    headers={activeStream.headers}
+                    posterUrl={activeStream.posterUrl}
+                    itemLink={activeStream.itemLink}
+                    providerValue={activeStream.providerValue || currentProvider?.value}
+                    episodes={activeStream.episodes}
+                    currentEpisodeIndex={activeStream.currentEpisodeIndex}
+                    servers={activeStream.servers}
                     qualities={activeStream.qualities}
+                    onSelectNextEpisode={(nextEp) => {
+                      const nextIndex = (activeStream.currentEpisodeIndex ?? 0) + 1;
+                      setActiveStream((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              url: nextEp.url || nextEp.link || prev.url,
+                              title: nextEp.title || prev.title,
+                              currentEpisodeIndex: nextIndex,
+                            }
+                          : null
+                      );
+                    }}
                     onClose={() => setActiveStream(null)}
                   />
                 ) : selectedItem ? (
                   /* TV Details, Episode & Quality Selector Screen */
-                  <TVInfoScreen
+                  <TVDetailsScreen
                     item={selectedItem}
-                    providerValue={selectedItem.provider || currentProvider?.value}
                     onBack={() => setSelectedItem(null)}
-                    onPlay={(payload) => {
-                      setActiveStream(payload);
-                      setSelectedItem(null);
-                    }}
+                    onPlayStream={(streamUrl, title, extraMeta) =>
+                      setActiveStream({
+                        url: streamUrl,
+                        title: title || selectedItem.title,
+                        posterUrl: selectedItem.image || selectedItem.poster,
+                        itemLink: selectedItem.link,
+                        providerValue: selectedItem.provider || currentProvider?.value,
+                        ...extraMeta,
+                      })
+                    }
                   />
                 ) : (
                   /* Master TV Layout: Rail + Viewport */
