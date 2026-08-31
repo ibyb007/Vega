@@ -11,8 +11,8 @@ import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
-import useWatchHistoryStore from '../../lib/zustand/watchHistoryStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
+import { Post } from '../../lib/providers/types';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 
 interface TVHomeScreenProps {
@@ -26,7 +26,8 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 }) => {
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
-  const watchHistory = useWatchHistoryStore((state) => state.watchHistory) || [];
+  const watchHistory = useContentStore((state: any) => state.watchHistory) || [];
+  
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
   const initialFocusSetRef = useRef(false);
 
@@ -47,7 +48,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           title: hero.title,
           backdropUrl: hero.image,
           posterUrl: hero.image,
-          overview: hero.extra || 'Select title to browse stream links and episodes.',
+          overview: hero.extra || 'Select title to browse stream links and playback streams.',
           year: '2024',
         });
       }
@@ -84,8 +85,8 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         <TVHeroMeta media={activeHero} />
 
         <View style={styles.rowsWrapper}>
-          {/* Continue Watching */}
-          {watchHistory.length > 0 && (
+          {/* Continue Watching Row */}
+          {Array.isArray(watchHistory) && watchHistory.length > 0 && (
             <View style={styles.rowContainer}>
               <Text style={styles.rowCategoryTitle}>Continue Watching</Text>
               <ScrollView
@@ -93,16 +94,16 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.horizontalRowScroll}
                 removeClippedSubviews={false}
-                nestedScrollEnabled={true}
               >
                 {watchHistory.map((item: any, pIndex: number) => {
-                  const progressPercent = item.duration
-                    ? Math.min(100, Math.round((item.currentTime / item.duration) * 100))
-                    : 0;
+                  const progressPercent =
+                    item.duration && item.currentTime
+                      ? Math.min(100, Math.round((item.currentTime / item.duration) * 100))
+                      : 0;
 
                   return (
                     <TVFocusablePressable
-                      key={`history-${item.link || item.id}-${pIndex}`}
+                      key={`history-${item.link || item.id || pIndex}`}
                       hasTVPreferredFocus={!initialFocusSetRef.current && pIndex === 0}
                       scaleFocused={1.08}
                       focusedBorderColor="#8A5CF6"
@@ -150,7 +151,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             </View>
           )}
 
-          {/* Provider Content Rows */}
+          {/* Scraper Provider Content Rows */}
           {homeData.map((row, rowIndex) => {
             const rowPosts = row.Posts || [];
             if (rowPosts.length === 0) return null;
@@ -164,7 +165,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.horizontalRowScroll}
                   removeClippedSubviews={false}
-                  nestedScrollEnabled={true}
                 >
                   {rowPosts.map((item, pIndex) => {
                     const shouldInitialFocus =
@@ -229,7 +229,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#0A0A0E',
-    paddingLeft: 88,
+    paddingLeft: 84,
   },
   loadingText: {
     color: '#9CA3AF',
@@ -240,8 +240,8 @@ const styles = StyleSheet.create({
     paddingBottom: 60,
   },
   rowsWrapper: {
-    paddingLeft: 88, // Clears the collapsed sidebar cleanly
-    marginTop: -8,
+    paddingLeft: 96,
+    marginTop: -10,
   },
   rowContainer: {
     marginBottom: 28,
@@ -281,7 +281,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 4,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
   },
   progressBarFill: {
     height: '100%',
