@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,29 +13,50 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { useSettingsStore } from '../../lib/zustand/settingsStore';
 
+export interface TVPlayerQuality {
+  label: string;
+  url: string;
+  headers?: any;
+}
+
 interface TVPlayerScreenProps {
   streamUrl: string;
   title: string;
   headers?: Record<string, string>;
+  qualities?: TVPlayerQuality[];
   onClose: () => void;
 }
 
 type AspectRatioMode = 'contain' | 'cover' | 'stretch';
 
+const AUTO_HIDE_MS = 6000;
+const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
 export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   streamUrl,
   title,
   headers,
+  qualities,
   onClose,
 }) => {
   const videoRef = useRef<VideoRef>(null);
   const defaultPlayer = useSettingsStore((state) => state.defaultPlayer);
+
+  // The active source can change when the user picks a different quality,
+  // so it lives in state seeded from props rather than being read from
+  // props directly.
+  const [activeSource, setActiveSource] = useState({ url: streamUrl, headers });
+  const [activeQualityLabel, setActiveQualityLabel] = useState<string>(
+    qualities && qualities.length > 0 ? qualities[0].label : 'Auto',
+  );
+  const resumeAtRef = useRef<number | null>(null);
 
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [showControls, setShowControls] = useState(true);
+  const [speed, setSpeed] = useState(1);
 
   // Video Track & Display states
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
@@ -45,24 +66,56 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [selectedSub, setSelectedSub] = useState<any>({ type: SelectedTrackType.DISABLED });
 
   // Dialog States
-  const [dialogType, setDialogType] = useState<'audio' | 'subtitle' | null>(null);
+  const [dialogType, setDialogType] = useState<'audio' | 'subtitle' | 'quality' | null>(null);
+
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearHideTimer = () => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  };
+
+  const scheduleAutoHide = useCallback(() => {
+    clearHideTimer();
+    if (paused || dialogType) return;
+    hideTimerRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, AUTO_HIDE_MS);
+  }, [paused, dialogType]);
+
+  // Any interaction (focusing a control, opening/closing a dialog, toggling
+  // pause) should reveal the controls and restart the auto-hide countdown.
+  const registerInteraction = useCallback(() => {
+    setShowControls(true);
+    scheduleAutoHide();
+  }, [scheduleAutoHide]);
+
+  useEffect(() => {
+    scheduleAutoHide();
+    return clearHideTimer;
+  }, [scheduleAutoHide]);
 
   useEffect(() => {
     if (defaultPlayer === 'vlc' || defaultPlayer === 'external') {
-      launchExternalPlayer(streamUrl, title);
+      launchExternalPlayer(activeSource.url, title);
     }
-  }, [defaultPlayer, streamUrl]);
+    // Only on mount / explicit default-player change -- not on every
+    // quality switch (that would re-launch the external app repeatedly).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultPlayer]);
 
   const launchExternalPlayer = async (url: string, mediaTitle: string) => {
     try {
       const extra: Record<string, any> = { title: mediaTitle };
 
-      if (headers && Object.keys(headers).length > 0) {
-        Object.assign(extra, headers);
-        extra['android.media.intent.extra.HTTP_HEADERS'] = headers;
-        extra.headers = headers;
+      if (activeSource.headers && Object.keys(activeSource.headers).length > 0) {
+        Object.assign(extra, activeSource.headers);
+        extra['android.media.intent.extra.HTTP_HEADERS'] = activeSource.headers;
+        extra.headers = activeSource.headers;
 
-        const referer = headers['Referer'] || headers['referer'];
+        const referer = activeSource.headers['Referer'] || activeSource.headers['referer'];
         if (referer) {
           extra['android.intent.extra.REFERRER'] = referer;
         }
@@ -74,7 +127,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         extra,
       });
     } catch {
-      ToastAndroid.show('No external player found. Falling back to internal player.', ToastAndroid.LONG);
+      ToastAndroid.show('No external video player found. Falling back to internal player.', ToastAndroid.LONG);
     }
   };
 
@@ -82,19 +135,33 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     const next = Math.max(0, Math.min(duration, currentTime + deltaSeconds));
     videoRef.current?.seek(next);
     setCurrentTime(next);
+    registerInteraction();
   };
 
   const toggleAspectRatio = () => {
-    if (resizeMode === 'contain') {
-      setResizeMode('cover');
-      ToastAndroid.show('Aspect Ratio: Crop (16:9)', ToastAndroid.SHORT);
-    } else if (resizeMode === 'cover') {
-      setResizeMode('stretch');
-      ToastAndroid.show('Aspect Ratio: Stretch', ToastAndroid.SHORT);
-    } else {
-      setResizeMode('contain');
-      ToastAndroid.show('Aspect Ratio: Fit', ToastAndroid.SHORT);
-    }
+    setResizeMode((prev) => {
+      const next = prev === 'contain' ? 'cover' : prev === 'cover' ? 'stretch' : 'contain';
+      const label = next === 'contain' ? 'Fit' : next === 'cover' ? 'Crop' : 'Stretch';
+      ToastAndroid.show(`Aspect Ratio: ${label}`, ToastAndroid.SHORT);
+      return next;
+    });
+    registerInteraction();
+  };
+
+  const cycleSpeed = () => {
+    const idx = SPEED_STEPS.indexOf(speed);
+    const next = SPEED_STEPS[(idx + 1) % SPEED_STEPS.length];
+    setSpeed(next);
+    ToastAndroid.show(`Speed: ${next}x`, ToastAndroid.SHORT);
+    registerInteraction();
+  };
+
+  const switchQuality = (q: TVPlayerQuality) => {
+    resumeAtRef.current = currentTime;
+    setBuffering(true);
+    setActiveSource({ url: q.url, headers: q.headers });
+    setActiveQualityLabel(q.label);
+    setDialogType(null);
   };
 
   const formatTime = (seconds: number) => {
@@ -103,14 +170,29 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
+  const currentAudioLabel =
+    audioTracks[selectedAudio?.value]?.title ||
+    audioTracks[selectedAudio?.value]?.language?.toUpperCase() ||
+    (audioTracks.length > 0 ? 'Audio' : '—');
+
+  const currentSubLabel =
+    selectedSub?.type === SelectedTrackType.DISABLED
+      ? 'Off'
+      : textTracks[selectedSub?.value]?.title ||
+        textTracks[selectedSub?.value]?.language?.toUpperCase() ||
+        'On';
+
+  const aspectLabel = resizeMode === 'contain' ? 'Fit' : resizeMode === 'cover' ? 'Crop' : 'Stretch';
+
   return (
     <View style={styles.container}>
       <Video
         ref={videoRef}
-        source={{ uri: streamUrl, headers }}
+        source={{ uri: activeSource.url, headers: activeSource.headers }}
         style={StyleSheet.absoluteFill}
         resizeMode={resizeMode}
         paused={paused}
+        rate={speed}
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
         onLoad={(meta: any) => {
@@ -118,6 +200,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           setAudioTracks(meta.audioTracks || []);
           setTextTracks(meta.textTracks || []);
           setBuffering(false);
+          if (resumeAtRef.current != null) {
+            videoRef.current?.seek(resumeAtRef.current);
+            resumeAtRef.current = null;
+          }
         }}
         onProgress={(prog) => setCurrentTime(prog.currentTime)}
         onBuffer={(buf) => setBuffering(buf.isBuffering)}
@@ -133,7 +219,22 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Stremio-Style Bottom Controls Bar */}
+      {/* Invisible full-screen focus target used to bring controls back
+          once they've auto-hidden -- it's the only focusable element on
+          screen while `showControls` is false, so the D-pad naturally
+          lands here. */}
+      {!showControls && (
+        <TVFocusablePressable
+          hasTVPreferredFocus
+          style={StyleSheet.absoluteFillObject}
+          onFocus={registerInteraction}
+          onPress={registerInteraction}
+        >
+          {() => <View style={StyleSheet.absoluteFillObject} />}
+        </TVFocusablePressable>
+      )}
+
+      {/* Bottom Controls Bar */}
       {showControls && (
         <View style={styles.bottomOverlay}>
           <Text numberOfLines={1} style={styles.titleLabel}>
@@ -156,96 +257,192 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 ]}
               />
             </View>
+            <View style={styles.timeRow}>
+              <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
+              <Text style={styles.timeText}>{formatTime(duration)}</Text>
+            </View>
           </View>
 
-          {/* Controls row */}
+          {/* Playback controls row */}
           <View style={styles.controlsRow}>
-            <View style={styles.leftButtonGroup}>
-              {/* Play / Pause */}
+            <TVFocusablePressable
+              hasTVPreferredFocus={showControls}
+              scaleFocused={1.15}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={() => {
+                setPaused((p) => !p);
+                registerInteraction();
+              }}
+              style={styles.actionIconBtn}
+            >
+              {() => (
+                <MaterialCommunityIcons
+                  name={paused ? 'play' : 'pause'}
+                  size={26}
+                  color="#FFFFFF"
+                />
+              )}
+            </TVFocusablePressable>
+
+            <TVFocusablePressable
+              scaleFocused={1.15}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={() => handleSeek(-10)}
+              style={styles.actionIconBtn}
+            >
+              {() => <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />}
+            </TVFocusablePressable>
+
+            <TVFocusablePressable
+              scaleFocused={1.15}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={() => handleSeek(10)}
+              style={styles.actionIconBtn}
+            >
+              {() => <MaterialCommunityIcons name="fast-forward-10" size={24} color="#FFFFFF" />}
+            </TVFocusablePressable>
+          </View>
+
+          {/* Labeled option row -- mirrors the mobile app's bottom bar */}
+          <View style={styles.optionsRow}>
+            <TVFocusablePressable
+              scaleFocused={1.06}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={() => setDialogType('audio')}
+              style={styles.optionBtn}
+            >
+              {() => (
+                <View style={styles.optionBtnInner}>
+                  <MaterialCommunityIcons name="volume-high" size={20} color="#FFFFFF" />
+                  <Text numberOfLines={1} style={styles.optionLabel}>
+                    {currentAudioLabel}
+                  </Text>
+                </View>
+              )}
+            </TVFocusablePressable>
+
+            <TVFocusablePressable
+              scaleFocused={1.06}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={() => setDialogType('subtitle')}
+              style={styles.optionBtn}
+            >
+              {() => (
+                <View style={styles.optionBtnInner}>
+                  <MaterialCommunityIcons name="subtitles-outline" size={20} color="#FFFFFF" />
+                  <Text numberOfLines={1} style={styles.optionLabel}>
+                    {currentSubLabel}
+                  </Text>
+                </View>
+              )}
+            </TVFocusablePressable>
+
+            <TVFocusablePressable
+              scaleFocused={1.06}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={cycleSpeed}
+              style={styles.optionBtn}
+            >
+              {() => (
+                <View style={styles.optionBtnInner}>
+                  <MaterialCommunityIcons name="speedometer" size={20} color="#FFFFFF" />
+                  <Text numberOfLines={1} style={styles.optionLabel}>
+                    {speed}x
+                  </Text>
+                </View>
+              )}
+            </TVFocusablePressable>
+
+            {qualities && qualities.length > 1 && (
               <TVFocusablePressable
-                hasTVPreferredFocus={true}
-                scaleFocused={1.15}
+                scaleFocused={1.06}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
-                onPress={() => setPaused(!paused)}
-                style={styles.actionIconBtn}
+                onFocus={registerInteraction}
+                onPress={() => setDialogType('quality')}
+                style={styles.optionBtn}
               >
                 {() => (
-                  <MaterialCommunityIcons
-                    name={paused ? 'play' : 'pause'}
-                    size={26}
-                    color="#FFFFFF"
-                  />
+                  <View style={styles.optionBtnInner}>
+                    <MaterialCommunityIcons name="high-definition" size={20} color="#FFFFFF" />
+                    <Text numberOfLines={1} style={styles.optionLabel}>
+                      {activeQualityLabel}
+                    </Text>
+                  </View>
                 )}
               </TVFocusablePressable>
+            )}
 
-              {/* 10s Rewind */}
-              <TVFocusablePressable
-                scaleFocused={1.15}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={() => handleSeek(-10)}
-                style={styles.actionIconBtn}
-              >
-                {() => <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />}
-              </TVFocusablePressable>
+            <TVFocusablePressable
+              scaleFocused={1.06}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={toggleAspectRatio}
+              style={styles.optionBtn}
+            >
+              {() => (
+                <View style={styles.optionBtnInner}>
+                  <MaterialCommunityIcons name="aspect-ratio" size={20} color="#FFFFFF" />
+                  <Text numberOfLines={1} style={styles.optionLabel}>
+                    {aspectLabel}
+                  </Text>
+                </View>
+              )}
+            </TVFocusablePressable>
 
-              {/* 10s Fast-Forward */}
-              <TVFocusablePressable
-                scaleFocused={1.15}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={() => handleSeek(10)}
-                style={styles.actionIconBtn}
-              >
-                {() => <MaterialCommunityIcons name="fast-forward-10" size={24} color="#FFFFFF" />}
-              </TVFocusablePressable>
+            <TVFocusablePressable
+              scaleFocused={1.06}
+              focusedBorderColor="#F59E0B"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={() => launchExternalPlayer(activeSource.url, title)}
+              style={[styles.optionBtn, styles.vlcBtn]}
+            >
+              {() => (
+                <View style={styles.optionBtnInner}>
+                  <MaterialCommunityIcons name="open-in-app" size={20} color="#F59E0B" />
+                  <Text numberOfLines={1} style={[styles.optionLabel, { color: '#F59E0B' }]}>
+                    Open in VLC
+                  </Text>
+                </View>
+              )}
+            </TVFocusablePressable>
 
-              {/* Subtitles */}
-              <TVFocusablePressable
-                scaleFocused={1.15}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={() => setDialogType('subtitle')}
-                style={styles.actionIconBtn}
-              >
-                {() => <MaterialCommunityIcons name="subtitles-outline" size={24} color="#FFFFFF" />}
-              </TVFocusablePressable>
-
-              {/* Audio Tracks */}
-              <TVFocusablePressable
-                scaleFocused={1.15}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={() => setDialogType('audio')}
-                style={styles.actionIconBtn}
-              >
-                {() => <MaterialCommunityIcons name="volume-high" size={24} color="#FFFFFF" />}
-              </TVFocusablePressable>
-
-              {/* Aspect Ratio */}
-              <TVFocusablePressable
-                scaleFocused={1.15}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={toggleAspectRatio}
-                style={styles.actionIconBtn}
-              >
-                {() => <MaterialCommunityIcons name="aspect-ratio" size={24} color="#FFFFFF" />}
-              </TVFocusablePressable>
-            </View>
-
-            {/* Time readout */}
-            <View style={styles.timeWrapper}>
-              <Text style={styles.timeCurrent}>{formatTime(currentTime)}</Text>
-              <Text style={styles.timeDivider}> / </Text>
-              <Text style={styles.timeDuration}>{formatTime(duration)}</Text>
-            </View>
+            <TVFocusablePressable
+              scaleFocused={1.06}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={8}
+              onFocus={registerInteraction}
+              onPress={onClose}
+              style={styles.optionBtn}
+            >
+              {() => (
+                <View style={styles.optionBtnInner}>
+                  <MaterialCommunityIcons name="close" size={20} color="#FFFFFF" />
+                  <Text numberOfLines={1} style={styles.optionLabel}>
+                    Close
+                  </Text>
+                </View>
+              )}
+            </TVFocusablePressable>
           </View>
         </View>
       )}
 
-      {/* Audio / Subtitles Modal Dialog */}
+      {/* Audio / Subtitles / Quality Modal Dialog */}
       <Modal
         visible={Boolean(dialogType)}
         transparent={true}
@@ -255,12 +452,31 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>
-              {dialogType === 'audio' ? 'Audio Tracks' : 'Subtitles'}
+              {dialogType === 'audio' ? 'Audio Tracks' : dialogType === 'subtitle' ? 'Subtitles' : 'Quality'}
             </Text>
 
-            {dialogType === 'subtitle' ? (
+            {dialogType === 'quality' && (
+              <View style={styles.trackList}>
+                {(qualities || []).map((q, i) => (
+                  <TVFocusablePressable
+                    key={`${q.url}-${i}`}
+                    hasTVPreferredFocus={i === 0}
+                    scaleFocused={1.03}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={8}
+                    onPress={() => switchQuality(q)}
+                    style={[styles.trackRow, activeQualityLabel === q.label && styles.trackSelected]}
+                  >
+                    {() => <Text style={styles.trackText}>{q.label}</Text>}
+                  </TVFocusablePressable>
+                ))}
+              </View>
+            )}
+
+            {dialogType === 'subtitle' && (
               <View style={styles.trackList}>
                 <TVFocusablePressable
+                  hasTVPreferredFocus
                   scaleFocused={1.03}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={8}
@@ -270,7 +486,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   }}
                   style={[styles.trackRow, selectedSub.type === SelectedTrackType.DISABLED && styles.trackSelected]}
                 >
-                  {() => <Text style={styles.trackText}>Disabled</Text>}
+                  {() => <Text style={styles.trackText}>Off</Text>}
                 </TVFocusablePressable>
 
                 {textTracks.map((trk, i) => (
@@ -292,12 +508,19 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     )}
                   </TVFocusablePressable>
                 ))}
+
+                {textTracks.length === 0 && (
+                  <Text style={styles.emptyModalText}>No subtitle tracks available for this stream.</Text>
+                )}
               </View>
-            ) : (
+            )}
+
+            {dialogType === 'audio' && (
               <View style={styles.trackList}>
                 {audioTracks.map((trk, i) => (
                   <TVFocusablePressable
                     key={i}
+                    hasTVPreferredFocus={i === 0}
                     scaleFocused={1.03}
                     focusedBorderColor="#8A5CF6"
                     borderRadius={8}
@@ -314,6 +537,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     )}
                   </TVFocusablePressable>
                 ))}
+
+                {audioTracks.length === 0 && (
+                  <Text style={styles.emptyModalText}>No alternate audio tracks available.</Text>
+                )}
               </View>
             )}
           </View>
@@ -339,9 +566,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingHorizontal: 40,
-    paddingBottom: 28,
+    paddingBottom: 24,
     paddingTop: 48,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
   },
   titleLabel: {
     color: '#FFFFFF',
@@ -351,9 +578,7 @@ const styles = StyleSheet.create({
   },
   progressContainer: {
     width: '100%',
-    height: 18,
-    justifyContent: 'center',
-    marginBottom: 8,
+    marginBottom: 18,
   },
   progressBackground: {
     width: '100%',
@@ -375,36 +600,49 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     backgroundColor: '#8A5CF6',
   },
+  timeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  timeText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   controlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  leftButtonGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 12,
+    marginBottom: 18,
   },
   actionIconBtn: {
-    padding: 8,
+    padding: 10,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
-  timeWrapper: {
+  optionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  optionBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  optionBtnInner: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
-  timeCurrent: {
+  optionLabel: {
     color: '#E5E7EB',
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '600',
+    maxWidth: 110,
   },
-  timeDivider: {
-    color: '#6B7280',
-    fontSize: 14,
-  },
-  timeDuration: {
-    color: '#9CA3AF',
-    fontSize: 14,
+  vlcBtn: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
   },
   modalOverlay: {
     flex: 1,
@@ -414,6 +652,7 @@ const styles = StyleSheet.create({
   },
   modalBox: {
     width: 460,
+    maxHeight: 500,
     backgroundColor: '#16161E',
     borderRadius: 16,
     padding: 24,
@@ -444,5 +683,10 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  emptyModalText: {
+    color: '#6B7280',
+    fontSize: 13,
+    paddingVertical: 8,
   },
 });
