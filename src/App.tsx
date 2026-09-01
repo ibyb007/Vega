@@ -125,6 +125,7 @@ export default function App() {
                     posterUrl={activeStream.posterUrl}
                     itemLink={activeStream.itemLink}
                     providerValue={activeStream.providerValue || currentProvider?.value}
+                    headers={activeStream.headers}
                     episodes={activeStream.episodes}
                     currentEpisodeIndex={activeStream.currentEpisodeIndex}
                     servers={activeStream.servers}
