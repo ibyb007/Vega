@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,28 +13,15 @@ import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
+import useThemeStore from '../../lib/zustand/themeStore';
 import { providerManager } from '../../lib/services/ProviderManager';
-import type { Info, Link, EpisodeLink } from '../../lib/providers/types';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 interface TVDetailsScreenProps {
   item: any;
   onBack: () => void;
-  onPlayStream: (
-    streamUrl: string,
-    title?: string,
-    extraMeta?: {
-      posterUrl?: string;
-      itemLink?: string;
-      providerValue?: string;
-      episodes?: any[];
-      currentEpisodeIndex?: number;
-      servers?: { name: string; url: string }[];
-      qualities?: { name: string; url: string }[];
-      headers?: Record<string, string>;
-    }
-  ) => void;
+  onPlayStream: (streamUrl: string, title?: string, extraMeta?: any) => void;
 }
 
 export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
@@ -42,40 +29,27 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   onBack,
   onPlayStream,
 }) => {
-  const activeStoreProvider = useContentStore((state) => state.provider);
-  const providerId = item?.provider || activeStoreProvider?.value || '';
+  const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
+  const provider = useContentStore((state) => state.provider);
 
-  const [info, setInfo] = useState<Info | null>(null);
+  // Pre-seed with available item data so layout renders immediately without blank page
+  const [details, setDetails] = useState<any | null>(item || null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [selectedSeason, setSelectedSeason] = useState<number>(1);
   const [extractingStreams, setExtractingStreams] = useState(false);
 
-  const [seasonIndex, setSeasonIndex] = useState(0);
-  const [episodes, setEpisodes] = useState<EpisodeLink[]>([]);
-  const [episodesLoading, setEpisodesLoading] = useState(false);
-
-  // 1. Fetch real metadata (title/synopsis/image/linkList) for this title.
   useEffect(() => {
     let isMounted = true;
 
     async function fetchMetadata() {
-      setLoading(true);
-      setError(null);
       try {
-        if (!providerId || !item?.link) {
-          throw new Error('No active provider found for this media');
+        const providerId = item.provider || provider?.value;
+        const res = await providerManager.getDetails(providerId, item.link);
+        if (isMounted && res) {
+          setDetails(res);
         }
-        const res = await providerManager.getMetaData({
-          link: item.link,
-          provider: providerId,
-        });
-        if (isMounted) {
-          setInfo(res);
-          setSeasonIndex(0);
-        }
-      } catch (err: any) {
-        console.warn('[TVDetailsScreen] getMetaData error:', err);
-        if (isMounted) setError(err?.message || 'Failed to load details');
+      } catch (e) {
+        console.warn('[TVDetails] Metadata fetch error:', e);
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -85,315 +59,271 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [item, providerId]);
+  }, [item, provider?.value]);
 
-  const linkList: Link[] = info?.linkList || [];
-  const activeLink = linkList[seasonIndex];
-  const hasEpisodesLink = !!activeLink?.episodesLink;
-
-  // 2. Once we know which season/link is selected, fetch its episode list
-  //    (series) -- movies use `directLinks` directly, no extra fetch needed.
-  useEffect(() => {
-    let isMounted = true;
-
-    async function fetchEpisodes() {
-      if (!hasEpisodesLink || !activeLink?.episodesLink) {
-        setEpisodes([]);
-        return;
-      }
-      setEpisodesLoading(true);
-      try {
-        const eps = await providerManager.getEpisodes({
-          url: activeLink.episodesLink,
-          providerValue: providerId,
-        });
-        if (isMounted) setEpisodes(eps || []);
-      } catch (err) {
-        console.warn('[TVDetailsScreen] getEpisodes error:', err);
-        if (isMounted) setEpisodes([]);
-      } finally {
-        if (isMounted) setEpisodesLoading(false);
-      }
+  // Highest quality backdrop resolution
+  const backdropUri = useMemo(() => {
+    const raw =
+      details?.backdrop ||
+      details?.backdropUrl ||
+      details?.banner ||
+      details?.image ||
+      details?.poster ||
+      item?.image;
+    if (!raw) return null;
+    if (typeof raw === 'string' && raw.includes('/w500/')) {
+      return raw.replace('/w500/', '/original/');
     }
+    return raw;
+  }, [details, item]);
 
-    fetchEpisodes();
-    return () => {
-      isMounted = false;
-    };
-  }, [activeLink?.episodesLink, hasEpisodesLink, providerId]);
+  // Normalized episodes list
+  const episodesList: any[] = useMemo(() => {
+    if (!details) return [];
+    if (Array.isArray(details.episodes) && details.episodes.length > 0) return details.episodes;
+    if (Array.isArray(details.epList) && details.epList.length > 0) return details.epList;
+    return [];
+  }, [details]);
 
-  const directItems = activeLink?.directLinks || [];
+  // Distinct seasons
+  const seasonsList = useMemo(() => {
+    if (episodesList.length === 0) return [];
+    const seasons = Array.from(
+      new Set(episodesList.map((ep) => ep.season || 1))
+    ).sort((a, b) => Number(a) - Number(b));
+    return seasons;
+  }, [episodesList]);
 
-  const resolveAndPlay = useCallback(
-    async (link: string, streamTitle: string, type: string) => {
-      if (!providerId || !link) {
-        ToastAndroid.show('No active provider found for this media', ToastAndroid.SHORT);
-        return;
-      }
+  // Filter episodes by season
+  const currentSeasonEpisodes = useMemo(() => {
+    if (episodesList.length === 0) return [];
+    if (seasonsList.length <= 1) return episodesList;
+    return episodesList.filter((ep) => (ep.season || 1) === selectedSeason);
+  }, [episodesList, seasonsList, selectedSeason]);
 
-      setExtractingStreams(true);
-      try {
-        const streams = await providerManager.getStream({
-          link,
-          type,
-          providerValue: providerId,
+  const handleResolveAndPlay = async (targetItem: any) => {
+    setExtractingStreams(true);
+    try {
+      const providerId = item.provider || provider?.value;
+      const streamRes = await providerManager.getStream(
+        providerId,
+        targetItem.link || item.link,
+        targetItem.type || item.type
+      );
+
+      const streamUrl =
+        typeof streamRes === 'string'
+          ? streamRes
+          : streamRes?.url || streamRes?.streamUrl || streamRes?.link;
+
+      if (streamUrl) {
+        onPlayStream(streamUrl, targetItem.title || details?.title || item.title, {
+          episodes: episodesList,
+          servers: streamRes?.servers || [],
+          qualities: streamRes?.qualities || [],
         });
-
-        if (!streams || streams.length === 0) {
-          ToastAndroid.show('No valid stream links found from this source.', ToastAndroid.LONG);
-          return;
-        }
-
-        const best = streams[0];
-        const qualities = streams.map((s, idx) => ({
-          name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
-          url: s.link,
-        }));
-
-        onPlayStream(best.link, streamTitle, {
-          posterUrl: info?.image || info?.poster || item?.image,
-          itemLink: item?.link,
-          providerValue: providerId,
-          episodes,
-          currentEpisodeIndex: 0,
-          qualities,
-          headers: best.headers,
-        });
-      } catch (e: any) {
-        console.warn('[TVDetailsScreen] Stream extraction failed:', e);
-        ToastAndroid.show(e?.message || 'Failed to extract playback stream', ToastAndroid.LONG);
-      } finally {
-        setExtractingStreams(false);
+      } else {
+        ToastAndroid.show('No playable streams found for this item.', ToastAndroid.LONG);
       }
-    },
-    [providerId, info, item, episodes, onPlayStream],
-  );
-
-  const bannerImage = info?.image || info?.poster || item?.image;
-  const hasEpisodes = episodes.length > 0;
-
-  if (error && !info) {
-    return (
-      <View style={[styles.container, styles.centerLoading]}>
-        <MaterialCommunityIcons name="alert-circle-outline" size={48} color="#EF4444" />
-        <Text style={styles.errorTitle}>Failed to load content</Text>
-        <Text style={styles.loadingSubtext}>{error}</Text>
-        <TVFocusablePressable
-          hasTVPreferredFocus
-          scaleFocused={1.06}
-          focusedBorderColor="#FFFFFF"
-          borderRadius={10}
-          onPress={onBack}
-          style={styles.backBtn}
-        >
-          {() => (
-            <View style={styles.backBtnInner}>
-              <MaterialCommunityIcons name="arrow-left" size={20} color="#FFFFFF" />
-              <Text style={styles.backBtnText}>Go back</Text>
-            </View>
-          )}
-        </TVFocusablePressable>
-      </View>
-    );
-  }
+    } catch (e: any) {
+      ToastAndroid.show(e?.message || 'Failed to extract stream links.', ToastAndroid.LONG);
+    } finally {
+      setExtractingStreams(false);
+    }
+  };
 
   return (
     <View style={styles.container}>
-      {/* Top Backdrop Header */}
-      <View style={styles.backdropHero}>
-        {bannerImage ? (
+      {/* Background Fanart Image Fixed Behind All Content */}
+      <View style={styles.backdropLayer} pointerEvents="none">
+        {backdropUri && (
           <Image
-            source={{ uri: bannerImage }}
+            source={{ uri: backdropUri }}
             style={styles.backdropImage}
             resizeMode="cover"
           />
-        ) : null}
-
+        )}
+        {/* Gradients to keep text and stream items readable while scrolling */}
         <LinearGradient
-          colors={['transparent', 'rgba(10, 10, 14, 0.7)', '#0A0A0E']}
-          locations={[0, 0.6, 1]}
+          colors={['rgba(10, 10, 14, 0.4)', 'rgba(10, 10, 14, 0.85)', '#0A0A0E']}
+          locations={[0, 0.45, 0.9]}
           style={styles.bottomGradient}
         />
         <LinearGradient
-          colors={['rgba(10, 10, 14, 0.95)', 'transparent']}
+          colors={['rgba(10, 10, 14, 0.95)', 'rgba(10, 10, 14, 0.7)', 'transparent']}
+          locations={[0, 0.45, 0.85]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
           style={styles.leftGradient}
         />
-
-        <View style={styles.heroInfo}>
-          <TVFocusablePressable
-            hasTVPreferredFocus={false}
-            scaleFocused={1.08}
-            focusedBorderColor="#8A5CF6"
-            borderRadius={8}
-            onPress={onBack}
-            style={styles.backBtn}
-          >
-            {() => (
-              <View style={styles.backBtnInner}>
-                <MaterialCommunityIcons name="arrow-left" size={20} color="#FFFFFF" />
-                <Text style={styles.backBtnText}>Back</Text>
-              </View>
-            )}
-          </TVFocusablePressable>
-
-          <Text style={styles.title} numberOfLines={2}>
-            {info?.title || item?.title}
-          </Text>
-
-          <View style={styles.badgeRow}>
-            {info?.rating ? (
-              <View style={styles.ratingBadge}>
-                <Text style={styles.ratingText}>★ {info.rating}</Text>
-              </View>
-            ) : null}
-            {(info?.tags || []).slice(0, 3).map((t, i) => (
-              <Text key={`${t}-${i}`} style={styles.metaBadge}>
-                {t}
-              </Text>
-            ))}
-          </View>
-
-          <Text style={styles.overview} numberOfLines={3}>
-            {info?.synopsis || 'Select an episode or source below to start streaming.'}
-          </Text>
-        </View>
       </View>
 
-      {/* Season / Quality Selector */}
-      {linkList.length > 1 && (
-        <View style={styles.seasonRow}>
-          {linkList.map((l, idx) => (
-            <TVFocusablePressable
-              key={`${l.title}-${idx}`}
-              scaleFocused={1.05}
-              focusedBorderColor="#8A5CF6"
-              borderRadius={8}
-              onPress={() => setSeasonIndex(idx)}
-              style={[styles.seasonChip, idx === seasonIndex && styles.seasonChipActive]}
-            >
-              {() => (
-                <Text
-                  numberOfLines={1}
-                  style={[styles.seasonChipText, idx === seasonIndex && styles.seasonChipTextActive]}
-                >
-                  {l.title}
-                  {l.quality ? ` • ${l.quality}` : ''}
-                </Text>
-              )}
-            </TVFocusablePressable>
-          ))}
-        </View>
-      )}
+      {/* Main Scrollable Viewport Over Backdrop */}
+      <ScrollView
+        showsVerticalScrollIndicator={true}
+        contentContainerStyle={styles.scrollContent}
+        nestedScrollEnabled={true}
+      >
+        {/* Back Button */}
+        <TVFocusablePressable
+          hasTVPreferredFocus={true}
+          scaleFocused={1.08}
+          focusedBorderColor={primaryColor}
+          borderRadius={8}
+          onPress={onBack}
+          style={styles.backButton}
+        >
+          {() => (
+            <View style={styles.backBtnInner}>
+              <MaterialCommunityIcons name="arrow-left" size={18} color="#FFFFFF" />
+              <Text style={styles.backBtnText}>Back</Text>
+            </View>
+          )}
+        </TVFocusablePressable>
 
-      {/* Episode / Source Selector */}
-      {loading || episodesLoading || extractingStreams ? (
-        <View style={styles.centerLoading}>
-          <ActivityIndicator size="large" color="#8A5CF6" />
-          <Text style={styles.loadingSubtext}>
-            {extractingStreams
-              ? 'Resolving stream links...'
-              : episodesLoading
-              ? 'Loading episodes...'
-              : 'Loading media details...'}
+        {/* Header Metadata (Raised Higher to Maximize List Area) */}
+        <View style={styles.compactHeader}>
+          <Text style={styles.title} numberOfLines={2}>
+            {details?.title || item.title}
+          </Text>
+
+          <View style={styles.badgesRow}>
+            {details?.rating ? (
+              <View style={styles.ratingBadge}>
+                <Text style={styles.ratingText}>★ {details.rating}</Text>
+              </View>
+            ) : null}
+            {details?.year ? <Text style={styles.metaBadge}>{details.year}</Text> : null}
+            {details?.quality ? <Text style={styles.metaBadge}>{details.quality}</Text> : null}
+            {details?.tags && Array.isArray(details.tags) && (
+              <Text style={styles.tagsText}>{details.tags.slice(0, 4).join(' • ')}</Text>
+            )}
+          </View>
+
+          <Text style={styles.overview} numberOfLines={2}>
+            {details?.description ||
+              details?.overview ||
+              details?.synopsis ||
+              item.extra ||
+              'Select an episode or quality source below to start streaming.'}
           </Text>
         </View>
-      ) : hasEpisodes ? (
-        <View style={styles.episodesSection}>
-          <Text style={styles.sectionHeader}>Select Episode</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.episodesScroll}
-          >
-            {episodes.map((ep, index) => (
+
+        {/* Seasons Row (if multi-season series) */}
+        {seasonsList.length > 1 && (
+          <View style={styles.seasonsContainer}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.seasonsScroll}
+            >
+              {seasonsList.map((seasonNum) => {
+                const isSeasonActive = selectedSeason === seasonNum;
+                return (
+                  <TVFocusablePressable
+                    key={`season-${seasonNum}`}
+                    scaleFocused={1.05}
+                    focusedBorderColor={primaryColor}
+                    borderRadius={8}
+                    onPress={() => setSelectedSeason(Number(seasonNum))}
+                    style={[
+                      styles.seasonTab,
+                      isSeasonActive && { backgroundColor: primaryColor, borderColor: primaryColor },
+                    ]}
+                  >
+                    {() => (
+                      <Text style={[styles.seasonTabText, isSeasonActive && { color: '#FFFFFF' }]}>
+                        Season {seasonNum}
+                      </Text>
+                    )}
+                  </TVFocusablePressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Quality / Episode List (Vertical, Scrollable, Full Real Estate) */}
+        <View style={styles.listSection}>
+          <Text style={styles.sectionHeader}>
+            {episodesList.length > 0 ? 'Episodes & Qualities' : 'Available Streams & Qualities'}
+          </Text>
+
+          {loading ? (
+            <View style={styles.inlineLoading}>
+              <ActivityIndicator size="large" color={primaryColor} />
+              <Text style={styles.loadingText}>Fetching available sources...</Text>
+            </View>
+          ) : extractingStreams ? (
+            <View style={styles.inlineLoading}>
+              <ActivityIndicator size="large" color={primaryColor} />
+              <Text style={styles.loadingText}>Resolving playback link...</Text>
+            </View>
+          ) : currentSeasonEpisodes.length > 0 ? (
+            <View style={styles.verticalItemsList}>
+              {currentSeasonEpisodes.map((ep: any, index: number) => (
+                <TVFocusablePressable
+                  key={`ep-${ep.id || ep.link || index}`}
+                  scaleFocused={1.02}
+                  focusedBorderColor={primaryColor}
+                  borderRadius={10}
+                  onPress={() => handleResolveAndPlay(ep)}
+                  style={styles.listItemCard}
+                >
+                  {({ focused }) => (
+                    <View style={styles.listItemInner}>
+                      <MaterialCommunityIcons
+                        name="play-circle-outline"
+                        size={28}
+                        color={focused ? primaryColor : '#9CA3AF'}
+                      />
+                      <View style={styles.listItemMeta}>
+                        <Text numberOfLines={1} style={styles.listItemTitle}>
+                          {ep.title || `Episode ${index + 1}`}
+                        </Text>
+                        {ep.quality && (
+                          <Text style={styles.listItemSub}>{ep.quality}</Text>
+                        )}
+                      </View>
+                      <MaterialCommunityIcons name="chevron-right" size={20} color="#6B7280" />
+                    </View>
+                  )}
+                </TVFocusablePressable>
+              ))}
+            </View>
+          ) : (
+            /* Single movie or direct link fallback */
+            <View style={styles.verticalItemsList}>
               <TVFocusablePressable
-                key={`ep-${ep.id || ep.link || index}`}
-                hasTVPreferredFocus={index === 0}
-                scaleFocused={1.06}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={12}
-                onPress={() => resolveAndPlay(ep.link, ep.title || `Episode ${index + 1}`, 'series')}
-                style={styles.episodeCard}
+                scaleFocused={1.02}
+                focusedBorderColor={primaryColor}
+                borderRadius={10}
+                onPress={() => handleResolveAndPlay(item)}
+                style={styles.listItemCard}
               >
                 {({ focused }) => (
-                  <View style={styles.episodeInner}>
+                  <View style={styles.listItemInner}>
                     <MaterialCommunityIcons
-                      name="play-circle-outline"
+                      name="play"
                       size={28}
-                      color={focused ? '#8A5CF6' : '#9CA3AF'}
+                      color={focused ? primaryColor : '#FFFFFF'}
                     />
-                    <Text style={styles.episodeTitle} numberOfLines={1}>
-                      {ep.title || `Episode ${index + 1}`}
-                    </Text>
+                    <View style={styles.listItemMeta}>
+                      <Text numberOfLines={1} style={styles.listItemTitle}>
+                        {details?.title || item.title}
+                      </Text>
+                      <Text style={styles.listItemSub}>
+                        {details?.quality || 'Default Quality'}
+                      </Text>
+                    </View>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color="#6B7280" />
                   </View>
                 )}
               </TVFocusablePressable>
-            ))}
-          </ScrollView>
+            </View>
+          )}
         </View>
-      ) : directItems.length > 1 ? (
-        <View style={styles.episodesSection}>
-          <Text style={styles.sectionHeader}>Select Source</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.episodesScroll}
-          >
-            {directItems.map((d, index) => (
-              <TVFocusablePressable
-                key={`direct-${d.link}-${index}`}
-                hasTVPreferredFocus={index === 0}
-                scaleFocused={1.06}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={12}
-                onPress={() =>
-                  resolveAndPlay(d.link, info?.title || item?.title, d.type || info?.type || 'movie')
-                }
-                style={styles.episodeCard}
-              >
-                {({ focused }) => (
-                  <View style={styles.episodeInner}>
-                    <MaterialCommunityIcons
-                      name="play-circle-outline"
-                      size={28}
-                      color={focused ? '#8A5CF6' : '#9CA3AF'}
-                    />
-                    <Text style={styles.episodeTitle} numberOfLines={1}>
-                      {d.title}
-                    </Text>
-                  </View>
-                )}
-              </TVFocusablePressable>
-            ))}
-          </ScrollView>
-        </View>
-      ) : (
-        <View style={styles.playActionSection}>
-          <TVFocusablePressable
-            hasTVPreferredFocus={true}
-            scaleFocused={1.06}
-            focusedBorderColor="#FFFFFF"
-            borderRadius={14}
-            onPress={() =>
-              resolveAndPlay(
-                directItems[0]?.link || item?.link,
-                info?.title || item?.title,
-                directItems[0]?.type || info?.type || 'movie',
-              )
-            }
-            style={styles.playBtn}
-          >
-            {() => (
-              <View style={styles.playBtnInner}>
-                <MaterialCommunityIcons name="play" size={26} color="#FFFFFF" />
-                <Text style={styles.playBtnText}>Play Movie / Stream</Text>
-              </View>
-            )}
-          </TVFocusablePressable>
-        </View>
-      )}
+      </ScrollView>
     </View>
   );
 };
@@ -403,11 +333,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0A0A0E',
   },
-  backdropHero: {
-    height: 350,
-    width: SCREEN_WIDTH,
-    position: 'relative',
-    justifyContent: 'flex-end',
+  backdropLayer: {
+    ...StyleSheet.absoluteFillObject,
+    height: SCREEN_HEIGHT,
+    zIndex: 0,
   },
   backdropImage: {
     width: '100%',
@@ -415,27 +344,28 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     right: 0,
+    opacity: 0.55,
   },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '75%',
+    width: '80%',
   },
-  heroInfo: {
-    position: 'absolute',
-    bottom: 24,
-    left: 48,
-    maxWidth: 720,
-    zIndex: 10,
+  scrollContent: {
+    paddingLeft: 88, // Clears the sidebar navigation rail
+    paddingRight: 64,
+    paddingTop: 20,
+    paddingBottom: 60,
+    zIndex: 1,
   },
-  backBtn: {
+  backButton: {
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    marginBottom: 14,
+    marginBottom: 10,
   },
   backBtnInner: {
     flexDirection: 'row',
@@ -447,17 +377,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  compactHeader: {
+    maxWidth: 820,
+    marginBottom: 16,
+  },
   title: {
     color: '#FFFFFF',
-    fontSize: 32,
+    fontSize: 30,
     fontWeight: '800',
-    marginBottom: 8,
+    letterSpacing: 0.3,
+    marginBottom: 6,
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
   },
-  badgeRow: {
+  badgesRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 10,
+    marginBottom: 8,
   },
   ratingBadge: {
     backgroundColor: '#F59E0B',
@@ -479,106 +417,84 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 4,
   },
-  overview: {
-    color: '#9CA3AF',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  episodesSection: {
-    paddingLeft: 48,
-    marginTop: 24,
-  },
-  seasonRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    paddingLeft: 48,
-    marginTop: 20,
-  },
-  seasonChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    backgroundColor: '#16161E',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  seasonChipActive: {
-    backgroundColor: 'rgba(138, 92, 246, 0.22)',
-    borderColor: '#8A5CF6',
-  },
-  seasonChipText: {
+  tagsText: {
     color: '#9CA3AF',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '500',
   },
-  seasonChipTextActive: {
-    color: '#FFFFFF',
+  overview: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    lineHeight: 19,
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  seasonsContainer: {
+    marginBottom: 12,
+  },
+  seasonsScroll: {
+    gap: 10,
+    paddingVertical: 4,
+  },
+  seasonTab: {
+    backgroundColor: '#16161E',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  seasonTabText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  listSection: {
+    marginTop: 6,
   },
   sectionHeader: {
     color: '#FFFFFF',
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
-    marginBottom: 14,
+    marginBottom: 12,
+    letterSpacing: 0.2,
   },
-  episodesScroll: {
-    gap: 14,
-    paddingRight: 60,
-  },
-  episodeCard: {
-    width: 220,
-    height: 75,
-    backgroundColor: '#16161E',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  episodeInner: {
-    flex: 1,
-    flexDirection: 'row',
+  inlineLoading: {
+    paddingVertical: 36,
     alignItems: 'center',
-    paddingHorizontal: 14,
     gap: 12,
   },
-  episodeTitle: {
+  loadingText: {
+    color: '#9CA3AF',
+    fontSize: 14,
+  },
+  verticalItemsList: {
+    gap: 10,
+    paddingBottom: 24,
+  },
+  listItemCard: {
+    backgroundColor: 'rgba(22, 22, 30, 0.85)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  listItemInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  listItemMeta: {
+    flex: 1,
+  },
+  listItemTitle: {
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
-    flex: 1,
   },
-  playActionSection: {
-    paddingLeft: 48,
-    marginTop: 28,
-  },
-  playBtn: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#8A5CF6',
-    paddingHorizontal: 28,
-    paddingVertical: 14,
-  },
-  playBtnInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  playBtnText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  centerLoading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingSubtext: {
+  listItemSub: {
     color: '#9CA3AF',
-    fontSize: 15,
-    marginTop: 14,
-  },
-  errorTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: 12,
-    marginBottom: 4,
+    fontSize: 12,
+    marginTop: 2,
   },
 });
