@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import { providerManager } from '../../lib/services/ProviderManager';
+import type { Info, Link, EpisodeLink } from '../../lib/providers/types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -31,6 +32,7 @@ interface TVDetailsScreenProps {
       currentEpisodeIndex?: number;
       servers?: { name: string; url: string }[];
       qualities?: { name: string; url: string }[];
+      headers?: Record<string, string>;
     }
   ) => void;
 }
@@ -43,27 +45,37 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const activeStoreProvider = useContentStore((state) => state.provider);
   const providerId = item?.provider || activeStoreProvider?.value || '';
 
-  const [details, setDetails] = useState<any | null>(null);
+  const [info, setInfo] = useState<Info | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [extractingStreams, setExtractingStreams] = useState(false);
 
+  const [seasonIndex, setSeasonIndex] = useState(0);
+  const [episodes, setEpisodes] = useState<EpisodeLink[]>([]);
+  const [episodesLoading, setEpisodesLoading] = useState(false);
+
+  // 1. Fetch real metadata (title/synopsis/image/linkList) for this title.
   useEffect(() => {
     let isMounted = true;
 
     async function fetchMetadata() {
       setLoading(true);
+      setError(null);
       try {
-        if (providerId && item?.link) {
-          const res = await providerManager.getDetails(providerId, item.link);
-          if (isMounted && res) {
-            setDetails(res);
-            return;
-          }
+        if (!providerId || !item?.link) {
+          throw new Error('No active provider found for this media');
         }
-        if (isMounted) setDetails(item);
-      } catch (err) {
-        console.warn('[TVDetailsScreen] getDetails error:', err);
-        if (isMounted) setDetails(item);
+        const res = await providerManager.getMetaData({
+          link: item.link,
+          provider: providerId,
+        });
+        if (isMounted) {
+          setInfo(res);
+          setSeasonIndex(0);
+        }
+      } catch (err: any) {
+        console.warn('[TVDetailsScreen] getMetaData error:', err);
+        if (isMounted) setError(err?.message || 'Failed to load details');
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -75,69 +87,115 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     };
   }, [item, providerId]);
 
-  const handleEpisodeOrPlay = async (targetEpisode?: any, targetIndex: number = 0) => {
-    if (!providerId) {
-      ToastAndroid.show('No active provider found for this media', ToastAndroid.SHORT);
-      return;
+  const linkList: Link[] = info?.linkList || [];
+  const activeLink = linkList[seasonIndex];
+  const hasEpisodesLink = !!activeLink?.episodesLink;
+
+  // 2. Once we know which season/link is selected, fetch its episode list
+  //    (series) -- movies use `directLinks` directly, no extra fetch needed.
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchEpisodes() {
+      if (!hasEpisodesLink || !activeLink?.episodesLink) {
+        setEpisodes([]);
+        return;
+      }
+      setEpisodesLoading(true);
+      try {
+        const eps = await providerManager.getEpisodes({
+          url: activeLink.episodesLink,
+          providerValue: providerId,
+        });
+        if (isMounted) setEpisodes(eps || []);
+      } catch (err) {
+        console.warn('[TVDetailsScreen] getEpisodes error:', err);
+        if (isMounted) setEpisodes([]);
+      } finally {
+        if (isMounted) setEpisodesLoading(false);
+      }
     }
 
-    setExtractingStreams(true);
-    try {
-      const linkToScrape = targetEpisode?.link || targetEpisode?.url || item?.link || '';
-      const type = targetEpisode?.type || details?.type || item?.type || 'movie';
+    fetchEpisodes();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeLink?.episodesLink, hasEpisodesLink, providerId]);
 
-      const streamRes: any = await providerManager.getStream(providerId, linkToScrape, type);
+  const directItems = activeLink?.directLinks || [];
 
-      let resolvedUrl = '';
-      let servers: { name: string; url: string }[] = [];
-      let qualities: { name: string; url: string }[] = [];
+  const resolveAndPlay = useCallback(
+    async (link: string, streamTitle: string, type: string) => {
+      if (!providerId || !link) {
+        ToastAndroid.show('No active provider found for this media', ToastAndroid.SHORT);
+        return;
+      }
 
-      if (typeof streamRes === 'string') {
-        resolvedUrl = streamRes;
-      } else if (streamRes) {
-        resolvedUrl = streamRes.url || streamRes.streamUrl || streamRes.link || '';
-        if (Array.isArray(streamRes.servers)) {
-          servers = streamRes.servers;
+      setExtractingStreams(true);
+      try {
+        const streams = await providerManager.getStream({
+          link,
+          type,
+          providerValue: providerId,
+        });
+
+        if (!streams || streams.length === 0) {
+          ToastAndroid.show('No valid stream links found from this source.', ToastAndroid.LONG);
+          return;
         }
-        if (Array.isArray(streamRes.qualities)) {
-          qualities = streamRes.qualities;
-        }
-      }
 
-      if (!resolvedUrl && servers.length > 0) {
-        resolvedUrl = servers[0].url;
-      }
-      if (!resolvedUrl && qualities.length > 0) {
-        resolvedUrl = qualities[0].url;
-      }
+        const best = streams[0];
+        const qualities = streams.map((s, idx) => ({
+          name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
+          url: s.link,
+        }));
 
-      if (resolvedUrl) {
-        const streamTitle = targetEpisode?.title || details?.title || item?.title || 'Stream';
-        const episodesList = details?.episodes || details?.epList || item?.episodes || [];
-
-        onPlayStream(resolvedUrl, streamTitle, {
-          posterUrl: details?.image || details?.backdrop || item?.image,
+        onPlayStream(best.link, streamTitle, {
+          posterUrl: info?.image || info?.poster || item?.image,
           itemLink: item?.link,
           providerValue: providerId,
-          episodes: episodesList,
-          currentEpisodeIndex: targetIndex,
-          servers,
+          episodes,
+          currentEpisodeIndex: 0,
           qualities,
+          headers: best.headers,
         });
-      } else {
-        ToastAndroid.show('No valid stream links found from this source.', ToastAndroid.LONG);
+      } catch (e: any) {
+        console.warn('[TVDetailsScreen] Stream extraction failed:', e);
+        ToastAndroid.show(e?.message || 'Failed to extract playback stream', ToastAndroid.LONG);
+      } finally {
+        setExtractingStreams(false);
       }
-    } catch (e: any) {
-      console.warn('[TVDetailsScreen] Stream extraction failed:', e);
-      ToastAndroid.show(e?.message || 'Failed to extract playback stream', ToastAndroid.LONG);
-    } finally {
-      setExtractingStreams(false);
-    }
-  };
+    },
+    [providerId, info, item, episodes, onPlayStream],
+  );
 
-  const bannerImage = details?.backdrop || details?.image || item?.image;
-  const episodesList = details?.episodes || details?.epList || item?.episodes || [];
-  const hasEpisodes = Array.isArray(episodesList) && episodesList.length > 0;
+  const bannerImage = info?.image || info?.poster || item?.image;
+  const hasEpisodes = episodes.length > 0;
+
+  if (error && !info) {
+    return (
+      <View style={[styles.container, styles.centerLoading]}>
+        <MaterialCommunityIcons name="alert-circle-outline" size={48} color="#EF4444" />
+        <Text style={styles.errorTitle}>Failed to load content</Text>
+        <Text style={styles.loadingSubtext}>{error}</Text>
+        <TVFocusablePressable
+          hasTVPreferredFocus
+          scaleFocused={1.06}
+          focusedBorderColor="#FFFFFF"
+          borderRadius={10}
+          onPress={onBack}
+          style={styles.backBtn}
+        >
+          {() => (
+            <View style={styles.backBtnInner}>
+              <MaterialCommunityIcons name="arrow-left" size={20} color="#FFFFFF" />
+              <Text style={styles.backBtnText}>Go back</Text>
+            </View>
+          )}
+        </TVFocusablePressable>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -181,34 +239,64 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           </TVFocusablePressable>
 
           <Text style={styles.title} numberOfLines={2}>
-            {details?.title || item?.title}
+            {info?.title || item?.title}
           </Text>
 
           <View style={styles.badgeRow}>
-            {details?.rating ? (
+            {info?.rating ? (
               <View style={styles.ratingBadge}>
-                <Text style={styles.ratingText}>★ {details.rating}</Text>
+                <Text style={styles.ratingText}>★ {info.rating}</Text>
               </View>
             ) : null}
-            {details?.year ? <Text style={styles.metaBadge}>{details.year}</Text> : null}
-            {details?.quality ? <Text style={styles.metaBadge}>{details.quality}</Text> : null}
+            {(info?.tags || []).slice(0, 3).map((t, i) => (
+              <Text key={`${t}-${i}`} style={styles.metaBadge}>
+                {t}
+              </Text>
+            ))}
           </View>
 
           <Text style={styles.overview} numberOfLines={3}>
-            {details?.description ||
-              details?.overview ||
-              item?.extra ||
-              'Select an episode or source below to start streaming.'}
+            {info?.synopsis || 'Select an episode or source below to start streaming.'}
           </Text>
         </View>
       </View>
 
+      {/* Season / Quality Selector */}
+      {linkList.length > 1 && (
+        <View style={styles.seasonRow}>
+          {linkList.map((l, idx) => (
+            <TVFocusablePressable
+              key={`${l.title}-${idx}`}
+              scaleFocused={1.05}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onPress={() => setSeasonIndex(idx)}
+              style={[styles.seasonChip, idx === seasonIndex && styles.seasonChipActive]}
+            >
+              {() => (
+                <Text
+                  numberOfLines={1}
+                  style={[styles.seasonChipText, idx === seasonIndex && styles.seasonChipTextActive]}
+                >
+                  {l.title}
+                  {l.quality ? ` • ${l.quality}` : ''}
+                </Text>
+              )}
+            </TVFocusablePressable>
+          ))}
+        </View>
+      )}
+
       {/* Episode / Source Selector */}
-      {loading || extractingStreams ? (
+      {loading || episodesLoading || extractingStreams ? (
         <View style={styles.centerLoading}>
           <ActivityIndicator size="large" color="#8A5CF6" />
           <Text style={styles.loadingSubtext}>
-            {extractingStreams ? 'Resolving stream links...' : 'Loading media details...'}
+            {extractingStreams
+              ? 'Resolving stream links...'
+              : episodesLoading
+              ? 'Loading episodes...'
+              : 'Loading media details...'}
           </Text>
         </View>
       ) : hasEpisodes ? (
@@ -219,14 +307,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.episodesScroll}
           >
-            {episodesList.map((ep: any, index: number) => (
+            {episodes.map((ep, index) => (
               <TVFocusablePressable
                 key={`ep-${ep.id || ep.link || index}`}
                 hasTVPreferredFocus={index === 0}
                 scaleFocused={1.06}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={12}
-                onPress={() => handleEpisodeOrPlay(ep, index)}
+                onPress={() => resolveAndPlay(ep.link, ep.title || `Episode ${index + 1}`, 'series')}
                 style={styles.episodeCard}
               >
                 {({ focused }) => (
@@ -245,6 +333,42 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             ))}
           </ScrollView>
         </View>
+      ) : directItems.length > 1 ? (
+        <View style={styles.episodesSection}>
+          <Text style={styles.sectionHeader}>Select Source</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.episodesScroll}
+          >
+            {directItems.map((d, index) => (
+              <TVFocusablePressable
+                key={`direct-${d.link}-${index}`}
+                hasTVPreferredFocus={index === 0}
+                scaleFocused={1.06}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={12}
+                onPress={() =>
+                  resolveAndPlay(d.link, info?.title || item?.title, d.type || info?.type || 'movie')
+                }
+                style={styles.episodeCard}
+              >
+                {({ focused }) => (
+                  <View style={styles.episodeInner}>
+                    <MaterialCommunityIcons
+                      name="play-circle-outline"
+                      size={28}
+                      color={focused ? '#8A5CF6' : '#9CA3AF'}
+                    />
+                    <Text style={styles.episodeTitle} numberOfLines={1}>
+                      {d.title}
+                    </Text>
+                  </View>
+                )}
+              </TVFocusablePressable>
+            ))}
+          </ScrollView>
+        </View>
       ) : (
         <View style={styles.playActionSection}>
           <TVFocusablePressable
@@ -252,7 +376,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             scaleFocused={1.06}
             focusedBorderColor="#FFFFFF"
             borderRadius={14}
-            onPress={() => handleEpisodeOrPlay(item, 0)}
+            onPress={() =>
+              resolveAndPlay(
+                directItems[0]?.link || item?.link,
+                info?.title || item?.title,
+                directItems[0]?.type || info?.type || 'movie',
+              )
+            }
             style={styles.playBtn}
           >
             {() => (
@@ -358,6 +488,32 @@ const styles = StyleSheet.create({
     paddingLeft: 48,
     marginTop: 24,
   },
+  seasonRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    paddingLeft: 48,
+    marginTop: 20,
+  },
+  seasonChip: {
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    backgroundColor: '#16161E',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  seasonChipActive: {
+    backgroundColor: 'rgba(138, 92, 246, 0.22)',
+    borderColor: '#8A5CF6',
+  },
+  seasonChipText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  seasonChipTextActive: {
+    color: '#FFFFFF',
+  },
   sectionHeader: {
     color: '#FFFFFF',
     fontSize: 20,
@@ -417,5 +573,12 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     fontSize: 15,
     marginTop: 14,
+  },
+  errorTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 4,
   },
 });

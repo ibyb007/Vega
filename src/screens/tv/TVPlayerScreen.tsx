@@ -34,6 +34,7 @@ interface TVPlayerScreenProps {
   posterUrl?: string;
   itemLink?: string;
   providerValue?: string;
+  headers?: Record<string, string>;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string }[];
@@ -53,6 +54,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   posterUrl,
   itemLink,
   providerValue,
+  headers,
   episodes = [],
   currentEpisodeIndex = 0,
   servers = [],
@@ -223,18 +225,30 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // Open in External VLC
   const openInVLC = async () => {
     try {
+      const extra: Record<string, any> = { title };
+      if (headers && Object.keys(headers).length > 0) {
+        Object.assign(extra, headers);
+        extra['android.media.intent.extra.HTTP_HEADERS'] = headers;
+        extra.headers = headers;
+      }
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
         data: activeMediaUrl || streamUrl,
         type: 'video/*',
         packageName: 'org.videolan.vlc',
-        extra: { title },
+        extra,
       });
     } catch {
       try {
+        const extra: Record<string, any> = { title };
+        if (headers && Object.keys(headers).length > 0) {
+          Object.assign(extra, headers);
+          extra['android.media.intent.extra.HTTP_HEADERS'] = headers;
+          extra.headers = headers;
+        }
         await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
           data: activeMediaUrl || streamUrl,
           type: 'video/*',
-          extra: { title },
+          extra,
         });
       } catch {
         ToastAndroid.show('VLC or external player not found.', ToastAndroid.SHORT);
@@ -276,7 +290,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     <View style={styles.container}>
       <Video
         ref={videoRef}
-        source={{ uri: activeMediaUrl || streamUrl }}
+        source={{ uri: activeMediaUrl || streamUrl, headers }}
         style={StyleSheet.absoluteFill}
         resizeMode={resizeMode}
         paused={paused}
