@@ -14,6 +14,7 @@ import useContentStore from '../../lib/zustand/contentStore';
 import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
 import { Post } from '../../lib/providers/types';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
+import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
@@ -26,7 +27,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 }) => {
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
-  const watchHistory = useContentStore((state: any) => state.watchHistory) || [];
+  const continueWatchingItems = useContinueWatchingStore((state) => state.items);
+  const watchHistory = [...continueWatchingItems]
+    .filter((item) => Boolean(item.providerValue))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
   
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
   const initialFocusSetRef = useRef(false);
@@ -95,15 +99,21 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                 contentContainerStyle={styles.horizontalRowScroll}
                 removeClippedSubviews={false}
               >
-                {watchHistory.map((item: any, pIndex: number) => {
+                {watchHistory.map((item, pIndex: number) => {
+                  const posterImage = item.poster || item.background;
                   const progressPercent =
-                    item.duration && item.currentTime
-                      ? Math.min(100, Math.round((item.currentTime / item.duration) * 100))
+                    item.duration && item.position
+                      ? Math.min(100, Math.round((item.position / item.duration) * 100))
                       : 0;
+                  const episodeTitle =
+                    item.episodeTitle ||
+                    (item.episode?.title && item.episode.title !== item.title
+                      ? item.episode.title
+                      : undefined);
 
                   return (
                     <TVFocusablePressable
-                      key={`history-${item.link || item.id || pIndex}`}
+                      key={`history-${item.id || pIndex}`}
                       hasTVPreferredFocus={!initialFocusSetRef.current && pIndex === 0}
                       scaleFocused={1.08}
                       focusedBorderColor="#8A5CF6"
@@ -112,12 +122,21 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         initialFocusSetRef.current = true;
                         setActiveHero({
                           title: item.title,
-                          backdropUrl: item.image,
-                          posterUrl: item.image,
-                          overview: item.extra || `Resume watching (${progressPercent}%)`,
+                          backdropUrl: posterImage,
+                          posterUrl: posterImage,
+                          overview: episodeTitle
+                            ? `${episodeTitle} • Resume (${progressPercent}%)`
+                            : `Resume watching (${progressPercent}%)`,
                         });
                       }}
-                      onPress={() => onSelectItem(item)}
+                      onPress={() =>
+                        onSelectItem({
+                          link: item.infoUrl,
+                          provider: item.providerValue,
+                          image: posterImage,
+                          title: item.title,
+                        })
+                      }
                       style={styles.card}
                     >
                       {({ focused }) => (
@@ -125,7 +144,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                           <Image
                             source={{
                               uri:
-                                item.image ||
+                                posterImage ||
                                 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
                             }}
                             style={styles.cardPoster}
