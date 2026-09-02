@@ -17,6 +17,8 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
+import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
+import type { EpisodeLink } from '../../lib/providers/types';
 
 interface EpisodeItem {
   id?: string | number;
@@ -89,38 +91,45 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // Active Menu Dialog
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
-  // Sync playback timestamp to contentStore MMKV
+  const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
+
+  // `infoUrl` (the details-page link) identifies a title across episodes,
+  // matching the mobile app's continue-watching key -- falls back to the
+  // stream URL itself if this player was opened without one.
+  const continueWatchingId = itemLink || streamUrl;
+
+  // Sync playback timestamp to the shared continue-watching store (same one
+  // the mobile app and the TV home screen's "Continue Watching" row read).
   const syncProgressToStore = useCallback(
     (timeSec: number, totalDur: number) => {
-      if (totalDur <= 0 || timeSec <= 0) return;
+      if (totalDur <= 0 || timeSec <= 0 || !continueWatchingId) return;
 
-      const storeState: any = useContentStore.getState();
       const currentEpisode = episodes[currentEpisodeIndex];
+      const episode: EpisodeLink = currentEpisode?.link
+        ? {
+            ...currentEpisode,
+            title: currentEpisode.title || title,
+            link: currentEpisode.link,
+          }
+        : { title, link: continueWatchingId };
 
-      const historyItem = {
-        id: currentEpisode?.link || itemLink || streamUrl,
-        title: currentEpisode?.title || title,
-        image: currentEpisode?.image || currentEpisode?.poster || posterUrl || '',
-        link: currentEpisode?.link || itemLink || streamUrl,
-        provider: providerValue || storeState.provider?.value || '',
-        currentTime: Math.floor(timeSec),
+      upsertContinueWatching({
+        id: continueWatchingId,
+        title,
+        episodeTitle:
+          episode.title && episode.title !== title ? episode.title : undefined,
+        episode,
+        type: episodes.length > 0 ? 'series' : 'movie',
+        poster: posterUrl,
+        background: posterUrl,
+        providerValue: providerValue || useContentStore.getState().provider?.value || '',
+        infoUrl: continueWatchingId,
+        position: Math.floor(timeSec),
         duration: Math.floor(totalDur),
-        lastWatched: Date.now(),
-      };
-
-      if (typeof storeState.updateWatchHistory === 'function') {
-        storeState.updateWatchHistory(historyItem);
-      } else if (typeof storeState.setWatchHistory === 'function') {
-        const existingHistory = Array.isArray(storeState.watchHistory)
-          ? [...storeState.watchHistory]
-          : [];
-        const filtered = existingHistory.filter(
-          (h: any) => h.id !== historyItem.id && h.link !== historyItem.link
-        );
-        storeState.setWatchHistory([historyItem, ...filtered]);
-      }
+        updatedAt: Date.now(),
+      });
     },
-    [episodes, currentEpisodeIndex, itemLink, streamUrl, title, posterUrl, providerValue]
+    [continueWatchingId, episodes, currentEpisodeIndex, title, posterUrl, providerValue, upsertContinueWatching]
   );
 
   // Flush progress on unmount / exit
