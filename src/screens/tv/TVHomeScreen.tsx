@@ -15,6 +15,7 @@ import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageD
 import { Post } from '../../lib/providers/types';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
+import { prefetchMetadata } from '../../lib/services/metadataCache';
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
@@ -128,6 +129,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                             ? `${episodeTitle} • Resume (${progressPercent}%)`
                             : `Resume watching (${progressPercent}%)`,
                         });
+                        if (item.infoUrl && item.providerValue) {
+                          prefetchMetadata(item.infoUrl, item.providerValue);
+                        }
                       }}
                       onPress={() =>
                         onSelectItem({
@@ -207,6 +211,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                             posterUrl: item.image,
                             overview: item.extra || 'Select title to browse stream links.',
                           });
+                          const providerForItem = item.provider || provider?.value;
+                          if (item.link && providerForItem) {
+                            prefetchMetadata(item.link, providerForItem);
+                          }
                         }}
                         onPress={() => onSelectItem(item)}
                         style={styles.card}
