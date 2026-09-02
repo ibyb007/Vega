@@ -8,8 +8,6 @@ import {
   Modal,
   BackHandler,
   ScrollView,
-  useTVEventHandler,
-  HWEvent,
 } from 'react-native';
 import Video, { VideoRef, SelectedTrackType } from 'react-native-video';
 import LinearGradient from 'react-native-linear-gradient';
@@ -176,35 +174,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     });
   }, [duration, resetInactivityTimer, syncProgressToStore]);
 
-  // Global D-Pad Key Listener for TV Remotes
-  useTVEventHandler((evt: HWEvent) => {
-    if (!evt || !evt.eventType) return;
-
-    if (activeDialog) return;
-
-    const eventType = evt.eventType;
-
-    if (!showControls) {
-      if (eventType === 'select' || eventType === 'playPause') {
-        setPaused((prev) => {
-          const next = !prev;
-          syncProgressToStore(currentProgRef.current.currentTime, currentProgRef.current.duration);
-          return next;
-        });
-        resetInactivityTimer();
-      } else if (eventType === 'left') {
-        handleSeek(-10);
-      } else if (eventType === 'right') {
-        handleSeek(10);
-      } else if (eventType === 'up' || eventType === 'down') {
-        resetInactivityTimer();
-      }
-    } else {
-      if (['up', 'down', 'left', 'right', 'select'].includes(eventType)) {
-        resetInactivityTimer();
-      }
-    }
-  });
+  // Note: a global cross-cutting D-pad listener (`useTVEventHandler`) is
+  // only available on the `react-native-tvos` fork, not plain
+  // `react-native` (which this project uses) -- calling it here previously
+  // crashed the player immediately on mount with "undefined is not a
+  // function". Remote input while controls are hidden is instead handled
+  // by the invisible focusable catcher below, which is plain-RN-compatible.
 
   // Remote Back Button Handler
   useEffect(() => {
@@ -334,6 +309,21 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         <View style={styles.centerLoading}>
           <ActivityIndicator size="large" color="#8A5CF6" />
         </View>
+      )}
+
+      {/* Invisible full-screen focus target used while controls are
+          hidden -- it's the only focusable element on screen at that
+          point, so the D-pad naturally lands here and reveals controls
+          again on any press/focus. */}
+      {!showControls && (
+        <TVFocusablePressable
+          hasTVPreferredFocus
+          style={StyleSheet.absoluteFillObject}
+          onFocus={resetInactivityTimer}
+          onPress={resetInactivityTimer}
+        >
+          {() => <View style={StyleSheet.absoluteFillObject} />}
+        </TVFocusablePressable>
       )}
 
       {/* Transparent Bottom Player Controls Overlay */}
