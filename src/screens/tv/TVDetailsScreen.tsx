@@ -13,6 +13,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import { providerManager } from '../../lib/services/ProviderManager';
+import { getCachedMetadata, getOrFetchMetadata } from '../../lib/services/metadataCache';
 import type { Info, Link, EpisodeLink } from '../../lib/providers/types';
 
 interface TVDetailsScreenProps {
@@ -42,8 +43,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const activeStoreProvider = useContentStore((state) => state.provider);
   const providerId = item?.provider || activeStoreProvider?.value || '';
 
-  const [info, setInfo] = useState<Info | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [info, setInfo] = useState<Info | null>(() =>
+    item?.link && providerId ? getCachedMetadata(item.link, providerId) || null : null
+  );
+  const [loading, setLoading] = useState(!info);
   const [error, setError] = useState<string | null>(null);
   const [extractingStreams, setExtractingStreams] = useState(false);
 
@@ -52,20 +55,30 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [episodesLoading, setEpisodesLoading] = useState(false);
 
   // 1. Fetch real metadata (title/synopsis/image/linkList) for this title.
+  //    If the home screen already warmed the cache for this title while it
+  //    was focused, this resolves instantly and never shows a spinner.
   useEffect(() => {
     let isMounted = true;
 
     async function fetchMetadata() {
+      if (!providerId || !item?.link) {
+        setError('No active provider found for this media');
+        setLoading(false);
+        return;
+      }
+
+      const cached = getCachedMetadata(item.link, providerId);
+      if (cached) {
+        setInfo(cached);
+        setSeasonIndex(0);
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       setError(null);
       try {
-        if (!providerId || !item?.link) {
-          throw new Error('No active provider found for this media');
-        }
-        const res = await providerManager.getMetaData({
-          link: item.link,
-          provider: providerId,
-        });
+        const res = await getOrFetchMetadata(item.link, providerId);
         if (isMounted) {
           setInfo(res);
           setSeasonIndex(0);
@@ -416,7 +429,7 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: 480,
+    bottom: 0,
   },
   backdropImage: {
     width: '100%',
