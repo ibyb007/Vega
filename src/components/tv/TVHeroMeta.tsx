@@ -14,6 +14,7 @@ export interface TVHeroMedia {
   runtime?: string;
   genres?: string[];
   cast?: string[];
+  hasLandscapeBackdrop?: boolean;
 }
 
 interface TVHeroMetaProps {
@@ -21,37 +22,62 @@ interface TVHeroMetaProps {
 }
 
 export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
-  const imageUrl = media?.backdropUrl || media?.posterUrl;
+  const isLandscape = Boolean(media?.backdropUrl && media.hasLandscapeBackdrop);
+  const posterFallback = media?.posterUrl || media?.backdropUrl;
 
   return (
     <View style={styles.container}>
-      {/* 16:9 Landscape Fanart Background */}
-      {imageUrl ? (
+      {/* Background Graphic Layer */}
+      {isLandscape && media?.backdropUrl ? (
+        // 1. Genuine 16:9 Landscape Fanart Layer
         <View style={styles.backdropLayer} pointerEvents="none">
           <Image
-            key={imageUrl}
-            source={{ uri: imageUrl }}
+            key={media.backdropUrl}
+            source={{ uri: media.backdropUrl }}
             style={styles.backdropImage}
             resizeMode="cover"
           />
-          {/* Top-to-Bottom Vignette */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.2)', 'rgba(10, 10, 14, 0.7)', '#0A0A0E']}
-            locations={[0, 0.5, 1]}
+            colors={['rgba(10, 10, 14, 0.2)', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
+            locations={[0, 0.55, 1]}
             style={styles.bottomGradient}
           />
-          {/* Left-to-Right Vignette (Protects Text Readability) */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.8)', 'transparent']}
+            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.75)', 'transparent']}
             locations={[0, 0.45, 0.85]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.leftGradient}
           />
         </View>
+      ) : posterFallback ? (
+        // 2. Portrait Poster Fallback (~38% Width, No Cropping/Zooming)
+        <View style={styles.posterFallbackLayer} pointerEvents="none">
+          <View style={styles.posterContainer}>
+            <Image
+              key={posterFallback}
+              source={{ uri: posterFallback }}
+              style={styles.posterImage}
+              resizeMode="contain"
+            />
+            {/* Soft edge blend into dark canvas */}
+            <LinearGradient
+              colors={['#0A0A0E', 'transparent', 'transparent', '#0A0A0E']}
+              locations={[0, 0.15, 0.85, 1]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <LinearGradient
+              colors={['transparent', 'rgba(10, 10, 14, 0.8)', '#0A0A0E']}
+              locations={[0, 0.6, 1]}
+              style={StyleSheet.absoluteFill}
+            />
+          </View>
+        </View>
       ) : null}
 
-      {/* Metadata Block Placed High on Screen (Stremio Layout) */}
+      {/* Top-Left Stremio Metadata Block */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media?.title || ''}
@@ -72,7 +98,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
           ) : null}
         </View>
 
-        <Text numberOfLines={2} style={styles.overview}>
+        <Text numberOfLines={3} style={styles.overview}>
           {media?.overview || ''}
         </Text>
 
@@ -88,16 +114,16 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 240,
+    height: 230,
     width: SCREEN_WIDTH,
     position: 'relative',
     backgroundColor: '#0A0A0E',
     justifyContent: 'flex-start',
-    paddingTop: 16,
+    paddingTop: 12,
   },
   backdropLayer: {
     ...StyleSheet.absoluteFillObject,
-    height: 380, // Extends downwards behind upper cards
+    height: 380,
     overflow: 'hidden',
   },
   backdropImage: {
@@ -107,21 +133,39 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
   },
+  posterFallbackLayer: {
+    position: 'absolute',
+    top: 0,
+    right: 32,
+    bottom: 0,
+    width: '38%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  posterContainer: {
+    width: '100%',
+    height: 220,
+    position: 'relative',
+  },
+  posterImage: {
+    width: '100%',
+    height: '100%',
+  },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '80%',
+    width: '75%',
   },
   contentWrapper: {
     paddingLeft: 88,
-    maxWidth: 680,
+    maxWidth: 620,
     zIndex: 10,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 32,
+    fontSize: 30,
     fontWeight: '900',
     letterSpacing: -0.4,
     marginBottom: 6,
