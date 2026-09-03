@@ -11,74 +11,88 @@ export interface TVHeroMedia {
   overview?: string;
   year?: string;
   rating?: string;
+  runtime?: string;
   genres?: string[];
+  cast?: string[];
 }
 
 interface TVHeroMetaProps {
   media: TVHeroMedia | null;
 }
 
-export const TVHeroMeta: React.FC<TVHeroMetaProps> = ({ media }) => {
-  if (!media) return <View style={styles.container} />;
-
-  const imageUrl = media.backdropUrl || media.posterUrl;
+export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
+  const imageUrl = media?.backdropUrl || media?.posterUrl;
 
   return (
     <View style={styles.container}>
+      {/* Edge-to-Edge Fanart Layer */}
       {imageUrl ? (
-        <View style={styles.backdropContainer}>
+        <View style={styles.backdropContainer} pointerEvents="none">
           <Image
+            key={imageUrl}
             source={{ uri: imageUrl }}
             style={styles.backdropImage}
             resizeMode="cover"
           />
+          {/* Stremio Bottom Fade Gradient */}
+          <LinearGradient
+            colors={['transparent', 'rgba(10, 10, 14, 0.55)', '#0A0A0E']}
+            locations={[0, 0.6, 1]}
+            style={styles.bottomGradient}
+          />
+          {/* Stremio Left Vignette (Protects Text Readability) */}
+          <LinearGradient
+            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.75)', 'transparent']}
+            locations={[0, 0.45, 0.9]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.leftGradient}
+          />
         </View>
       ) : null}
 
-      <LinearGradient
-        colors={['transparent', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
-        locations={[0, 0.6, 1]}
-        style={styles.bottomGradient}
-      />
-      <LinearGradient
-        colors={['rgba(10, 10, 14, 0.95)', 'rgba(10, 10, 14, 0.7)', 'transparent']}
-        locations={[0, 0.45, 0.85]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.leftGradient}
-      />
-
+      {/* Stremio Metadata Block */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
-          {media.title}
+          {media?.title || ''}
         </Text>
 
         <View style={styles.metaRow}>
-          {media.year && <Text style={styles.metaBadge}>{media.year}</Text>}
-          {media.rating && (
+          {media?.runtime ? <Text style={styles.metaText}>{media.runtime}</Text> : null}
+          {media?.year ? <Text style={styles.metaText}>{media.year}</Text> : null}
+          {media?.rating ? (
             <View style={styles.ratingBadge}>
               <Text style={styles.ratingText}>★ {media.rating}</Text>
             </View>
-          )}
-          {media.genres && media.genres.length > 0 && (
-            <Text style={styles.genreText}>{media.genres.join(' • ')}</Text>
-          )}
+          ) : null}
+          {media?.genres && media.genres.length > 0 ? (
+            <Text numberOfLines={1} style={styles.genresText}>
+              {media.genres.join(' | ')}
+            </Text>
+          ) : null}
         </View>
 
         <Text numberOfLines={3} style={styles.overview}>
-          {media.overview || 'Select title to browse stream links and episodes.'}
+          {media?.overview || ''}
         </Text>
+
+        {media?.cast && media.cast.length > 0 ? (
+          <Text numberOfLines={1} style={styles.castText}>
+            {media.cast.join(', ')}
+          </Text>
+        ) : null}
       </View>
     </View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: {
-    height: 340,
+    height: 330,
     width: SCREEN_WIDTH,
     position: 'relative',
     justifyContent: 'flex-end',
+    backgroundColor: '#0A0A0E',
   },
   backdropContainer: {
     ...StyleSheet.absoluteFillObject,
@@ -96,39 +110,34 @@ const styles = StyleSheet.create({
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '75%',
+    width: '78%',
   },
   contentWrapper: {
-    position: 'absolute',
-    bottom: 24,
-    left: 88, // Inset past the navigation rail
+    paddingLeft: 96,
+    paddingBottom: 16,
     maxWidth: 680,
     zIndex: 10,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 34,
-    fontWeight: '800',
-    letterSpacing: 0.4,
+    fontSize: 38,
+    fontWeight: '900',
+    letterSpacing: -0.5,
     marginBottom: 8,
-    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 8,
   },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 8,
+    gap: 12,
+    marginBottom: 10,
   },
-  metaBadge: {
+  metaText: {
     color: '#D1D5DB',
     fontSize: 13,
     fontWeight: '600',
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 4,
   },
   ratingBadge: {
     backgroundColor: '#F59E0B',
@@ -141,7 +150,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  genreText: {
+  genresText: {
     color: '#9CA3AF',
     fontSize: 13,
     fontWeight: '500',
@@ -149,9 +158,15 @@ const styles = StyleSheet.create({
   overview: {
     color: '#D1D5DB',
     fontSize: 14,
-    lineHeight: 21,
-    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    lineHeight: 20,
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
+  },
+  castText: {
+    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 8,
   },
 });
