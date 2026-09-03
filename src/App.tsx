@@ -139,9 +139,16 @@ export default function App() {
                         prev
                           ? {
                               ...prev,
-                              url: nextEp.url || nextEp.link || prev.url,
+                              url: nextEp.url || prev.url,
                               title: nextEp.title || prev.title,
                               currentEpisodeIndex: nextIndex,
+                              headers: nextEp.headers,
+                              subtitles: nextEp.subtitles,
+                              qualities: nextEp.qualities,
+                              // A fresh episode has its own stream; the
+                              // previous episode's server list no longer
+                              // applies to it.
+                              servers: undefined,
                             }
                           : null
                       );
