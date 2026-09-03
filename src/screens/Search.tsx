@@ -41,35 +41,65 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
     overview?: string;
   } | null>(null);
 
-  // Read installed providers from store
   const storeProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
-  const [activeProvidersList, setActiveProvidersList] = useState<Provider[]>(storeProviders || []);
+  const [activeProviders, setActiveProviders] = useState<Provider[]>([]);
 
   const searchInputRef = useRef<TextInput>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Sync and hydrate installedProviders directly from MMKV storage if store is empty
-  useEffect(() => {
-    let list: Provider[] = [];
-    if (storeProviders && storeProviders.length > 0) {
-      list = storeProviders;
-    } else {
-      try {
-        const raw = extensionStorage.getString('installedProviders');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            list = parsed;
-            setInstalledProviders(parsed);
-          }
+  // Helper: Read directly from MMKV storage if Zustand store is empty
+  const getPersistedProviders = useCallback((): Provider[] => {
+    try {
+      const raw = extensionStorage.getString('installedProviders');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
         }
-      } catch (e) {
-        console.warn('[Search] Failed to read installedProviders from MMKV:', e);
+      }
+    } catch (e) {
+      console.warn('[Search] Failed to read installedProviders from MMKV:', e);
+    }
+    return [];
+  }, []);
+
+  // Hydrate provider list on mount or when store updates
+  useEffect(() => {
+    let list = storeProviders || [];
+    if (!list || list.length === 0) {
+      const persisted = getPersistedProviders();
+      if (persisted.length > 0) {
+        list = persisted;
+        setInstalledProviders(persisted);
       }
     }
-    setActiveProvidersList(list);
-  }, [storeProviders, setInstalledProviders]);
+    setActiveProviders(list);
+  }, [storeProviders, getPersistedProviders, setInstalledProviders]);
+
+  // Unpack any provider's return payload format into clean Post[]
+  const normalizePosts = (data: any, providerValue: string): Post[] => {
+    let rawList: any[] = [];
+    if (Array.isArray(data)) {
+      rawList = data;
+    } else if (data && Array.isArray(data.posts)) {
+      rawList = data.posts;
+    } else if (data && Array.isArray(data.data)) {
+      rawList = data.data;
+    } else if (data && Array.isArray(data.results)) {
+      rawList = data.results;
+    }
+
+    return rawList
+      .filter((item) => Boolean(item && (item.title || item.name)))
+      .map((item) => ({
+        ...item,
+        title: item.title || item.name || 'Untitled',
+        image: item.image || item.poster || item.banner || '',
+        link: item.link || item.url || '',
+        provider: item.provider || providerValue,
+      }));
+  };
 
   const executeMultiProviderSearch = useCallback(
     async (searchQuery: string) => {
@@ -80,18 +110,13 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
         return;
       }
 
-      // Re-read current list of providers (including fallback to MMKV)
-      let providersToSearch: Provider[] = activeProvidersList;
-      if (!providersToSearch || providersToSearch.length === 0) {
-        try {
-          const raw = extensionStorage.getString('installedProviders');
-          if (raw) {
-            providersToSearch = JSON.parse(raw);
-          }
-        } catch {}
+      // Read most up-to-date provider list
+      let currentList = activeProviders;
+      if (!currentList || currentList.length === 0) {
+        currentList = getPersistedProviders();
       }
 
-      if (!providersToSearch || providersToSearch.length === 0) {
+      if (!currentList || currentList.length === 0) {
         setResults([]);
         return;
       }
@@ -103,41 +128,42 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
 
       setIsSearching(true);
 
-      // Initialize pending groups for each installed provider
-      const initialGroups: SearchResultGroup[] = providersToSearch.map((p) => ({
+      // Create initial placeholders for all installed extensions
+      const initialGroups: SearchResultGroup[] = currentList.map((p) => ({
         provider: p,
         posts: [],
         isLoading: true,
       }));
       setResults(initialGroups);
 
-      // Query all providers in parallel using original Vega providerManager
+      // Query every provider in parallel using original Vega providerManager
       await Promise.allSettled(
-        providersToSearch.map(async (p, index) => {
+        currentList.map(async (p, index) => {
           try {
-            const data = await providerManager.search(p.value, trimmed, 1);
-            let posts: Post[] = [];
+            let data: any = null;
 
-            if (Array.isArray(data)) {
-              posts = data;
-            } else if (data && Array.isArray((data as any).posts)) {
-              posts = (data as any).posts;
-            } else if (data && Array.isArray((data as any).data)) {
-              posts = (data as any).data;
+            // 1. Try standard providerManager.search
+            if (typeof (providerManager as any).search === 'function') {
+              data = await (providerManager as any).search(p.value, trimmed, 1);
+            }
+            // 2. Fallback to getSearchPosts if present in core
+            else if (typeof (providerManager as any).getSearchPosts === 'function') {
+              data = await (providerManager as any).getSearchPosts({
+                searchQuery: trimmed,
+                page: 1,
+                providerValue: p.value,
+                signal: abortControllerRef.current?.signal,
+              });
             }
 
-            // Ensure provider is attached to each post for player/details resolution
-            posts = posts.map((post) => ({
-              ...post,
-              provider: post.provider || p.value,
-            }));
+            const cleanPosts = normalizePosts(data, p.value);
 
             setResults((prev) => {
               const next = [...prev];
               if (next[index]) {
                 next[index] = {
                   ...next[index],
-                  posts,
+                  posts: cleanPosts,
                   isLoading: false,
                 };
               }
@@ -162,10 +188,10 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
 
       setIsSearching(false);
     },
-    [activeProvidersList]
+    [activeProviders, getPersistedProviders]
   );
 
-  // Set initial fanart hero from first available result
+  // Set fanart hero preview when first result arrives
   useEffect(() => {
     if (!activeHero && results.length > 0) {
       for (const group of results) {
@@ -174,7 +200,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
           setActiveHero({
             title: first.title,
             backdropUrl: first.image,
-            overview: first.extra || 'Select to view streams & episodes.',
+            overview: first.extra || 'Select to browse stream links and episodes.',
           });
           break;
         }
@@ -192,7 +218,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
     <View style={styles.container}>
       {/* Top Fanart Hero Background */}
       {activeHero?.backdropUrl && (
-        <View style={styles.heroBackgroundContainer}>
+        <View style={styles.heroBackgroundContainer} pointerEvents="none">
           <Image
             source={{ uri: activeHero.backdropUrl }}
             style={styles.heroBackgroundImage}
@@ -217,18 +243,18 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* Dynamic Fanart Title Meta */}
+        {/* Dynamic Title Meta */}
         <View style={styles.heroMetaWrapper}>
           <Text numberOfLines={1} style={styles.heroTitle}>
             {activeHero?.title || 'Universal Search'}
           </Text>
           <Text numberOfLines={2} style={styles.heroOverview}>
             {activeHero?.overview ||
-              `Simultaneously search across all ${activeProvidersList.length} installed addon providers.`}
+              `Simultaneously query across all ${activeProviders.length} active addon providers.`}
           </Text>
         </View>
 
-        {/* Search Input Field & Submit Action */}
+        {/* Search Input Bar & Remote Button */}
         <View style={styles.header}>
           <View style={styles.searchBarWrapper}>
             <MaterialCommunityIcons name="magnify" size={24} color="#8A5CF6" />
@@ -237,7 +263,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
               value={query}
               onChangeText={setQuery}
               onSubmitEditing={() => executeMultiProviderSearch(query)}
-              placeholder="Search movies, TV series, anime across all addons..."
+              placeholder="Search movies, TV shows, anime across all addons..."
               placeholderTextColor="#6B7280"
               style={styles.input}
               returnKeyType="search"
@@ -282,7 +308,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
           </TVFocusablePressable>
         </View>
 
-        {/* Addon Provider Filter Pills */}
+        {/* Provider Source Filter Pills */}
         {results.length > 0 && (
           <View style={styles.tabBar}>
             <ScrollView
@@ -338,12 +364,12 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
         )}
 
         {/* Empty States */}
-        {activeProvidersList.length === 0 ? (
+        {activeProviders.length === 0 ? (
           <View style={styles.emptyContainer}>
             <MaterialCommunityIcons name="puzzle-outline" size={64} color="#4B5563" />
             <Text style={styles.emptyTitle}>No Addons Installed</Text>
             <Text style={styles.emptySubtitle}>
-              Go to the Addons tab to install providers first.
+              Go to the Addons menu and install providers to activate universal search.
             </Text>
           </View>
         ) : results.length === 0 && !isSearching ? (
@@ -351,7 +377,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
             <MaterialCommunityIcons name="movie-search-outline" size={64} color="#4B5563" />
             <Text style={styles.emptyTitle}>Universal Search</Text>
             <Text style={styles.emptySubtitle}>
-              Type above to search across {activeProvidersList.length} installed addons.
+              Type your query above to search across all {activeProviders.length} active addon scrapers.
             </Text>
           </View>
         ) : (
