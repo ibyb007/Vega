@@ -36,7 +36,6 @@ const describeTrack = (trk: any, fallbackLabel: string): string => {
   const rawTitle = (trk?.title || trk?.label || '').trim();
   const rawLang = (trk?.language || trk?.lang || '').toLowerCase().trim();
 
-  // If track already has brackets like [English] or [Hindi], keep it intact
   if (rawTitle && /\[.+\]/.test(rawTitle)) {
     return rawTitle;
   }
@@ -117,12 +116,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     duration: 0,
   });
 
-  // Self-referencing node handle for literal arrow key wake
   const wakeOverlayRef = useRef<View>(null);
   const [wakeNodeId, setWakeNodeId] = useState<number | undefined>(undefined);
-
-  // Long-press continuous repeat timer
-  const seekRepeatTimer = useRef<NodeJS.Timeout | null>(null);
 
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(true);
@@ -130,7 +125,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [duration, setDuration] = useState(0);
   const [showControls, setShowControls] = useState(false);
 
-  // Video track & display states
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
   const [audioTracks, setAudioTracks] = useState<any[]>([]);
   const [textTracks, setTextTracks] = useState<any[]>([]);
@@ -139,7 +133,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
   const [resolvingNextEpisode, setResolvingNextEpisode] = useState(false);
 
-  // Active Menu Dialog
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
   const prevStreamUrlRef = useRef(streamUrl);
@@ -155,7 +148,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, [streamUrl]);
 
-  // Bind native node ID for focus trap
   useEffect(() => {
     if (wakeOverlayRef.current) {
       const handle = findNodeHandle(wakeOverlayRef.current);
@@ -163,15 +155,11 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, [showControls]);
 
-  // D-pad hold-to-seek tracking
-  const seekHoldActiveRef = useRef(false);
-  const seekReleaseTimerRef = useRef<NodeJS.Timeout | null>(null);
-  useEffect(() => {
-    return () => {
-      if (seekReleaseTimerRef.current) clearTimeout(seekReleaseTimerRef.current);
-      if (seekRepeatTimer.current) clearInterval(seekRepeatTimer.current);
-    };
-  }, []);
+  // Repeat & acceleration tracking for D-pad seek
+  const lastSeekDirection = useRef<'left' | 'right' | null>(null);
+  const lastSeekTimestamp = useRef<number>(0);
+  const seekStreak = useRef<number>(0);
+  const seekReleaseTimer = useRef<NodeJS.Timeout | null>(null);
 
   const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
   const continueWatchingId = itemLink || streamUrl;
@@ -216,6 +204,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           currentProgRef.current.duration
         );
       }
+      if (seekReleaseTimer.current) clearTimeout(seekReleaseTimer.current);
     };
   }, [syncProgressToStore]);
 
@@ -225,10 +214,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
     setShowControls(true);
     hideControlsTimer.current = setTimeout(() => {
-      setShowControls((prev) => {
-        if (activeDialog) return true;
-        return false;
-      });
+      setShowControls((prev) => (activeDialog ? true : false));
     }, 3500);
   }, [activeDialog]);
 
@@ -249,64 +235,56 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     });
   }, [duration, resetInactivityTimer, syncProgressToStore]);
 
-  const startContinuousSeek = useCallback(
-    (direction: 'forward' | 'backward') => {
-      if (seekRepeatTimer.current) clearInterval(seekRepeatTimer.current);
-      resetInactivityTimer();
-      let step = direction === 'forward' ? 10 : -10;
-      handleSeek(step);
+  // Handle D-pad directional holds with progressive acceleration
+  const handleContinuousDPadSeek = useCallback((dir: 'left' | 'right') => {
+    resetInactivityTimer();
+    const now = Date.now();
+    const isRapidRepeat = lastSeekDirection.current === dir && now - lastSeekTimestamp.current < 450;
 
-      let ticks = 0;
-      seekRepeatTimer.current = setInterval(() => {
-        ticks += 1;
-        if (ticks > 4) step = direction === 'forward' ? 25 : -25;
-        handleSeek(step);
-      }, 350);
-    },
-    [handleSeek, resetInactivityTimer]
-  );
-
-  const stopContinuousSeek = useCallback(() => {
-    if (seekRepeatTimer.current) {
-      clearInterval(seekRepeatTimer.current);
-      seekRepeatTimer.current = null;
+    if (isRapidRepeat) {
+      seekStreak.current += 1;
+    } else {
+      seekStreak.current = 1;
     }
-  }, []);
+
+    lastSeekDirection.current = dir;
+    lastSeekTimestamp.current = now;
+
+    if (seekReleaseTimer.current) clearTimeout(seekReleaseTimer.current);
+    seekReleaseTimer.current = setTimeout(() => {
+      seekStreak.current = 0;
+      lastSeekDirection.current = null;
+    }, 500);
+
+    let step = 10;
+    if (seekStreak.current > 8) step = 45;
+    else if (seekStreak.current > 4) step = 25;
+
+    handleSeek(dir === 'right' ? step : -step);
+  }, [handleSeek, resetInactivityTimer]);
 
   const handleCatcherPress = useCallback(() => {
-    setPaused((prevPaused) => {
-      const nextPaused = !prevPaused;
+    setPaused((prev) => {
+      const next = !prev;
       syncProgressToStore(currentProgRef.current.currentTime, currentProgRef.current.duration);
-      return nextPaused;
+      return next;
     });
     resetInactivityTimer();
   }, [resetInactivityTimer, syncProgressToStore]);
 
-  const RELEASE_GAP_MS = 450;
-  const handleDPadSeekEvent = useCallback((direction: 'left' | 'right') => {
-    if (showControls && !seekHoldActiveRef.current) return;
-
-    seekHoldActiveRef.current = true;
-    if (seekReleaseTimerRef.current) clearTimeout(seekReleaseTimerRef.current);
-    handleSeek(direction === 'right' ? 10 : -10);
-    seekReleaseTimerRef.current = setTimeout(() => {
-      seekHoldActiveRef.current = false;
-    }, RELEASE_GAP_MS);
-  }, [showControls, handleSeek]);
-
-  // Global D-Pad Listener for TV remotes
+  // Global D-pad Remote Listener
   if (typeof useTVEventHandler === 'function') {
     useTVEventHandler((evt: any) => {
-      if (!evt?.eventType) return;
+      if (!evt?.eventType || activeDialog) return;
       const type = evt.eventType;
 
       if (!showControls) {
-        if (['up', 'down', 'left', 'right', 'select', 'playPause'].includes(type)) {
+        if (['up', 'down', 'select', 'playPause'].includes(type)) {
           resetInactivityTimer();
         }
 
-        if (type === 'right') handleDPadSeekEvent('right');
-        else if (type === 'left') handleDPadSeekEvent('left');
+        if (type === 'right') handleContinuousDPadSeek('right');
+        else if (type === 'left') handleContinuousDPadSeek('left');
         else if (type === 'select' || type === 'playPause') {
           handleCatcherPress();
         }
@@ -404,6 +382,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   };
 
+  // Toggles display mode without key remounting (prevents playback reload)
   const toggleAspectRatio = () => {
     resetInactivityTimer();
     setResizeMode((prev) => {
@@ -424,7 +403,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   return (
     <View style={styles.container}>
       <Video
-        key={`video-surface-${resizeMode}`}
         ref={videoRef}
         source={{ uri: activeMediaUrl || streamUrl, headers }}
         style={StyleSheet.absoluteFill}
@@ -433,10 +411,11 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
         textTracks={subtitles}
+        // #00000000 zeros out the ExoPlayer bounding box color; fontSize scales to 28
         subtitleStyle={{
-          backgroundColor: 'transparent',
+          backgroundColor: '#00000000',
           opacity: 1,
-          fontSize: 24,
+          fontSize: 28,
           subtitlesFollowVideo: true,
           paddingBottom: 40,
         }}
@@ -477,7 +456,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Invisible TV Focus Catcher when controls are hidden */}
+      {/* Invisible TV Focus Trap when controls are hidden */}
       {!showControls && (
         <View
           ref={wakeOverlayRef}
@@ -501,12 +480,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Transparent Bottom Player Controls Overlay */}
+      {/* Bottom Controls Overlay */}
       {showControls && (
         <View style={styles.controlsWrapper}>
+          {/* Subtle bottom-only gradient that avoids casting a shadow over center video */}
           <LinearGradient
-            colors={['transparent', 'rgba(10, 10, 14, 0.75)', 'rgba(5, 5, 8, 0.95)']}
-            locations={[0, 0.45, 1]}
+            colors={['transparent', 'rgba(5, 5, 8, 0.4)', 'rgba(5, 5, 8, 0.88)']}
+            locations={[0, 0.35, 1]}
             style={styles.gradientOverlay}
           />
 
@@ -516,17 +496,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               {title}
             </Text>
 
-            {/* Interactive Focusable Seekbar */}
-            <TVFocusablePressable
-              scaleFocused={1.01}
-              focusedBorderColor="#8A5CF6"
-              borderRadius={4}
-              onFocus={() => resetInactivityTimer()}
-              onPress={() => handleSeek(15)}
-              style={styles.progressContainer}
-            >
-              {({ focused }) => (
-                <View>
+            {/* Seekbar Container */}
+            <View style={styles.progressContainer}>
+              <TVFocusablePressable
+                scaleFocused={1}
+                focusedBorderColor="transparent"
+                borderRadius={0}
+                onFocus={() => resetInactivityTimer()}
+                onPress={() => handleSeek(15)}
+                style={styles.progressHitArea}
+              >
+                {({ focused }) => (
                   <View style={[styles.progressTrack, focused && styles.progressTrackFocused]}>
                     <View
                       style={[
@@ -535,16 +515,25 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                         focused && styles.progressFillFocused,
                       ]}
                     />
+                    {focused && (
+                      <View
+                        style={[
+                          styles.scrubThumb,
+                          { left: `${Math.min(99, Math.max(0, duration > 0 ? (currentTime / duration) * 100 : 0))}%` },
+                        ]}
+                      />
+                    )}
                   </View>
-                  <View style={styles.timeRow}>
-                    <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
-                    <Text style={styles.timeText}>{formatTime(duration)}</Text>
-                  </View>
-                </View>
-              )}
-            </TVFocusablePressable>
+                )}
+              </TVFocusablePressable>
 
-            {/* Bottom Controls Row */}
+              <View style={styles.timeRow}>
+                <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
+                <Text style={styles.timeText}>{formatTime(duration)}</Text>
+              </View>
+            </View>
+
+            {/* Bottom Controls Action Strip */}
             <View style={styles.actionRow}>
               {/* Play / Pause */}
               <TVFocusablePressable
@@ -570,29 +559,25 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 )}
               </TVFocusablePressable>
 
-              {/* 10s Rewind (Click: -10s, Long-press: continuous seek) */}
+              {/* 10s Rewind */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
                 onFocus={() => resetInactivityTimer()}
                 onPress={() => handleSeek(-10)}
-                onLongPress={() => startContinuousSeek('backward')}
-                onPressOut={stopContinuousSeek}
                 style={styles.controlBtn}
               >
                 {() => <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />}
               </TVFocusablePressable>
 
-              {/* 10s Forward (Click: +10s, Long-press: continuous seek) */}
+              {/* 10s Forward */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
                 onFocus={() => resetInactivityTimer()}
                 onPress={() => handleSeek(10)}
-                onLongPress={() => startContinuousSeek('forward')}
-                onPressOut={stopContinuousSeek}
                 style={styles.controlBtn}
               >
                 {() => <MaterialCommunityIcons name="fast-forward-10" size={24} color="#FFFFFF" />}
@@ -705,7 +690,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 </TVFocusablePressable>
               )}
 
-              {/* Aspect Ratio Mode */}
+              {/* Aspect Ratio Mode Toggle */}
               <TVFocusablePressable
                 scaleFocused={1.08}
                 focusedBorderColor="#8A5CF6"
@@ -746,7 +731,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             </Text>
 
             <ScrollView contentContainerStyle={styles.dialogList}>
-              {/* Subtitle Options */}
               {activeDialog === 'subtitles' && (
                 <>
                   <TVFocusablePressable
@@ -792,7 +776,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 </>
               )}
 
-              {/* Audio Options */}
               {activeDialog === 'audio' &&
                 audioTracks.map((trk, i) => (
                   <TVFocusablePressable
@@ -819,7 +802,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   </TVFocusablePressable>
                 ))}
 
-              {/* Server Options */}
               {activeDialog === 'server' &&
                 servers.map((srv, i) => (
                   <TVFocusablePressable
@@ -843,7 +825,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   </TVFocusablePressable>
                 ))}
 
-              {/* Quality Options */}
               {activeDialog === 'quality' &&
                 qualities.map((q, i) => (
                   <TVFocusablePressable
@@ -893,49 +874,65 @@ const styles = StyleSheet.create({
   },
   gradientOverlay: {
     ...StyleSheet.absoluteFillObject,
-    height: 190,
+    height: 110,
   },
   controlsContent: {
     paddingHorizontal: 40,
-    paddingBottom: 24,
-    paddingTop: 16,
+    paddingBottom: 20,
+    paddingTop: 8,
     zIndex: 10,
   },
   mediaTitle: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
-    marginBottom: 10,
-    textShadowColor: 'rgba(0,0,0,0.9)',
+    marginBottom: 8,
+    textShadowColor: 'rgba(0,0,0,0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
   progressContainer: {
-    marginBottom: 12,
-    paddingVertical: 4,
+    marginBottom: 10,
+  },
+  progressHitArea: {
+    paddingVertical: 6,
+    justifyContent: 'center',
   },
   progressTrack: {
     width: '100%',
     height: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
     borderRadius: 2,
-    overflow: 'hidden',
+    position: 'relative',
   },
   progressTrackFocused: {
     height: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
   },
   progressFill: {
     height: '100%',
     backgroundColor: '#8A5CF6',
+    borderRadius: 2,
   },
   progressFillFocused: {
     backgroundColor: '#A78BFA',
   },
+  scrubThumb: {
+    position: 'absolute',
+    top: -4,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 2,
+  },
   timeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 6,
+    marginTop: 4,
   },
   timeText: {
     color: '#D1D5DB',
@@ -945,7 +942,7 @@ const styles = StyleSheet.create({
   actionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   controlBtn: {
     padding: 10,
