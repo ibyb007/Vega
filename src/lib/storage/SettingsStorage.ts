@@ -30,6 +30,7 @@ const SETTINGS_KEYS = {
   SUBTITLE_OUTLINE_WIDTH: 'subtitleOutlineWidth',
   LAUNCHER_ICON: 'launcherIcon',
   DYNAMIC_INFO_ACCENT: 'dynamicInfoAccentEnabled',
+  DEFAULT_PLAYER: 'defaultPlayer',
 } as const;
 
 export class SettingsStorage {
@@ -87,6 +88,19 @@ export class SettingsStorage {
 
   setDohProvider(provider: string): void {
     MMKV.setString(SETTINGS_KEYS.DOH_PROVIDER, provider);
+  }
+
+  // Capital-H aliases -- `TVSettingsScreen` calls `getDoHProvider`/
+  // `setDoHProvider` (matching `isDoHActive`/`setDoHActive`'s casing), but
+  // only the lowercase-h versions existed here, so the TV settings
+  // screen's DoH provider picker silently failed to persist (same
+  // class of bug as the missing default-player methods below).
+  getDoHProvider(): string {
+    return this.getDohProvider();
+  }
+
+  setDoHProvider(provider: string): void {
+    this.setDohProvider(provider);
   }
 
   getDohCustomUrl(): string {
@@ -249,6 +263,21 @@ export class SettingsStorage {
 
   setDynamicInfoAccentEnabled(enabled: boolean): void {
     MMKV.setBool(SETTINGS_KEYS.DYNAMIC_INFO_ACCENT, enabled);
+  }
+
+  // Default video player (Android TV settings screen). Was previously
+  // called by `TVSettingsScreen` but never defined here at all -- the
+  // calls were guarded with `settingsStorage?.setDefaultPlayer &&`, so the
+  // missing method just silently no-opped instead of throwing, and the
+  // picker always fell back to 'exo' on the next screen visit.
+  getDefaultPlayer(): 'exo' | 'vlc' | 'system' {
+    const saved = MMKV.getString(SETTINGS_KEYS.DEFAULT_PLAYER);
+    if (saved === 'vlc' || saved === 'system' || saved === 'exo') return saved;
+    return 'exo';
+  }
+
+  setDefaultPlayer(player: 'exo' | 'vlc' | 'system'): void {
+    MMKV.setString(SETTINGS_KEYS.DEFAULT_PLAYER, player);
   }
 
   // Common Getters/Setters
