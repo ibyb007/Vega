@@ -16,7 +16,26 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
-import type { EpisodeLink } from '../../lib/providers/types';
+import type { EpisodeLink, TextTracks } from '../../lib/providers/types';
+
+// Friendly display names for common ISO 639-1 language codes, since many
+// streams only tag tracks with a bare code (e.g. "en", "hi") and no title.
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German',
+  it: 'Italian', pt: 'Portuguese', ru: 'Russian', ja: 'Japanese', ko: 'Korean',
+  zh: 'Chinese', ar: 'Arabic', ta: 'Tamil', te: 'Telugu', ml: 'Malayalam',
+  kn: 'Kannada', bn: 'Bengali', mr: 'Marathi', pa: 'Punjabi', ur: 'Urdu',
+  tr: 'Turkish', pl: 'Polish', nl: 'Dutch', th: 'Thai', vi: 'Vietnamese',
+  id: 'Indonesian', ms: 'Malay', fa: 'Persian', he: 'Hebrew', uk: 'Ukrainian',
+};
+
+const describeTrack = (trk: any, fallbackLabel: string): string => {
+  if (trk?.title) return trk.title;
+  const code = (trk?.language || '').toLowerCase().slice(0, 2);
+  if (code && LANGUAGE_NAMES[code]) return `${LANGUAGE_NAMES[code]} (${code})`;
+  if (trk?.language) return trk.language.toUpperCase();
+  return fallbackLabel;
+};
 
 interface EpisodeItem {
   id?: string | number;
@@ -35,6 +54,7 @@ interface TVPlayerScreenProps {
   itemLink?: string;
   providerValue?: string;
   headers?: Record<string, string>;
+  subtitles?: TextTracks;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string }[];
@@ -55,6 +75,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   itemLink,
   providerValue,
   headers,
+  subtitles,
   episodes = [],
   currentEpisodeIndex = 0,
   servers = [],
@@ -76,7 +97,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [buffering, setBuffering] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [showControls, setShowControls] = useState(true);
+  // Controls stay hidden until the first real interaction -- there is no
+  // reason to flash them on when playback starts.
+  const [showControls, setShowControls] = useState(false);
 
   // Video track & display states
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
@@ -142,7 +165,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     };
   }, [syncProgressToStore]);
 
-  // 3-Second Auto-Hide Control Overlay
+  // Auto-Hide Control Overlay -- reveals controls and (re)starts a 3s
+  // countdown to hide them again. This is only ever called from an actual
+  // user interaction (a button press/focus, or the invisible catcher's
+  // onPress below) -- never automatically on mount or on its own timer,
+  // which is what previously caused the controls to flash back on by
+  // themselves every few seconds (see note below).
   const resetInactivityTimer = useCallback(() => {
     if (hideControlsTimer.current) {
       clearTimeout(hideControlsTimer.current);
@@ -153,15 +181,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         if (activeDialog) return true;
         return false;
       });
-    }, 3500);
+    }, 3000);
   }, [activeDialog]);
 
+  // Clear any pending hide timer on unmount only -- do NOT call
+  // resetInactivityTimer() here. Controls start hidden and should only
+  // appear from a genuine interaction.
   useEffect(() => {
-    resetInactivityTimer();
     return () => {
       if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
     };
-  }, [resetInactivityTimer]);
+  }, []);
 
   const handleSeek = useCallback((delta: number) => {
     resetInactivityTimer();
@@ -280,6 +310,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         paused={paused}
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
+        textTracks={subtitles}
+        subtitleStyle={{ fontSize: 54, opacity: 0, subtitlesFollowVideo: true }}
         onLoad={(meta: any) => {
           const totalDur = meta.duration || 0;
           setDuration(totalDur);
@@ -312,14 +344,24 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       )}
 
       {/* Invisible full-screen focus target used while controls are
-          hidden -- it's the only focusable element on screen at that
-          point, so the D-pad naturally lands here and reveals controls
-          again on any press/focus. */}
+          hidden. IMPORTANT: this only reveals controls on `onPress`
+          (an actual OK/select button press) -- not `onFocus`. Since this
+          is the only focusable element on screen while hidden, it also
+          receives focus automatically the instant it mounts (Android's
+          "preferred focus" behavior fires with no real user input at
+          all). Wiring `onFocus` to reveal controls here previously
+          created an infinite loop: hide -> this mounts -> auto-focuses
+          itself -> reveals controls again -> hides again 3s later --
+          repeating forever, which is the "blinking every 3 seconds" bug.
+          Directional D-pad presses can't be distinguished from a plain
+          "select" press without a global key listener, which isn't
+          available in plain React Native (see the note further down) --
+          so pressing the OK/center button is what brings the controls
+          back. */}
       {!showControls && (
         <TVFocusablePressable
           hasTVPreferredFocus
           style={StyleSheet.absoluteFillObject}
-          onFocus={resetInactivityTimer}
           onPress={resetInactivityTimer}
         >
           {() => <View style={StyleSheet.absoluteFillObject} />}
@@ -341,21 +383,38 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               {title}
             </Text>
 
-            {/* Seekbar & Time */}
-            <View style={styles.progressContainer}>
-              <View style={styles.progressTrack}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    { width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' },
-                  ]}
-                />
-              </View>
-              <View style={styles.timeRow}>
-                <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
-                <Text style={styles.timeText}>{formatTime(duration)}</Text>
-              </View>
-            </View>
+            {/* Seekbar & Time -- now a real focusable/selectable control
+                (previously a plain View, which is why the remote could
+                never land on it). Pressing it seeks forward 10s; the
+                dedicated rewind/forward buttons remain the primary way to
+                seek by exact increments, since a focused-but-idle element
+                can't detect held left/right without a native key
+                listener (see note near the invisible focus catcher). */}
+            <TVFocusablePressable
+              scaleFocused={1.02}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={6}
+              onFocus={() => resetInactivityTimer()}
+              onPress={() => handleSeek(10)}
+              style={styles.progressContainer}
+            >
+              {() => (
+                <View>
+                  <View style={styles.progressTrack}>
+                    <View
+                      style={[
+                        styles.progressFill,
+                        { width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' },
+                      ]}
+                    />
+                  </View>
+                  <View style={styles.timeRow}>
+                    <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
+                    <Text style={styles.timeText}>{formatTime(duration)}</Text>
+                  </View>
+                </View>
+              )}
+            </TVFocusablePressable>
 
             {/* Bottom Controls Row */}
             <View style={styles.actionRow}>
@@ -468,7 +527,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   <View style={styles.pillInner}>
                     <MaterialCommunityIcons name="subtitles-outline" size={20} color="#FFFFFF" />
                     <Text style={styles.pillText}>
-                      {selectedSub.type === SelectedTrackType.DISABLED ? 'Subtitles Off' : 'Subtitles'}
+                      {selectedSub.type === SelectedTrackType.DISABLED
+                        ? 'Subtitles Off'
+                        : describeTrack(textTracks[selectedSub.value], 'Subtitles')}
                     </Text>
                   </View>
                 )}
@@ -591,7 +652,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     >
                       {() => (
                         <Text style={styles.dialogItemText}>
-                          {trk.title || trk.language || `Subtitle Track ${i + 1}`}
+                          {describeTrack(trk, `Subtitle Track ${i + 1}`)}
                         </Text>
                       )}
                     </TVFocusablePressable>
@@ -620,7 +681,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   >
                     {() => (
                       <Text style={styles.dialogItemText}>
-                        {trk.title || trk.language || `Audio Track ${i + 1}`}
+                        {describeTrack(trk, `Audio Track ${i + 1}`)}
                       </Text>
                     )}
                   </TVFocusablePressable>
