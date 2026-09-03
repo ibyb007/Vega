@@ -25,25 +25,25 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
 
   return (
     <View style={styles.container}>
-      {/* Edge-to-Edge Fanart Layer */}
+      {/* 16:9 Landscape Fanart Background */}
       {imageUrl ? (
-        <View style={styles.backdropContainer} pointerEvents="none">
+        <View style={styles.backdropLayer} pointerEvents="none">
           <Image
             key={imageUrl}
             source={{ uri: imageUrl }}
             style={styles.backdropImage}
             resizeMode="cover"
           />
-          {/* Stremio Bottom Fade Gradient */}
+          {/* Top-to-Bottom Vignette */}
           <LinearGradient
-            colors={['transparent', 'rgba(10, 10, 14, 0.55)', '#0A0A0E']}
-            locations={[0, 0.6, 1]}
+            colors={['rgba(10, 10, 14, 0.2)', 'rgba(10, 10, 14, 0.7)', '#0A0A0E']}
+            locations={[0, 0.5, 1]}
             style={styles.bottomGradient}
           />
-          {/* Stremio Left Vignette (Protects Text Readability) */}
+          {/* Left-to-Right Vignette (Protects Text Readability) */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.75)', 'transparent']}
-            locations={[0, 0.45, 0.9]}
+            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.8)', 'transparent']}
+            locations={[0, 0.45, 0.85]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.leftGradient}
@@ -51,7 +51,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
         </View>
       ) : null}
 
-      {/* Stremio Metadata Block */}
+      {/* Metadata Block Placed High on Screen (Stremio Layout) */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media?.title || ''}
@@ -72,7 +72,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
           ) : null}
         </View>
 
-        <Text numberOfLines={3} style={styles.overview}>
+        <Text numberOfLines={2} style={styles.overview}>
           {media?.overview || ''}
         </Text>
 
@@ -88,14 +88,16 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 330,
+    height: 240,
     width: SCREEN_WIDTH,
     position: 'relative',
-    justifyContent: 'flex-end',
     backgroundColor: '#0A0A0E',
+    justifyContent: 'flex-start',
+    paddingTop: 16,
   },
-  backdropContainer: {
+  backdropLayer: {
     ...StyleSheet.absoluteFillObject,
+    height: 380, // Extends downwards behind upper cards
     overflow: 'hidden',
   },
   backdropImage: {
@@ -110,29 +112,28 @@ const styles = StyleSheet.create({
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '78%',
+    width: '80%',
   },
   contentWrapper: {
-    paddingLeft: 96,
-    paddingBottom: 16,
+    paddingLeft: 88,
     maxWidth: 680,
     zIndex: 10,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 38,
+    fontSize: 32,
     fontWeight: '900',
-    letterSpacing: -0.5,
-    marginBottom: 8,
+    letterSpacing: -0.4,
+    marginBottom: 6,
     textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
+    textShadowRadius: 6,
   },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 10,
+    gap: 10,
+    marginBottom: 6,
   },
   metaText: {
     color: '#D1D5DB',
@@ -142,7 +143,7 @@ const styles = StyleSheet.create({
   ratingBadge: {
     backgroundColor: '#F59E0B',
     paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingVertical: 1,
     borderRadius: 4,
   },
   ratingText: {
@@ -157,8 +158,8 @@ const styles = StyleSheet.create({
   },
   overview: {
     color: '#D1D5DB',
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     textShadowColor: 'rgba(0, 0, 0, 0.9)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
@@ -167,6 +168,6 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 12,
     fontWeight: '500',
-    marginTop: 8,
+    marginTop: 4,
   },
 });
