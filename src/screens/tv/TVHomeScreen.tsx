@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -18,11 +18,12 @@ import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
-import useWatchHistoryStore from '../../lib/zustand/watchHistoryStore';
-import { useHomePageData } from '../../lib/hooks/useHomePageData';
+import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
+import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
+import { prefetchMetadata } from '../../lib/services/metadataCache';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const ROW_HEIGHT = 280;
 
 interface TVHomeScreenProps {
@@ -36,11 +37,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 }) => {
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
-  const watchHistory = useWatchHistoryStore((state) => state.watchHistory) || [];
+  const continueWatchingItems = useContinueWatchingStore((state) => state.items) || [];
 
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
   const [activeRowIndex, setActiveRowIndex] = useState<number>(0);
   const translateY = useSharedValue(0);
+  const initialFocusSetRef = useRef(false);
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
@@ -51,9 +53,16 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     enabled: hasProviders,
   });
 
-  // Combine rows: Continue Watching (if present) followed by catalog sections
+  // Sort and filter Continue Watching row items
+  const watchHistory = useMemo(() => {
+    return [...continueWatchingItems]
+      .filter((item) => Boolean(item.providerValue || item.infoUrl))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  }, [continueWatchingItems]);
+
+  // Combine rows: Continue Watching (if present) followed by catalog rows
   const displayRows = useMemo(() => {
-    const rows = [];
+    const rows: any[] = [];
     if (watchHistory.length > 0) {
       rows.push({
         title: 'Continue Watching',
@@ -65,17 +74,18 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     return rows.concat(homeData.filter((r) => r.Posts && r.Posts.length > 0));
   }, [watchHistory, homeData]);
 
-  // Set initial hero from the first item of the top row immediately
+  // Set initial hero details from the top row's first poster or random hero
   useEffect(() => {
     if (!activeHero && displayRows.length > 0) {
       const firstRow = displayRows[0];
       if (firstRow?.Posts?.length > 0) {
         const item = firstRow.Posts[0];
+        const posterImage = item.poster || item.background || item.image;
         setActiveHero({
           title: item.title,
-          backdropUrl: item.backdrop || item.banner || item.image,
-          posterUrl: item.image,
-          overview: item.extra || item.description || 'Press Select to view streams & episodes.',
+          backdropUrl: item.backdrop || item.banner || posterImage,
+          posterUrl: posterImage,
+          overview: item.extra || item.description || 'Select title to browse stream links and episodes.',
           year: item.year || '2024',
           rating: item.rating || '8.2',
           runtime: item.runtime || '114 min',
@@ -85,28 +95,50 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     }
   }, [displayRows, activeHero]);
 
-  // Translate rows container up smoothly when moving D-pad Down
+  // Translate row container upward when navigating down (Stremio style)
   const handleCardFocus = useCallback(
-    (rowIndex: number, item: any) => {
+    (rowIndex: number, item: any, isHistory: boolean = false) => {
+      initialFocusSetRef.current = true;
       setActiveRowIndex(rowIndex);
       translateY.value = withTiming(-rowIndex * ROW_HEIGHT, {
-        duration: 200,
+        duration: 220,
         easing: Easing.out(Easing.quad),
       });
 
-      // Update Hero backdrop & text immediately without debounce lag
+      const posterImage = item.poster || item.background || item.image;
+      const progressPercent =
+        item.duration && item.position
+          ? Math.min(100, Math.round((item.position / item.duration) * 100))
+          : 0;
+      const episodeTitle =
+        item.episodeTitle ||
+        (item.episode?.title && item.episode.title !== item.title
+          ? item.episode.title
+          : undefined);
+
       setActiveHero({
         title: item.title,
-        backdropUrl: item.backdrop || item.banner || item.image,
-        posterUrl: item.image,
-        overview: item.extra || item.description || 'Press Select to view streams & episodes.',
+        backdropUrl: item.backdrop || item.banner || posterImage,
+        posterUrl: posterImage,
+        overview: isHistory
+          ? episodeTitle
+            ? `${episodeTitle} • Resume (${progressPercent}%)`
+            : `Resume watching (${progressPercent}%)`
+          : item.extra || item.description || 'Select title to browse stream links.',
         year: item.year || '2024',
         rating: item.rating || '8.2',
         runtime: item.runtime || '114 min',
         genres: item.genres || ['Action', 'Drama', 'Thriller'],
       });
+
+      // Prefetch metadata in background
+      const targetUrl = item.infoUrl || item.link;
+      const targetProvider = item.providerValue || item.provider || provider?.value;
+      if (targetUrl && targetProvider) {
+        prefetchMetadata(targetUrl, targetProvider);
+      }
     },
-    [translateY]
+    [translateY, provider?.value]
   );
 
   const animatedRowsStyle = useAnimatedStyle(() => {
@@ -137,12 +169,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* 1. FIXED TOP HERO: Never scrolls or gets pushed off screen */}
+      {/* 1. FIXED TOP HERO: Stays stationary at the top */}
       <View style={styles.fixedHeroContainer}>
         <TVHeroMeta media={activeHero} />
       </View>
 
-      {/* 2. SLIDING ROWS STAGE: Rows slide upwards underneath the Hero */}
+      {/* 2. SLIDING ROWS STAGE: Shifts upward under the header */}
       <View style={styles.stageViewport}>
         <Animated.View style={[styles.slidingRowsContainer, animatedRowsStyle]}>
           {displayRows.map((row: any, rowIndex: number) => {
@@ -154,7 +186,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                 key={`${row.filter || row.title}-${rowIndex}`}
                 style={[
                   styles.rowContainer,
-                  // Fade out previous rows that moved above the active row
                   rowIndex < activeRowIndex && styles.rowHiddenAbove,
                 ]}
               >
@@ -167,17 +198,34 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   removeClippedSubviews={false}
                 >
                   {rowPosts.map((item: any, pIndex: number) => {
-                    const isPreferred = rowIndex === 0 && pIndex === 0;
+                    const isPreferred =
+                      !initialFocusSetRef.current && rowIndex === 0 && pIndex === 0;
+                    const posterImage = item.poster || item.background || item.image;
+                    const progressPercent =
+                      item.duration && item.position
+                        ? Math.min(100, Math.round((item.position / item.duration) * 100))
+                        : 0;
 
                     return (
                       <TVFocusablePressable
-                        key={`${item.link || item.id}-${pIndex}`}
+                        key={`${item.infoUrl || item.link || item.id}-${pIndex}`}
                         hasTVPreferredFocus={isPreferred}
                         scaleFocused={1.08}
                         focusedBorderColor="#FFFFFF"
                         borderRadius={10}
-                        onFocus={() => handleCardFocus(rowIndex, item)}
-                        onPress={() => onSelectItem(item)}
+                        onFocus={() => handleCardFocus(rowIndex, item, Boolean(row.isHistory))}
+                        onPress={() => {
+                          if (row.isHistory) {
+                            onSelectItem({
+                              link: item.infoUrl || item.link,
+                              provider: item.providerValue || item.provider,
+                              image: posterImage,
+                              title: item.title,
+                            });
+                          } else {
+                            onSelectItem(item);
+                          }
+                        }}
                         style={styles.card}
                       >
                         {({ focused }) => (
@@ -185,13 +233,26 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                             <Image
                               source={{
                                 uri:
-                                  item.image ||
+                                  posterImage ||
                                   'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
                               }}
                               style={styles.cardPoster}
                               resizeMode="cover"
                             />
-                            {/* Stremio-Style White Focus Border */}
+
+                            {/* Continue Watching Progress Fill */}
+                            {row.isHistory && progressPercent > 0 && (
+                              <View style={styles.progressBarTrack}>
+                                <View
+                                  style={[
+                                    styles.progressBarFill,
+                                    { width: `${progressPercent}%` },
+                                  ]}
+                                />
+                              </View>
+                            )}
+
+                            {/* Focused Glow Border */}
                             {focused && <View style={styles.focusBorderGlow} />}
                           </View>
                         )}
@@ -265,11 +326,24 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 10,
     overflow: 'hidden',
+    position: 'relative',
   },
   cardPoster: {
     width: '100%',
     height: '100%',
     borderRadius: 10,
+  },
+  progressBarTrack: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#8A5CF6',
   },
   focusBorderGlow: {
     ...StyleSheet.absoluteFillObject,
