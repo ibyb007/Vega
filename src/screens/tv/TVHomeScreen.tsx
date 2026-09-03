@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,24 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  Dimensions,
 } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
-import { useHomePageData, getRandomHeroPost } from '../../lib/hooks/useHomePageData';
-import { Post } from '../../lib/providers/types';
+import useWatchHistoryStore from '../../lib/zustand/watchHistoryStore';
+import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
-import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
-import { prefetchMetadata } from '../../lib/services/metadataCache';
+
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const ROW_HEIGHT = 280;
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
@@ -28,13 +36,11 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 }) => {
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
-  const continueWatchingItems = useContinueWatchingStore((state) => state.items);
-  const watchHistory = [...continueWatchingItems]
-    .filter((item) => Boolean(item.providerValue))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-  
+  const watchHistory = useWatchHistoryStore((state) => state.watchHistory) || [];
+
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
-  const initialFocusSetRef = useRef(false);
+  const [activeRowIndex, setActiveRowIndex] = useState<number>(0);
+  const translateY = useSharedValue(0);
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
@@ -45,20 +51,69 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     enabled: hasProviders,
   });
 
+  // Combine rows: Continue Watching (if present) followed by catalog sections
+  const displayRows = useMemo(() => {
+    const rows = [];
+    if (watchHistory.length > 0) {
+      rows.push({
+        title: 'Continue Watching',
+        filter: 'continue-watching',
+        Posts: watchHistory,
+        isHistory: true,
+      });
+    }
+    return rows.concat(homeData.filter((r) => r.Posts && r.Posts.length > 0));
+  }, [watchHistory, homeData]);
+
+  // Set initial hero from the first item of the top row immediately
   useEffect(() => {
-    if (homeData && homeData.length > 0 && !activeHero) {
-      const hero = getRandomHeroPost(homeData, provider?.value);
-      if (hero) {
+    if (!activeHero && displayRows.length > 0) {
+      const firstRow = displayRows[0];
+      if (firstRow?.Posts?.length > 0) {
+        const item = firstRow.Posts[0];
         setActiveHero({
-          title: hero.title,
-          backdropUrl: hero.image,
-          posterUrl: hero.image,
-          overview: hero.extra || 'Select title to browse stream links and playback streams.',
-          year: '2024',
+          title: item.title,
+          backdropUrl: item.backdrop || item.banner || item.image,
+          posterUrl: item.image,
+          overview: item.extra || item.description || 'Press Select to view streams & episodes.',
+          year: item.year || '2024',
+          rating: item.rating || '8.2',
+          runtime: item.runtime || '114 min',
+          genres: item.genres || ['Action', 'Drama'],
         });
       }
     }
-  }, [homeData, provider?.value]);
+  }, [displayRows, activeHero]);
+
+  // Translate rows container up smoothly when moving D-pad Down
+  const handleCardFocus = useCallback(
+    (rowIndex: number, item: any) => {
+      setActiveRowIndex(rowIndex);
+      translateY.value = withTiming(-rowIndex * ROW_HEIGHT, {
+        duration: 200,
+        easing: Easing.out(Easing.quad),
+      });
+
+      // Update Hero backdrop & text immediately without debounce lag
+      setActiveHero({
+        title: item.title,
+        backdropUrl: item.backdrop || item.banner || item.image,
+        posterUrl: item.image,
+        overview: item.extra || item.description || 'Press Select to view streams & episodes.',
+        year: item.year || '2024',
+        rating: item.rating || '8.2',
+        runtime: item.runtime || '114 min',
+        genres: item.genres || ['Action', 'Drama', 'Thriller'],
+      });
+    },
+    [translateY]
+  );
+
+  const animatedRowsStyle = useAnimatedStyle(() => {
+    return {
+      transform: [{ translateY: translateY.value }],
+    };
+  });
 
   if (!hasProviders) {
     return (
@@ -69,7 +124,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     );
   }
 
-  if (isLoading && homeData.length === 0) {
+  if (isLoading && displayRows.length === 0) {
     return (
       <View style={styles.centerLoading}>
         <ActivityIndicator size="large" color="#8A5CF6" />
@@ -82,105 +137,27 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.verticalScrollContent}
-        removeClippedSubviews={false}
-      >
+      {/* 1. FIXED TOP HERO: Never scrolls or gets pushed off screen */}
+      <View style={styles.fixedHeroContainer}>
         <TVHeroMeta media={activeHero} />
+      </View>
 
-        <View style={styles.rowsWrapper}>
-          {/* Continue Watching Row */}
-          {Array.isArray(watchHistory) && watchHistory.length > 0 && (
-            <View style={styles.rowContainer}>
-              <Text style={styles.rowCategoryTitle}>Continue Watching</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.horizontalRowScroll}
-                removeClippedSubviews={false}
-              >
-                {watchHistory.map((item, pIndex: number) => {
-                  const posterImage = item.poster || item.background;
-                  const progressPercent =
-                    item.duration && item.position
-                      ? Math.min(100, Math.round((item.position / item.duration) * 100))
-                      : 0;
-                  const episodeTitle =
-                    item.episodeTitle ||
-                    (item.episode?.title && item.episode.title !== item.title
-                      ? item.episode.title
-                      : undefined);
-
-                  return (
-                    <TVFocusablePressable
-                      key={`history-${item.id || pIndex}`}
-                      hasTVPreferredFocus={!initialFocusSetRef.current && pIndex === 0}
-                      scaleFocused={1.08}
-                      focusedBorderColor="#8A5CF6"
-                      borderRadius={10}
-                      onFocus={() => {
-                        initialFocusSetRef.current = true;
-                        setActiveHero({
-                          title: item.title,
-                          backdropUrl: posterImage,
-                          posterUrl: posterImage,
-                          overview: episodeTitle
-                            ? `${episodeTitle} • Resume (${progressPercent}%)`
-                            : `Resume watching (${progressPercent}%)`,
-                        });
-                        if (item.infoUrl && item.providerValue) {
-                          prefetchMetadata(item.infoUrl, item.providerValue);
-                        }
-                      }}
-                      onPress={() =>
-                        onSelectItem({
-                          link: item.infoUrl,
-                          provider: item.providerValue,
-                          image: posterImage,
-                          title: item.title,
-                        })
-                      }
-                      style={styles.card}
-                    >
-                      {({ focused }) => (
-                        <View style={styles.cardInner}>
-                          <Image
-                            source={{
-                              uri:
-                                posterImage ||
-                                'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                            }}
-                            style={styles.cardPoster}
-                            resizeMode="cover"
-                          />
-                          {progressPercent > 0 && (
-                            <View style={styles.progressBarTrack}>
-                              <View
-                                style={[
-                                  styles.progressBarFill,
-                                  { width: `${progressPercent}%` },
-                                ]}
-                              />
-                            </View>
-                          )}
-                          {focused && <View style={styles.focusBorderGlow} />}
-                        </View>
-                      )}
-                    </TVFocusablePressable>
-                  );
-                })}
-              </ScrollView>
-            </View>
-          )}
-
-          {/* Scraper Provider Content Rows */}
-          {homeData.map((row, rowIndex) => {
+      {/* 2. SLIDING ROWS STAGE: Rows slide upwards underneath the Hero */}
+      <View style={styles.stageViewport}>
+        <Animated.View style={[styles.slidingRowsContainer, animatedRowsStyle]}>
+          {displayRows.map((row: any, rowIndex: number) => {
             const rowPosts = row.Posts || [];
             if (rowPosts.length === 0) return null;
 
             return (
-              <View key={`${row.filter || row.title}-${rowIndex}`} style={styles.rowContainer}>
+              <View
+                key={`${row.filter || row.title}-${rowIndex}`}
+                style={[
+                  styles.rowContainer,
+                  // Fade out previous rows that moved above the active row
+                  rowIndex < activeRowIndex && styles.rowHiddenAbove,
+                ]}
+              >
                 <Text style={styles.rowCategoryTitle}>{row.title}</Text>
 
                 <ScrollView
@@ -189,33 +166,17 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   contentContainerStyle={styles.horizontalRowScroll}
                   removeClippedSubviews={false}
                 >
-                  {rowPosts.map((item, pIndex) => {
-                    const shouldInitialFocus =
-                      !initialFocusSetRef.current &&
-                      watchHistory.length === 0 &&
-                      rowIndex === 0 &&
-                      pIndex === 0;
+                  {rowPosts.map((item: any, pIndex: number) => {
+                    const isPreferred = rowIndex === 0 && pIndex === 0;
 
                     return (
                       <TVFocusablePressable
-                        key={`${item.link}-${pIndex}`}
-                        hasTVPreferredFocus={shouldInitialFocus}
+                        key={`${item.link || item.id}-${pIndex}`}
+                        hasTVPreferredFocus={isPreferred}
                         scaleFocused={1.08}
-                        focusedBorderColor="#8A5CF6"
+                        focusedBorderColor="#FFFFFF"
                         borderRadius={10}
-                        onFocus={() => {
-                          initialFocusSetRef.current = true;
-                          setActiveHero({
-                            title: item.title,
-                            backdropUrl: item.image,
-                            posterUrl: item.image,
-                            overview: item.extra || 'Select title to browse stream links.',
-                          });
-                          const providerForItem = item.provider || provider?.value;
-                          if (item.link && providerForItem) {
-                            prefetchMetadata(item.link, providerForItem);
-                          }
-                        }}
+                        onFocus={() => handleCardFocus(rowIndex, item)}
                         onPress={() => onSelectItem(item)}
                         style={styles.card}
                       >
@@ -230,6 +191,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               style={styles.cardPoster}
                               resizeMode="cover"
                             />
+                            {/* Stremio-Style White Focus Border */}
                             {focused && <View style={styles.focusBorderGlow} />}
                           </View>
                         )}
@@ -240,8 +202,8 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
               </View>
             );
           })}
-        </View>
-      </ScrollView>
+        </Animated.View>
+      </View>
     </View>
   );
 };
@@ -250,44 +212,52 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0A0A0E',
+    overflow: 'hidden',
   },
-  centerLoading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#0A0A0E',
-    paddingLeft: 84,
+  fixedHeroContainer: {
+    height: 330,
+    width: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1,
   },
-  loadingText: {
-    color: '#9CA3AF',
-    fontSize: 16,
-    marginTop: 16,
+  stageViewport: {
+    position: 'absolute',
+    top: 330,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    overflow: 'hidden',
+    zIndex: 2,
   },
-  verticalScrollContent: {
-    paddingBottom: 60,
-  },
-  rowsWrapper: {
+  slidingRowsContainer: {
     paddingLeft: 96,
-    marginTop: -10,
+    paddingTop: 10,
   },
   rowContainer: {
-    marginBottom: 28,
+    height: ROW_HEIGHT,
+    marginBottom: 0,
+  },
+  rowHiddenAbove: {
+    opacity: 0,
   },
   rowCategoryTitle: {
     color: '#FFFFFF',
     fontSize: 20,
-    fontWeight: '700',
-    marginBottom: 12,
-    letterSpacing: 0.3,
+    fontWeight: '800',
+    marginBottom: 10,
+    letterSpacing: 0.2,
   },
   horizontalRowScroll: {
     paddingRight: 60,
     gap: 16,
-    paddingVertical: 10,
+    paddingVertical: 6,
   },
   card: {
-    width: 155,
-    height: 232,
+    width: 150,
+    height: 220,
     backgroundColor: '#16161E',
     borderRadius: 10,
   },
@@ -295,29 +265,27 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 10,
     overflow: 'hidden',
-    position: 'relative',
   },
   cardPoster: {
     width: '100%',
     height: '100%',
     borderRadius: 10,
   },
-  progressBarTrack: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 4,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: '#8A5CF6',
-  },
   focusBorderGlow: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: 10,
-    borderWidth: 2.5,
-    borderColor: '#8A5CF6',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+  },
+  centerLoading: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0A0A0E',
+  },
+  loadingText: {
+    color: '#9CA3AF',
+    fontSize: 16,
+    marginTop: 16,
   },
 });
