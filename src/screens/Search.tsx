@@ -14,6 +14,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { TVFocusablePressable } from '../components/tv/TVFocusablePressable';
 import useContentStore from '../lib/zustand/contentStore';
 import { providerManager } from '../lib/services/ProviderManager';
+import { extensionStorage } from '../lib/storage';
 import { Post, Provider } from '../lib/providers/types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -38,19 +39,60 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
     title: string;
     backdropUrl?: string;
     overview?: string;
-    year?: string;
   } | null>(null);
 
-  const installedProviders = useContentStore((state) => state.installedProviders);
+  // Read installed providers from store
+  const storeProviders = useContentStore((state) => state.installedProviders);
+  const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
+  const [activeProvidersList, setActiveProvidersList] = useState<Provider[]>(storeProviders || []);
+
   const searchInputRef = useRef<TextInput>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Sync and hydrate installedProviders directly from MMKV storage if store is empty
+  useEffect(() => {
+    let list: Provider[] = [];
+    if (storeProviders && storeProviders.length > 0) {
+      list = storeProviders;
+    } else {
+      try {
+        const raw = extensionStorage.getString('installedProviders');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            list = parsed;
+            setInstalledProviders(parsed);
+          }
+        }
+      } catch (e) {
+        console.warn('[Search] Failed to read installedProviders from MMKV:', e);
+      }
+    }
+    setActiveProvidersList(list);
+  }, [storeProviders, setInstalledProviders]);
 
   const executeMultiProviderSearch = useCallback(
     async (searchQuery: string) => {
       const trimmed = searchQuery.trim();
-      if (!trimmed || installedProviders.length === 0) {
+      if (!trimmed) {
         setResults([]);
         setActiveHero(null);
+        return;
+      }
+
+      // Re-read current list of providers (including fallback to MMKV)
+      let providersToSearch: Provider[] = activeProvidersList;
+      if (!providersToSearch || providersToSearch.length === 0) {
+        try {
+          const raw = extensionStorage.getString('installedProviders');
+          if (raw) {
+            providersToSearch = JSON.parse(raw);
+          }
+        } catch {}
+      }
+
+      if (!providersToSearch || providersToSearch.length === 0) {
+        setResults([]);
         return;
       }
 
@@ -61,20 +103,34 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
 
       setIsSearching(true);
 
-      // Initialize placeholder states for all installed addons
-      const initialGroups: SearchResultGroup[] = installedProviders.map((p) => ({
+      // Initialize pending groups for each installed provider
+      const initialGroups: SearchResultGroup[] = providersToSearch.map((p) => ({
         provider: p,
         posts: [],
         isLoading: true,
       }));
       setResults(initialGroups);
 
-      // Query all providers simultaneously
+      // Query all providers in parallel using original Vega providerManager
       await Promise.allSettled(
-        installedProviders.map(async (p, index) => {
+        providersToSearch.map(async (p, index) => {
           try {
             const data = await providerManager.search(p.value, trimmed, 1);
-            const posts = Array.isArray(data) ? data : (data as any)?.posts || [];
+            let posts: Post[] = [];
+
+            if (Array.isArray(data)) {
+              posts = data;
+            } else if (data && Array.isArray((data as any).posts)) {
+              posts = (data as any).posts;
+            } else if (data && Array.isArray((data as any).data)) {
+              posts = (data as any).data;
+            }
+
+            // Ensure provider is attached to each post for player/details resolution
+            posts = posts.map((post) => ({
+              ...post,
+              provider: post.provider || p.value,
+            }));
 
             setResults((prev) => {
               const next = [...prev];
@@ -106,10 +162,10 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
 
       setIsSearching(false);
     },
-    [installedProviders]
+    [activeProvidersList]
   );
 
-  // Set the first available search result as the initial fanart hero
+  // Set initial fanart hero from first available result
   useEffect(() => {
     if (!activeHero && results.length > 0) {
       for (const group of results) {
@@ -118,7 +174,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
           setActiveHero({
             title: first.title,
             backdropUrl: first.image,
-            overview: first.extra || 'Press select to load playback sources.',
+            overview: first.extra || 'Select to view streams & episodes.',
           });
           break;
         }
@@ -143,12 +199,12 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
             resizeMode="cover"
           />
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.4)', 'rgba(10, 10, 14, 0.85)', '#0A0A0E']}
+            colors={['rgba(10, 10, 14, 0.3)', 'rgba(10, 10, 14, 0.85)', '#0A0A0E']}
             locations={[0, 0.6, 1]}
             style={StyleSheet.absoluteFill}
           />
           <LinearGradient
-            colors={['#0A0A0E', 'rgba(10, 10, 14, 0.7)', 'transparent']}
+            colors={['#0A0A0E', 'rgba(10, 10, 14, 0.75)', 'transparent']}
             start={{ x: 0, y: 0 }}
             end={{ x: 0.8, y: 0 }}
             style={StyleSheet.absoluteFill}
@@ -168,7 +224,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
           </Text>
           <Text numberOfLines={2} style={styles.heroOverview}>
             {activeHero?.overview ||
-              `Simultaneously querying all ${installedProviders.length} installed addon providers.`}
+              `Simultaneously search across all ${activeProvidersList.length} installed addon providers.`}
           </Text>
         </View>
 
@@ -242,9 +298,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
                 style={[styles.tabItem, activeTab === 'all' && styles.tabItemActive]}
               >
                 {() => (
-                  <Text
-                    style={[styles.tabText, activeTab === 'all' && styles.tabTextActive]}
-                  >
+                  <Text style={[styles.tabText, activeTab === 'all' && styles.tabTextActive]}>
                     All Addons ({allPosts.length})
                   </Text>
                 )}
@@ -284,20 +338,20 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
         )}
 
         {/* Empty States */}
-        {installedProviders.length === 0 ? (
+        {activeProvidersList.length === 0 ? (
           <View style={styles.emptyContainer}>
             <MaterialCommunityIcons name="puzzle-outline" size={64} color="#4B5563" />
             <Text style={styles.emptyTitle}>No Addons Installed</Text>
             <Text style={styles.emptySubtitle}>
-              Go to the Addons tab and install provider extensions to enable search.
+              Go to the Addons tab to install providers first.
             </Text>
           </View>
         ) : results.length === 0 && !isSearching ? (
           <View style={styles.emptyContainer}>
             <MaterialCommunityIcons name="movie-search-outline" size={64} color="#4B5563" />
-            <Text style={styles.emptyTitle}>Ready to Search</Text>
+            <Text style={styles.emptyTitle}>Universal Search</Text>
             <Text style={styles.emptySubtitle}>
-              Type your title above and press Search to fetch results from all installed addons.
+              Type above to search across {activeProvidersList.length} installed addons.
             </Text>
           </View>
         ) : (
@@ -392,7 +446,7 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   scrollContent: {
-    paddingLeft: 96, // Ample clearance for the collapsed TV Navigation Rail
+    paddingLeft: 96,
     paddingRight: 48,
     paddingTop: 36,
     paddingBottom: 60,
