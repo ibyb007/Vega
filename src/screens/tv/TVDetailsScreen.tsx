@@ -14,7 +14,7 @@ import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import { providerManager } from '../../lib/services/ProviderManager';
 import { getCachedMetadata, getOrFetchMetadata } from '../../lib/services/metadataCache';
-import type { Info, Link, EpisodeLink } from '../../lib/providers/types';
+import type { Info, Link, EpisodeLink, TextTracks } from '../../lib/providers/types';
 
 interface TVDetailsScreenProps {
   item: any;
@@ -31,6 +31,7 @@ interface TVDetailsScreenProps {
       servers?: { name: string; url: string }[];
       qualities?: { name: string; url: string }[];
       headers?: Record<string, string>;
+      subtitles?: TextTracks;
     }
   ) => void;
 }
@@ -177,6 +178,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           currentEpisodeIndex: 0,
           qualities,
           headers: best.headers,
+          subtitles: best.subtitles,
         });
       } catch (e: any) {
         console.warn('[TVDetailsScreen] Stream extraction failed:', e);
