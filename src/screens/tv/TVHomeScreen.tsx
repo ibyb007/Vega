@@ -6,7 +6,8 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
-  Dimensions,
+  Modal,
+  ToastAndroid,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -14,6 +15,7 @@ import Animated, {
   withTiming,
   Easing,
 } from 'react-native-reanimated';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
@@ -23,8 +25,7 @@ import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { getMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const ROW_HEIGHT = 245; // Compact Stremio row spacing
+const ROW_HEIGHT = 245;
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
@@ -38,9 +39,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const continueWatchingItems = useContinueWatchingStore((state) => state.items) || [];
+  const removeItemFromHistory = useContinueWatchingStore((state) => state.removeItem);
 
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
   const [activeRowIndex, setActiveRowIndex] = useState<number>(0);
+  const [itemToDelete, setItemToDelete] = useState<any | null>(null);
+
   const translateY = useSharedValue(0);
   const initialFocusSetRef = useRef(false);
 
@@ -53,14 +57,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     enabled: hasProviders,
   });
 
-  // Sort and filter Continue Watching row items
   const watchHistory = useMemo(() => {
     return [...continueWatchingItems]
       .filter((item) => Boolean(item.providerValue || item.infoUrl))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }, [continueWatchingItems]);
 
-  // Combine rows
   const displayRows = useMemo(() => {
     const rows: any[] = [];
     if (watchHistory.length > 0) {
@@ -74,33 +76,33 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     return rows.concat(homeData.filter((r) => r.Posts && r.Posts.length > 0));
   }, [watchHistory, homeData]);
 
-  // Function to enrich item with 16:9 Cinemeta/TMDB backdrop
   const updateHeroWithBestMetadata = useCallback(
     async (item: any, isHistory: boolean = false) => {
       const posterImage = item.poster || item.background || item.image;
       const targetUrl = item.infoUrl || item.link;
       const targetProvider = item.providerValue || item.provider || provider?.value;
 
-      let backdrop = item.backdrop || item.banner || item.background || null;
+      let backdrop = item.backdrop || item.banner || null;
+      let hasLandscape = Boolean(backdrop);
       let description = item.extra || item.description || '';
       let rating = item.rating || null;
       let year = item.year || null;
       let genres = item.genres || [];
 
-      // Check if Cinemeta / Vega cache has high-res fanart
       if (targetUrl && targetProvider) {
         try {
           const cachedMeta = await getMetadata(targetUrl, targetProvider);
           if (cachedMeta) {
-            if (cachedMeta.background) backdrop = cachedMeta.background;
+            if (cachedMeta.background) {
+              backdrop = cachedMeta.background;
+              hasLandscape = true;
+            }
             if (cachedMeta.description) description = cachedMeta.description;
             if (cachedMeta.rating) rating = String(cachedMeta.rating);
             if (cachedMeta.year) year = String(cachedMeta.year);
             if (cachedMeta.genres?.length) genres = cachedMeta.genres;
           }
-        } catch {
-          // Fallback to item attributes
-        }
+        } catch {}
       }
 
       const progressPercent =
@@ -116,8 +118,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
       setActiveHero({
         title: item.title,
-        backdropUrl: backdrop || posterImage,
+        backdropUrl: backdrop || undefined,
         posterUrl: posterImage,
+        hasLandscapeBackdrop: hasLandscape,
         overview: isHistory
           ? episodeTitle
             ? `${episodeTitle} • Resume (${progressPercent}%)`
@@ -132,7 +135,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     [provider?.value]
   );
 
-  // Set initial hero
   useEffect(() => {
     if (!activeHero && displayRows.length > 0) {
       const firstRow = displayRows[0];
@@ -142,13 +144,11 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     }
   }, [displayRows, activeHero, updateHeroWithBestMetadata]);
 
-  // Translate row container smoothly when moving D-pad up/down
   const handleCardFocus = useCallback(
     (rowIndex: number, item: any, isHistory: boolean = false) => {
       initialFocusSetRef.current = true;
       setActiveRowIndex(rowIndex);
 
-      // Smooth translation without jarring layout leaps
       translateY.value = withTiming(-rowIndex * ROW_HEIGHT, {
         duration: 220,
         easing: Easing.out(Easing.quad),
@@ -164,6 +164,16 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     },
     [translateY, updateHeroWithBestMetadata, provider?.value]
   );
+
+  const confirmDeleteFromHistory = () => {
+    if (!itemToDelete) return;
+    const identifier = itemToDelete.id || itemToDelete.infoUrl || itemToDelete.link;
+    if (identifier) {
+      removeItemFromHistory(identifier);
+      ToastAndroid.show('Removed from Continue Watching', ToastAndroid.SHORT);
+    }
+    setItemToDelete(null);
+  };
 
   const animatedRowsStyle = useAnimatedStyle(() => {
     return {
@@ -193,12 +203,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* 1. FIXED TOP HERO: Anchored at top */}
+      {/* 1. Stationary Stremio Header Over Backdrop */}
       <View style={styles.fixedHeroContainer}>
         <TVHeroMeta media={activeHero} />
       </View>
 
-      {/* 2. SLIDING ROWS STAGE: Positioned so Row 1 is fully visible and Row 2 peeks */}
+      {/* 2. Sliding Row Viewport */}
       <View style={styles.stageViewport}>
         <Animated.View style={[styles.slidingRowsContainer, animatedRowsStyle]}>
           {displayRows.map((row: any, rowIndex: number) => {
@@ -244,6 +254,11 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                             onSelectItem(item);
                           }
                         }}
+                        onLongPress={() => {
+                          if (row.isHistory) {
+                            setItemToDelete(item);
+                          }
+                        }}
                         style={styles.card}
                       >
                         {({ focused }) => (
@@ -258,7 +273,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               resizeMode="cover"
                             />
 
-                            {/* Continue Watching Progress Fill */}
+                            {/* Continue Watching Progress */}
                             {row.isHistory && progressPercent > 0 && (
                               <View style={styles.progressBarTrack}>
                                 <View
@@ -270,7 +285,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               </View>
                             )}
 
-                            {/* Focused White Glow Border */}
                             {focused && <View style={styles.focusBorderGlow} />}
                           </View>
                         )}
@@ -283,6 +297,50 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           })}
         </Animated.View>
       </View>
+
+      {/* Remove from Continue Watching Confirmation Modal */}
+      <Modal
+        visible={Boolean(itemToDelete)}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setItemToDelete(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <MaterialCommunityIcons name="movie-remove-outline" size={38} color="#EF4444" />
+            <Text style={styles.modalTitle}>Remove From History?</Text>
+            <Text numberOfLines={2} style={styles.modalSubtitle}>
+              {itemToDelete?.title}
+            </Text>
+            <Text style={styles.modalDescription}>
+              This will remove the title and its resume progress from your Continue Watching row.
+            </Text>
+
+            <View style={styles.modalActions}>
+              <TVFocusablePressable
+                hasTVPreferredFocus={true}
+                scaleFocused={1.05}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={8}
+                onPress={() => setItemToDelete(null)}
+                style={styles.cancelBtn}
+              >
+                {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
+              </TVFocusablePressable>
+
+              <TVFocusablePressable
+                scaleFocused={1.05}
+                focusedBorderColor="#FFFFFF"
+                borderRadius={8}
+                onPress={confirmDeleteFromHistory}
+                style={styles.removeBtn}
+              >
+                {() => <Text style={styles.removeBtnText}>Remove</Text>}
+              </TVFocusablePressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -304,7 +362,7 @@ const styles = StyleSheet.create({
   },
   stageViewport: {
     position: 'absolute',
-    top: 230, // Rows start higher up so Row 1 is completely visible
+    top: 230,
     bottom: 0,
     left: 0,
     right: 0,
@@ -332,7 +390,7 @@ const styles = StyleSheet.create({
   },
   card: {
     width: 135,
-    height: 195, // Proportional 2:3 poster size leaving room for Row 2 to peek
+    height: 195,
     backgroundColor: '#16161E',
     borderRadius: 8,
   },
@@ -375,5 +433,67 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     fontSize: 16,
     marginTop: 16,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: 440,
+    backgroundColor: '#16161E',
+    borderRadius: 14,
+    padding: 22,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  modalDescription: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 14,
+    width: '100%',
+    justifyContent: 'center',
+  },
+  cancelBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+  },
+  cancelBtnText: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  removeBtn: {
+    backgroundColor: '#EF4444',
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+  },
+  removeBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });
