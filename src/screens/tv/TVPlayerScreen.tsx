@@ -10,13 +10,19 @@ import {
   ScrollView,
 } from 'react-native';
 import Video, { VideoRef, SelectedTrackType } from 'react-native-video';
-import LinearGradient from 'react-native-linear-gradient';
-import * as IntentLauncher from 'expo-intent-launcher';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
+import { providerManager } from '../../lib/services/ProviderManager';
+import { launchVideo } from '../../lib/services/PlayerLauncher';
 import type { EpisodeLink, TextTracks } from '../../lib/providers/types';
+
+// Safe, conditional lookup -- `useTVEventHandler` only exists on the
+// `react-native-tvos` fork, not plain `react-native` (which this project
+// uses). Calling it unconditionally would crash on mount. This mirrors the
+// exact guard already used by `TVOSSupport.tsx` for the mobile player.
+const useTVEventHandler = (require('react-native') as any).useTVEventHandler;
 
 // Friendly display names for common ISO 639-1 language codes, since many
 // streams only tag tracks with a bare code (e.g. "en", "hi") and no title.
@@ -47,6 +53,15 @@ interface EpisodeItem {
   poster?: string;
 }
 
+// What actually gets handed back up to App.tsx once a next-episode's
+// info-page link has been resolved to a real, playable stream via
+// `providerManager.getStream()` -- see `handleNextEpisode` below.
+interface ResolvedNextEpisode extends EpisodeItem {
+  headers?: Record<string, string>;
+  subtitles?: TextTracks;
+  qualities?: { name: string; url: string }[];
+}
+
 interface TVPlayerScreenProps {
   streamUrl: string;
   title: string;
@@ -59,7 +74,7 @@ interface TVPlayerScreenProps {
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string }[];
   qualities?: { name: string; url: string }[];
-  onSelectNextEpisode?: (nextEpisode: EpisodeItem) => void;
+  onSelectNextEpisode?: (nextEpisode: ResolvedNextEpisode) => void;
   onSelectServer?: (serverUrl: string) => void;
   onSelectQuality?: (qualityUrl: string) => void;
   onClose: () => void;
@@ -108,9 +123,40 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [selectedAudio, setSelectedAudio] = useState<any>({ type: SelectedTrackType.INDEX, value: 0 });
   const [selectedSub, setSelectedSub] = useState<any>({ type: SelectedTrackType.DISABLED });
   const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
+  const [resolvingNextEpisode, setResolvingNextEpisode] = useState(false);
 
   // Active Menu Dialog
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
+
+  // `activeMediaUrl` previously only seeded from `streamUrl` once, at
+  // mount, via `useState(streamUrl)` -- it never re-synced afterwards. When
+  // `onSelectNextEpisode` resolves a new episode's stream and App.tsx
+  // re-renders this same (still-mounted) screen with a new `streamUrl`
+  // prop, this effect is what actually swaps the video, resets progress,
+  // and starts it playing. Without it, only `title` (passed straight
+  // through as a prop) changed, which is why the on-screen text updated
+  // but playback stayed on the previous episode.
+  const prevStreamUrlRef = useRef(streamUrl);
+  useEffect(() => {
+    if (streamUrl && streamUrl !== prevStreamUrlRef.current) {
+      prevStreamUrlRef.current = streamUrl;
+      setActiveMediaUrl(streamUrl);
+      setBuffering(true);
+      setCurrentTime(0);
+      setDuration(0);
+      setPaused(false);
+      currentProgRef.current = { currentTime: 0, duration: 0 };
+    }
+  }, [streamUrl]);
+
+  // D-pad hold-to-seek tracking (see `handleDPadSeekEvent` below).
+  const seekHoldActiveRef = useRef(false);
+  const seekReleaseTimerRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    return () => {
+      if (seekReleaseTimerRef.current) clearTimeout(seekReleaseTimerRef.current);
+    };
+  }, []);
 
   const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
 
@@ -204,12 +250,53 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     });
   }, [duration, resetInactivityTimer, syncProgressToStore]);
 
-  // Note: a global cross-cutting D-pad listener (`useTVEventHandler`) is
-  // only available on the `react-native-tvos` fork, not plain
-  // `react-native` (which this project uses) -- calling it here previously
-  // crashed the player immediately on mount with "undefined is not a
-  // function". Remote input while controls are hidden is instead handled
-  // by the invisible focusable catcher below, which is plain-RN-compatible.
+  // OK/select press on the invisible full-screen catcher (i.e. while
+  // controls are hidden) now instantly toggles play/pause, matching
+  // Stremio, instead of requiring one press to reveal the control bar and
+  // a second press on the Play/Pause button to actually pause.
+  const handleCatcherPress = useCallback(() => {
+    setPaused((prevPaused) => {
+      const nextPaused = !prevPaused;
+      syncProgressToStore(currentProgRef.current.currentTime, currentProgRef.current.duration);
+      return nextPaused;
+    });
+    resetInactivityTimer();
+  }, [resetInactivityTimer, syncProgressToStore]);
+
+  // Long-press D-pad Left/Right seek (Stremio-style). Android TV's D-pad
+  // auto-repeats the same 'left'/'right' event continuously for as long as
+  // the physical button stays held down -- there's no separate key-up
+  // event available here, so a run of repeats close together *is* the
+  // "long press", and a gap of RELEASE_GAP_MS with no further repeats is
+  // treated as release.
+  //
+  // This only takes over Left/Right when a hold-seek is already active, or
+  // when the controls are hidden (i.e. the invisible catcher is the only
+  // focusable thing on screen). While the control bar is showing and no
+  // hold is in progress, Left/Right must keep doing normal D-pad focus
+  // navigation between buttons -- otherwise every attempt to move focus
+  // from Play to Rewind would also seek the video.
+  const RELEASE_GAP_MS = 500;
+  const handleDPadSeekEvent = useCallback((direction: 'left' | 'right') => {
+    if (showControls && !seekHoldActiveRef.current) return;
+
+    seekHoldActiveRef.current = true;
+    if (seekReleaseTimerRef.current) clearTimeout(seekReleaseTimerRef.current);
+    handleSeek(direction === 'right' ? 10 : -10);
+    seekReleaseTimerRef.current = setTimeout(() => {
+      seekHoldActiveRef.current = false;
+    }, RELEASE_GAP_MS);
+  }, [showControls, handleSeek]);
+
+  // Guarded exactly like `TVOSSupport.tsx`'s equivalent hook for the mobile
+  // player -- a no-op on plain React Native builds, active on the
+  // `react-native-tvos` fork / Android TV builds that expose it.
+  if (typeof useTVEventHandler === 'function') {
+    useTVEventHandler((evt: any) => {
+      if (evt?.eventType === 'right') handleDPadSeekEvent('right');
+      else if (evt?.eventType === 'left') handleDPadSeekEvent('left');
+    });
+  }
 
   // Remote Back Button Handler
   useEffect(() => {
@@ -237,51 +324,85 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   }, [activeDialog, showControls, onClose, resetInactivityTimer, syncProgressToStore]);
 
   // Open in External VLC
+  //
+  // Previously this built its own intent `extra` map and stuffed the raw
+  // `headers` *object* into it (both as `extra['...HTTP_HEADERS']` and
+  // `extra.headers`). `expo-intent-launcher`'s `extra` only supports
+  // primitive values that convert cleanly into a native Android Bundle --
+  // a nested object isn't one of them, so building that intent failed
+  // before VLC ever got a chance to open, and the identical retry in the
+  // catch block hit the exact same problem. `PlayerLauncher.launchVideo`
+  // (already in this codebase, just previously unused) builds the same
+  // "open in VLC, falling back to a generic external player" intent
+  // without that bug.
   const openInVLC = async () => {
-    try {
-      const extra: Record<string, any> = { title };
-      if (headers && Object.keys(headers).length > 0) {
-        Object.assign(extra, headers);
-        extra['android.media.intent.extra.HTTP_HEADERS'] = headers;
-        extra.headers = headers;
-      }
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: activeMediaUrl || streamUrl,
-        type: 'video/*',
-        packageName: 'org.videolan.vlc',
-        extra,
-      });
-    } catch {
-      try {
-        const extra: Record<string, any> = { title };
-        if (headers && Object.keys(headers).length > 0) {
-          Object.assign(extra, headers);
-          extra['android.media.intent.extra.HTTP_HEADERS'] = headers;
-          extra.headers = headers;
-        }
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-          data: activeMediaUrl || streamUrl,
-          type: 'video/*',
-          extra,
-        });
-      } catch {
-        ToastAndroid.show('VLC or external player not found.', ToastAndroid.SHORT);
-      }
-    }
+    // launchVideo already surfaces an Alert if no compatible player is
+    // found at all, so there's nothing further to do here on failure.
+    await launchVideo(activeMediaUrl || streamUrl, title, 'vlc');
   };
 
-  const handleNextEpisode = () => {
+  // `episodes[i].link` is the episode's *info-page* link (the same kind of
+  // URL `TVDetailsScreen` fetches episode lists from) -- not a playable
+  // stream. It has to be resolved through `providerManager.getStream()`
+  // first, exactly like `TVDetailsScreen.resolveAndPlay` does for the
+  // initial episode. Previously this handed `nextEp.link` straight to the
+  // player as if it were already a video URL, so playback silently kept
+  // running the current episode's stream while only the on-screen title
+  // text changed.
+  const handleNextEpisode = async () => {
+    if (resolvingNextEpisode) return;
+
     syncProgressToStore(
       currentProgRef.current.currentTime,
       currentProgRef.current.duration
     );
     const nextIndex = currentEpisodeIndex + 1;
-    if (episodes.length > nextIndex) {
-      const nextEp = episodes[nextIndex];
-      onSelectNextEpisode?.(nextEp);
-      ToastAndroid.show(`Loading next episode: ${nextEp.title || `Episode ${nextIndex + 1}`}`, ToastAndroid.SHORT);
-    } else {
+    if (episodes.length <= nextIndex) {
       ToastAndroid.show('No next episode available.', ToastAndroid.SHORT);
+      return;
+    }
+
+    const nextEp = episodes[nextIndex];
+    const nextTitle = nextEp.title || `Episode ${nextIndex + 1}`;
+
+    if (!nextEp.link || !providerValue) {
+      ToastAndroid.show('Unable to resolve next episode.', ToastAndroid.SHORT);
+      return;
+    }
+
+    setResolvingNextEpisode(true);
+    ToastAndroid.show(`Loading next episode: ${nextTitle}`, ToastAndroid.SHORT);
+    try {
+      const streams = await providerManager.getStream({
+        link: nextEp.link,
+        type: 'series',
+        providerValue,
+      });
+
+      if (!streams || streams.length === 0) {
+        ToastAndroid.show('No valid stream links found for this episode.', ToastAndroid.LONG);
+        return;
+      }
+
+      const best = streams[0];
+      const qualities = streams.map((s: any, idx: number) => ({
+        name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
+        url: s.link,
+      }));
+
+      onSelectNextEpisode?.({
+        ...nextEp,
+        title: nextTitle,
+        url: best.link,
+        headers: best.headers,
+        subtitles: best.subtitles,
+        qualities,
+      });
+    } catch (e: any) {
+      console.warn('[TVPlayerScreen] Next episode stream extraction failed:', e);
+      ToastAndroid.show(e?.message || 'Failed to load next episode.', ToastAndroid.LONG);
+    } finally {
+      setResolvingNextEpisode(false);
     }
   };
 
@@ -311,14 +432,27 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
         textTracks={subtitles}
-        subtitleStyle={{ fontSize: 54, opacity: 0, subtitlesFollowVideo: true }}
+        subtitleStyle={{ fontSize: 30, subtitlesFollowVideo: true }}
         onLoad={(meta: any) => {
           const totalDur = meta.duration || 0;
           setDuration(totalDur);
           currentProgRef.current.duration = totalDur;
-          setAudioTracks(meta.audioTracks || []);
-          setTextTracks(meta.textTracks || []);
+          if (meta.audioTracks?.length) setAudioTracks(meta.audioTracks);
+          if (meta.textTracks?.length) setTextTracks(meta.textTracks);
           setBuffering(false);
+        }}
+        // For many HLS sources, react-native-video hasn't finished parsing
+        // audio/subtitle track metadata (language, title) by the time
+        // `onLoad` fires -- it arrives slightly later via these dedicated
+        // events instead. The mobile player already relies on both; the TV
+        // player previously only read tracks off `onLoad`, which is why
+        // the Audio/Subtitle picker often came up with no "en"/"hi" text
+        // to show.
+        onAudioTracks={(e: any) => {
+          if (e?.audioTracks?.length) setAudioTracks(e.audioTracks);
+        }}
+        onTextTracks={(e: any) => {
+          if (e?.textTracks?.length) setTextTracks(e.textTracks);
         }}
         onProgress={(prog) => {
           setCurrentTime(prog.currentTime);
@@ -362,7 +496,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         <TVFocusablePressable
           hasTVPreferredFocus
           style={StyleSheet.absoluteFillObject}
-          onPress={resetInactivityTimer}
+          onPress={handleCatcherPress}
+          focusedBorderColor="transparent"
+          scaleFocused={1}
         >
           {() => <View style={StyleSheet.absoluteFillObject} />}
         </TVFocusablePressable>
@@ -371,12 +507,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       {/* Transparent Bottom Player Controls Overlay */}
       {showControls && (
         <View style={styles.controlsWrapper}>
-          <LinearGradient
-            colors={['transparent', 'rgba(10, 10, 14, 0.75)', 'rgba(5, 5, 8, 0.95)']}
-            locations={[0, 0.45, 1]}
-            style={styles.gradientOverlay}
-          />
-
           <View style={styles.controlsContent}>
             {/* Title */}
             <Text numberOfLines={1} style={styles.mediaTitle}>
@@ -758,10 +888,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     justifyContent: 'flex-end',
-  },
-  gradientOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    height: 180,
   },
   controlsContent: {
     paddingHorizontal: 40,
