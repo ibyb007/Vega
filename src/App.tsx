@@ -13,6 +13,7 @@ import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
 import useContentStore from './lib/zustand/contentStore';
+import type { TextTracks } from './lib/providers/types';
 
 // TV Components & Screens
 import { TVNavigationRail, TVRoute } from './components/tv/TVNavigationRail';
@@ -37,6 +38,7 @@ export interface ActiveStreamPayload {
   servers?: { name: string; url: string }[];
   qualities?: { name: string; url: string }[];
   headers?: Record<string, string>;
+  subtitles?: TextTracks;
 }
 
 export default function App() {
@@ -126,6 +128,7 @@ export default function App() {
                     itemLink={activeStream.itemLink}
                     providerValue={activeStream.providerValue || currentProvider?.value}
                     headers={activeStream.headers}
+                    subtitles={activeStream.subtitles}
                     episodes={activeStream.episodes}
                     currentEpisodeIndex={activeStream.currentEpisodeIndex}
                     servers={activeStream.servers}
