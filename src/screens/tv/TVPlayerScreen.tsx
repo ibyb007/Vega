@@ -8,16 +8,52 @@ import {
   Modal,
   BackHandler,
   ScrollView,
-  useTVEventHandler,
-  HWEvent,
   findNodeHandle,
 } from 'react-native';
 import Video, { VideoRef, SelectedTrackType, ResizeMode } from 'react-native-video';
 import LinearGradient from 'react-native-linear-gradient';
-import * as IntentLauncher from 'expo-intent-launcher';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
+import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
+import { providerManager } from '../../lib/services/ProviderManager';
+import { launchVideo } from '../../lib/services/PlayerLauncher';
+import type { EpisodeLink, TextTracks } from '../../lib/providers/types';
+
+const useTVEventHandler = (require('react-native') as any).useTVEventHandler;
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German',
+  it: 'Italian', pt: 'Portuguese', ru: 'Russian', ja: 'Japanese', ko: 'Korean',
+  zh: 'Chinese', ar: 'Arabic', ta: 'Tamil', te: 'Telugu', ml: 'Malayalam',
+  kn: 'Kannada', bn: 'Bengali', mr: 'Marathi', pa: 'Punjabi', ur: 'Urdu',
+  tr: 'Turkish', pl: 'Polish', nl: 'Dutch', th: 'Thai', vi: 'Vietnamese',
+  id: 'Indonesian', ms: 'Malay', fa: 'Persian', he: 'Hebrew', uk: 'Ukrainian',
+};
+
+const describeTrack = (trk: any, fallbackLabel: string): string => {
+  if (!trk) return fallbackLabel;
+  const rawTitle = (trk?.title || trk?.label || '').trim();
+  const rawLang = (trk?.language || trk?.lang || '').toLowerCase().trim();
+
+  // If track already has brackets like [English] or [Hindi], keep it intact
+  if (rawTitle && /\[.+\]/.test(rawTitle)) {
+    return rawTitle;
+  }
+
+  const code = rawLang.slice(0, 2);
+  const friendlyLang = LANGUAGE_NAMES[code] || (rawLang ? rawLang.toUpperCase() : '');
+
+  if (rawTitle && friendlyLang) {
+    if (rawTitle.toLowerCase().includes(friendlyLang.toLowerCase())) {
+      return rawTitle;
+    }
+    return `${rawTitle} [${friendlyLang}]`;
+  }
+  if (rawTitle) return rawTitle;
+  if (friendlyLang) return `${fallbackLabel} [${friendlyLang}]`;
+  return fallbackLabel;
+};
 
 interface EpisodeItem {
   id?: string | number;
@@ -29,17 +65,25 @@ interface EpisodeItem {
   poster?: string;
 }
 
+interface ResolvedNextEpisode extends EpisodeItem {
+  headers?: Record<string, string>;
+  subtitles?: TextTracks;
+  qualities?: { name: string; url: string }[];
+}
+
 interface TVPlayerScreenProps {
   streamUrl: string;
   title: string;
   posterUrl?: string;
   itemLink?: string;
   providerValue?: string;
+  headers?: Record<string, string>;
+  subtitles?: TextTracks;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string }[];
   qualities?: { name: string; url: string }[];
-  onSelectNextEpisode?: (nextEpisode: EpisodeItem) => void;
+  onSelectNextEpisode?: (nextEpisode: ResolvedNextEpisode) => void;
   onSelectServer?: (serverUrl: string) => void;
   onSelectQuality?: (qualityUrl: string) => void;
   onClose: () => void;
@@ -54,6 +98,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   posterUrl,
   itemLink,
   providerValue,
+  headers,
+  subtitles,
   episodes = [],
   currentEpisodeIndex = 0,
   servers = [],
@@ -71,37 +117,45 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     duration: 0,
   });
 
-  // Self-referencing node handle for wake-up overlay
+  // Self-referencing node handle for literal arrow key wake
   const wakeOverlayRef = useRef<View>(null);
   const [wakeNodeId, setWakeNodeId] = useState<number | undefined>(undefined);
 
-  // Long-press repeat timer for seek
+  // Long-press continuous repeat timer
   const seekRepeatTimer = useRef<NodeJS.Timeout | null>(null);
-  const seekRepeatSpeed = useRef<number>(10);
 
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [showControls, setShowControls] = useState(true);
+  const [showControls, setShowControls] = useState(false);
 
   // Video track & display states
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
   const [audioTracks, setAudioTracks] = useState<any[]>([]);
   const [textTracks, setTextTracks] = useState<any[]>([]);
-  const [selectedAudio, setSelectedAudio] = useState<any>({
-    type: SelectedTrackType.INDEX,
-    value: 0,
-  });
-  const [selectedSub, setSelectedSub] = useState<any>({
-    type: SelectedTrackType.DISABLED,
-  });
+  const [selectedAudio, setSelectedAudio] = useState<any>({ type: SelectedTrackType.INDEX, value: 0 });
+  const [selectedSub, setSelectedSub] = useState<any>({ type: SelectedTrackType.DISABLED });
   const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
+  const [resolvingNextEpisode, setResolvingNextEpisode] = useState(false);
 
   // Active Menu Dialog
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
-  // Bind self-node id for D-pad trap
+  const prevStreamUrlRef = useRef(streamUrl);
+  useEffect(() => {
+    if (streamUrl && streamUrl !== prevStreamUrlRef.current) {
+      prevStreamUrlRef.current = streamUrl;
+      setActiveMediaUrl(streamUrl);
+      setBuffering(true);
+      setCurrentTime(0);
+      setDuration(0);
+      setPaused(false);
+      currentProgRef.current = { currentTime: 0, duration: 0 };
+    }
+  }, [streamUrl]);
+
+  // Bind native node ID for focus trap
   useEffect(() => {
     if (wakeOverlayRef.current) {
       const handle = findNodeHandle(wakeOverlayRef.current);
@@ -109,41 +163,51 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, [showControls]);
 
-  // Sync playback timestamp to contentStore MMKV
+  // D-pad hold-to-seek tracking
+  const seekHoldActiveRef = useRef(false);
+  const seekReleaseTimerRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    return () => {
+      if (seekReleaseTimerRef.current) clearTimeout(seekReleaseTimerRef.current);
+      if (seekRepeatTimer.current) clearInterval(seekRepeatTimer.current);
+    };
+  }, []);
+
+  const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
+  const continueWatchingId = itemLink || streamUrl;
+
   const syncProgressToStore = useCallback(
     (timeSec: number, totalDur: number) => {
-      if (totalDur <= 0 || timeSec <= 0) return;
+      if (totalDur <= 0 || timeSec <= 0 || !continueWatchingId) return;
 
-      const storeState: any = useContentStore.getState();
       const currentEpisode = episodes[currentEpisodeIndex];
+      const episode: EpisodeLink = currentEpisode?.link
+        ? {
+            ...currentEpisode,
+            title: currentEpisode.title || title,
+            link: currentEpisode.link,
+          }
+        : { title, link: continueWatchingId };
 
-      const historyItem = {
-        id: currentEpisode?.link || itemLink || streamUrl,
-        title: currentEpisode?.title || title,
-        image: currentEpisode?.image || currentEpisode?.poster || posterUrl || '',
-        link: currentEpisode?.link || itemLink || streamUrl,
-        provider: providerValue || storeState.provider?.value || '',
-        currentTime: Math.floor(timeSec),
+      upsertContinueWatching({
+        id: continueWatchingId,
+        title,
+        episodeTitle:
+          episode.title && episode.title !== title ? episode.title : undefined,
+        episode,
+        type: episodes.length > 0 ? 'series' : 'movie',
+        poster: posterUrl,
+        background: posterUrl,
+        providerValue: providerValue || useContentStore.getState().provider?.value || '',
+        infoUrl: continueWatchingId,
+        position: Math.floor(timeSec),
         duration: Math.floor(totalDur),
-        lastWatched: Date.now(),
-      };
-
-      if (typeof storeState.updateWatchHistory === 'function') {
-        storeState.updateWatchHistory(historyItem);
-      } else if (typeof storeState.setWatchHistory === 'function') {
-        const existingHistory = Array.isArray(storeState.watchHistory)
-          ? [...storeState.watchHistory]
-          : [];
-        const filtered = existingHistory.filter(
-          (h: any) => h.id !== historyItem.id && h.link !== historyItem.link
-        );
-        storeState.setWatchHistory([historyItem, ...filtered]);
-      }
+        updatedAt: Date.now(),
+      });
     },
-    [episodes, currentEpisodeIndex, itemLink, streamUrl, title, posterUrl, providerValue]
+    [continueWatchingId, episodes, currentEpisodeIndex, title, posterUrl, providerValue, upsertContinueWatching]
   );
 
-  // Flush progress on exit
   useEffect(() => {
     return () => {
       if (currentProgRef.current.duration > 0) {
@@ -152,11 +216,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           currentProgRef.current.duration
         );
       }
-      if (seekRepeatTimer.current) clearInterval(seekRepeatTimer.current);
     };
   }, [syncProgressToStore]);
 
-  // Auto-hide control overlay timer
   const resetInactivityTimer = useCallback(() => {
     if (hideControlsTimer.current) {
       clearTimeout(hideControlsTimer.current);
@@ -171,40 +233,34 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   }, [activeDialog]);
 
   useEffect(() => {
-    resetInactivityTimer();
     return () => {
       if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
     };
-  }, [resetInactivityTimer]);
+  }, []);
 
-  const handleSeek = useCallback(
-    (delta: number) => {
-      resetInactivityTimer();
-      setCurrentTime((curr) => {
-        const next = Math.max(0, Math.min(duration, curr + delta));
-        videoRef.current?.seek(next);
-        currentProgRef.current.currentTime = next;
-        syncProgressToStore(next, duration);
-        return next;
-      });
-    },
-    [duration, resetInactivityTimer, syncProgressToStore]
-  );
+  const handleSeek = useCallback((delta: number) => {
+    resetInactivityTimer();
+    setCurrentTime((curr) => {
+      const next = Math.max(0, Math.min(duration, curr + delta));
+      videoRef.current?.seek(next);
+      currentProgRef.current.currentTime = next;
+      syncProgressToStore(next, duration);
+      return next;
+    });
+  }, [duration, resetInactivityTimer, syncProgressToStore]);
 
   const startContinuousSeek = useCallback(
     (direction: 'forward' | 'backward') => {
       if (seekRepeatTimer.current) clearInterval(seekRepeatTimer.current);
       resetInactivityTimer();
-      seekRepeatSpeed.current = 10;
-      const step = direction === 'forward' ? 10 : -10;
-
+      let step = direction === 'forward' ? 10 : -10;
       handleSeek(step);
 
       let ticks = 0;
       seekRepeatTimer.current = setInterval(() => {
         ticks += 1;
-        if (ticks > 4) seekRepeatSpeed.current = 25; // accelerate on hold
-        handleSeek(direction === 'forward' ? seekRepeatSpeed.current : -seekRepeatSpeed.current);
+        if (ticks > 4) step = direction === 'forward' ? 25 : -25;
+        handleSeek(step);
       }, 350);
     },
     [handleSeek, resetInactivityTimer]
@@ -217,36 +273,50 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, []);
 
-  // Global D-Pad Key Listener for TV Remotes
-  useTVEventHandler((evt: HWEvent) => {
-    if (!evt || !evt.eventType) return;
-    if (activeDialog) return;
+  const handleCatcherPress = useCallback(() => {
+    setPaused((prevPaused) => {
+      const nextPaused = !prevPaused;
+      syncProgressToStore(currentProgRef.current.currentTime, currentProgRef.current.duration);
+      return nextPaused;
+    });
+    resetInactivityTimer();
+  }, [resetInactivityTimer, syncProgressToStore]);
 
-    const eventType = evt.eventType;
+  const RELEASE_GAP_MS = 450;
+  const handleDPadSeekEvent = useCallback((direction: 'left' | 'right') => {
+    if (showControls && !seekHoldActiveRef.current) return;
 
-    // Wake on any directional press if controls are hidden
-    if (!showControls) {
-      if (['up', 'down', 'left', 'right', 'select', 'playPause'].includes(eventType)) {
-        resetInactivityTimer();
-      }
+    seekHoldActiveRef.current = true;
+    if (seekReleaseTimerRef.current) clearTimeout(seekReleaseTimerRef.current);
+    handleSeek(direction === 'right' ? 10 : -10);
+    seekReleaseTimerRef.current = setTimeout(() => {
+      seekHoldActiveRef.current = false;
+    }, RELEASE_GAP_MS);
+  }, [showControls, handleSeek]);
 
-      if (eventType === 'select' || eventType === 'playPause') {
-        setPaused((prev) => {
-          const next = !prev;
-          syncProgressToStore(currentProgRef.current.currentTime, currentProgRef.current.duration);
-          return next;
-        });
-      } else if (eventType === 'left') {
-        handleSeek(-10);
-      } else if (eventType === 'right') {
-        handleSeek(10);
+  // Global D-Pad Listener for TV remotes
+  if (typeof useTVEventHandler === 'function') {
+    useTVEventHandler((evt: any) => {
+      if (!evt?.eventType) return;
+      const type = evt.eventType;
+
+      if (!showControls) {
+        if (['up', 'down', 'left', 'right', 'select', 'playPause'].includes(type)) {
+          resetInactivityTimer();
+        }
+
+        if (type === 'right') handleDPadSeekEvent('right');
+        else if (type === 'left') handleDPadSeekEvent('left');
+        else if (type === 'select' || type === 'playPause') {
+          handleCatcherPress();
+        }
+      } else {
+        if (['up', 'down', 'left', 'right', 'select'].includes(type)) {
+          resetInactivityTimer();
+        }
       }
-    } else {
-      if (['up', 'down', 'left', 'right', 'select'].includes(eventType)) {
-        resetInactivityTimer();
-      }
-    }
-  });
+    });
+  }
 
   // Remote Back Button Handler
   useEffect(() => {
@@ -273,44 +343,67 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     return () => sub.remove();
   }, [activeDialog, showControls, onClose, resetInactivityTimer, syncProgressToStore]);
 
-  // Open in External VLC
   const openInVLC = async () => {
-    try {
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: activeMediaUrl || streamUrl,
-        type: 'video/*',
-        packageName: 'org.videolan.vlc',
-        extra: { title },
-      });
-    } catch {
-      try {
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-          data: activeMediaUrl || streamUrl,
-          type: 'video/*',
-          extra: { title },
-        });
-      } catch {
-        ToastAndroid.show('VLC or external player not found.', ToastAndroid.SHORT);
-      }
-    }
+    await launchVideo(activeMediaUrl || streamUrl, title, 'vlc');
   };
 
-  const handleNextEpisode = () => {
+  const handleNextEpisode = async () => {
+    if (resolvingNextEpisode) return;
+
     syncProgressToStore(
       currentProgRef.current.currentTime,
       currentProgRef.current.duration
     );
     const nextIndex = currentEpisodeIndex + 1;
-    if (episodes.length > nextIndex) {
-      const nextEp = episodes[nextIndex];
-      onSelectNextEpisode?.(nextEp);
-      ToastAndroid.show(`Loading next episode: ${nextEp.title || `Episode ${nextIndex + 1}`}`, ToastAndroid.SHORT);
-    } else {
+    if (episodes.length <= nextIndex) {
       ToastAndroid.show('No next episode available.', ToastAndroid.SHORT);
+      return;
+    }
+
+    const nextEp = episodes[nextIndex];
+    const nextTitle = nextEp.title || `Episode ${nextIndex + 1}`;
+
+    if (!nextEp.link || !providerValue) {
+      ToastAndroid.show('Unable to resolve next episode.', ToastAndroid.SHORT);
+      return;
+    }
+
+    setResolvingNextEpisode(true);
+    ToastAndroid.show(`Loading next episode: ${nextTitle}`, ToastAndroid.SHORT);
+    try {
+      const streams = await providerManager.getStream({
+        link: nextEp.link,
+        type: 'series',
+        providerValue,
+      });
+
+      if (!streams || streams.length === 0) {
+        ToastAndroid.show('No valid stream links found for this episode.', ToastAndroid.LONG);
+        return;
+      }
+
+      const best = streams[0];
+      const qualList = streams.map((s: any, idx: number) => ({
+        name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
+        url: s.link,
+      }));
+
+      onSelectNextEpisode?.({
+        ...nextEp,
+        title: nextTitle,
+        url: best.link,
+        headers: best.headers,
+        subtitles: best.subtitles,
+        qualities: qualList,
+      });
+    } catch (e: any) {
+      console.warn('[TVPlayerScreen] Next episode extraction failed:', e);
+      ToastAndroid.show(e?.message || 'Failed to load next episode.', ToastAndroid.LONG);
+    } finally {
+      setResolvingNextEpisode(false);
     }
   };
 
-  // Cycle aspect ratio mode
   const toggleAspectRatio = () => {
     resetInactivityTimer();
     setResizeMode((prev) => {
@@ -326,50 +419,40 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
-  // Clean label generator that preserves [Language]
-  const formatTrackLabel = (trk: any, defaultType: string, index: number) => {
-    if (!trk) return `${defaultType} Track ${index + 1}`;
-    const rawTitle = trk.title || trk.label || '';
-    const rawLang = trk.language || trk.lang || '';
-
-    if (rawTitle && rawLang) {
-      if (rawTitle.toLowerCase().includes(rawLang.toLowerCase())) {
-        return rawTitle;
-      }
-      return `${rawTitle} [${rawLang.toUpperCase()}]`;
-    }
-    if (rawTitle) return rawTitle;
-    if (rawLang) return `${defaultType} [${rawLang.toUpperCase()}]`;
-    return `${defaultType} Track ${index + 1}`;
-  };
-
   const hasNextEpisode = episodes.length > currentEpisodeIndex + 1;
 
   return (
     <View style={styles.container}>
       <Video
-        key={`video-player-${resizeMode}`}
+        key={`video-surface-${resizeMode}`}
         ref={videoRef}
-        source={{ uri: activeMediaUrl || streamUrl }}
+        source={{ uri: activeMediaUrl || streamUrl, headers }}
         style={StyleSheet.absoluteFill}
         resizeMode={resizeMode as ResizeMode}
         paused={paused}
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
-        // Subtitle background box opacity set to completely zero/transparent
+        textTracks={subtitles}
         subtitleStyle={{
           backgroundColor: 'transparent',
           opacity: 1,
-          fontSize: 22,
+          fontSize: 24,
+          subtitlesFollowVideo: true,
           paddingBottom: 40,
         }}
         onLoad={(meta: any) => {
           const totalDur = meta.duration || 0;
           setDuration(totalDur);
           currentProgRef.current.duration = totalDur;
-          setAudioTracks(meta.audioTracks || []);
-          setTextTracks(meta.textTracks || []);
+          if (meta.audioTracks?.length) setAudioTracks(meta.audioTracks);
+          if (meta.textTracks?.length) setTextTracks(meta.textTracks);
           setBuffering(false);
+        }}
+        onAudioTracks={(e: any) => {
+          if (e?.audioTracks?.length) setAudioTracks(e.audioTracks);
+        }}
+        onTextTracks={(e: any) => {
+          if (e?.textTracks?.length) setTextTracks(e.textTracks);
         }}
         onProgress={(prog) => {
           setCurrentTime(prog.currentTime);
@@ -394,26 +477,26 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Invisible TV Focus Catcher when controls are hidden (wakes controls on ANY D-pad direction) */}
+      {/* Invisible TV Focus Catcher when controls are hidden */}
       {!showControls && (
         <View
           ref={wakeOverlayRef}
           style={StyleSheet.absoluteFill}
           focusable={true}
           hasTVPreferredFocus={true}
-          // Trap arrow keys onto this view so Android dispatches them to useTVEventHandler
           nextFocusUp={wakeNodeId}
           nextFocusDown={wakeNodeId}
           nextFocusLeft={wakeNodeId}
           nextFocusRight={wakeNodeId}
         >
           <TVFocusablePressable
-            hasTVPreferredFocus={true}
-            style={StyleSheet.absoluteFill}
-            onPress={() => resetInactivityTimer()}
-            onFocus={() => resetInactivityTimer()}
+            hasTVPreferredFocus
+            style={StyleSheet.absoluteFillObject}
+            onPress={handleCatcherPress}
+            focusedBorderColor="transparent"
+            scaleFocused={1}
           >
-            {() => <View style={StyleSheet.absoluteFill} />}
+            {() => <View style={StyleSheet.absoluteFillObject} />}
           </TVFocusablePressable>
         </View>
       )}
@@ -487,7 +570,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 )}
               </TVFocusablePressable>
 
-              {/* 10s Rewind (Click: -10s, Long-press: continuous rewind) */}
+              {/* 10s Rewind (Click: -10s, Long-press: continuous seek) */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -501,7 +584,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 {() => <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />}
               </TVFocusablePressable>
 
-              {/* 10s Forward (Click: +10s, Long-press: continuous forward) */}
+              {/* 10s Forward (Click: +10s, Long-press: continuous seek) */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -576,7 +659,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   <View style={styles.pillInner}>
                     <MaterialCommunityIcons name="subtitles-outline" size={20} color="#FFFFFF" />
                     <Text style={styles.pillText}>
-                      {selectedSub.type === SelectedTrackType.DISABLED ? 'Subtitles Off' : 'Subtitles'}
+                      {selectedSub.type === SelectedTrackType.DISABLED
+                        ? 'Subtitles Off'
+                        : describeTrack(textTracks[selectedSub.value], 'Subtitles')}
                     </Text>
                   </View>
                 )}
@@ -620,7 +705,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 </TVFocusablePressable>
               )}
 
-              {/* Aspect Ratio / Resize Mode */}
+              {/* Aspect Ratio Mode */}
               <TVFocusablePressable
                 scaleFocused={1.08}
                 focusedBorderColor="#8A5CF6"
@@ -699,7 +784,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     >
                       {() => (
                         <Text style={styles.dialogItemText}>
-                          {formatTrackLabel(trk, 'Subtitle', i)}
+                          {describeTrack(trk, `Subtitle Track ${i + 1}`)}
                         </Text>
                       )}
                     </TVFocusablePressable>
@@ -728,7 +813,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   >
                     {() => (
                       <Text style={styles.dialogItemText}>
-                        {formatTrackLabel(trk, 'Audio', i)}
+                        {describeTrack(trk, `Audio Track ${i + 1}`)}
                       </Text>
                     )}
                   </TVFocusablePressable>
@@ -831,13 +916,13 @@ const styles = StyleSheet.create({
   },
   progressTrack: {
     width: '100%',
-    height: 5,
+    height: 4,
     backgroundColor: 'rgba(255, 255, 255, 0.25)',
-    borderRadius: 3,
+    borderRadius: 2,
     overflow: 'hidden',
   },
   progressTrackFocused: {
-    height: 7,
+    height: 6,
     backgroundColor: 'rgba(255, 255, 255, 0.4)',
   },
   progressFill: {
