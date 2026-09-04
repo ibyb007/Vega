@@ -156,6 +156,23 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, [showControls]);
 
+  // Automatically select English subtitle by default if present
+  const autoSelectEnglishSubtitle = useCallback((tracks: any[]) => {
+    if (!tracks || tracks.length === 0) return;
+    const enIndex = tracks.findIndex((t: any) => {
+      const lang = (t.language || t.lang || '').toLowerCase();
+      const titleStr = (t.title || t.label || '').toLowerCase();
+      return lang.startsWith('en') || titleStr.includes('english') || titleStr.includes('[en');
+    });
+
+    if (enIndex !== -1) {
+      setSelectedSub({
+        type: SelectedTrackType.INDEX,
+        value: enIndex,
+      });
+    }
+  }, []);
+
   // Repeat & acceleration tracking for D-pad seek
   const lastSeekDirection = useRef<'left' | 'right' | null>(null);
   const lastSeekTimestamp = useRef<number>(0);
@@ -290,7 +307,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           handleCatcherPress();
         }
       } else {
-        // When controls are visible:
         if (isSeekbarFocused && (type === 'left' || type === 'right')) {
           handleContinuousDPadSeek(type as 'left' | 'right');
           return;
@@ -419,6 +435,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         selectedTextTrack={selectedSub}
         textTracks={subtitles}
         subtitleStyle={{
+          backgroundColor: 'transparent',
+          opacity: 0,
           fontSize: 28,
           subtitlesFollowVideo: true,
           paddingBottom: 45,
@@ -428,14 +446,20 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           setDuration(totalDur);
           currentProgRef.current.duration = totalDur;
           if (meta.audioTracks?.length) setAudioTracks(meta.audioTracks);
-          if (meta.textTracks?.length) setTextTracks(meta.textTracks);
+          if (meta.textTracks?.length) {
+            setTextTracks(meta.textTracks);
+            autoSelectEnglishSubtitle(meta.textTracks);
+          }
           setBuffering(false);
         }}
         onAudioTracks={(e: any) => {
           if (e?.audioTracks?.length) setAudioTracks(e.audioTracks);
         }}
         onTextTracks={(e: any) => {
-          if (e?.textTracks?.length) setTextTracks(e.textTracks);
+          if (e?.textTracks?.length) {
+            setTextTracks(e.textTracks);
+            autoSelectEnglishSubtitle(e.textTracks);
+          }
         }}
         onProgress={(prog) => {
           setCurrentTime(prog.currentTime);
@@ -487,7 +511,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       {/* Bottom Controls Overlay */}
       {showControls && (
         <View style={styles.controlsWrapper}>
-          {/* Subtle gradient pinned strictly to the bottom */}
           <LinearGradient
             colors={['transparent', 'rgba(0, 0, 0, 0.4)', 'rgba(0, 0, 0, 0.85)']}
             locations={[0, 0.4, 1]}
@@ -877,7 +900,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: 120, // Constrain bounds so the gradient cannot climb into center screen
+    height: 120,
     justifyContent: 'flex-end',
   },
   gradientOverlay: {
