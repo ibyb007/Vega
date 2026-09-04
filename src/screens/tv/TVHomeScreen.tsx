@@ -27,6 +27,52 @@ import { TVRoute } from '../../components/tv/TVNavigationRail';
 
 const ROW_HEIGHT = 245;
 
+// In-memory Cinemeta fanart and details cache (0ms lookup on remote navigation)
+const cinemetaMemoryCache = new Map<string, any>();
+
+// Sanitizes title query strings (e.g. "The Gentlemen (Season 1 - 2)" -> "The Gentlemen")
+const sanitizeQueryTitle = (raw: string): string => {
+  return raw
+    .replace(/\(.*?\)/g, '')
+    .replace(/\[.*?\]/g, '')
+    .replace(/season\s*\d+/gi, '')
+    .replace(/s\d+/gi, '')
+    .replace(/-+/g, ' ')
+    .trim();
+};
+
+const fetchCinemetaMeta = async (title: string): Promise<any | null> => {
+  const clean = sanitizeQueryTitle(title);
+  if (!clean) return null;
+
+  if (cinemetaMemoryCache.has(clean.toLowerCase())) {
+    return cinemetaMemoryCache.get(clean.toLowerCase());
+  }
+
+  try {
+    const encoded = encodeURIComponent(clean);
+    // 1. Check movie catalog endpoint
+    const movieRes = await fetch(`https://v3-cinemeta.strem.io/catalog/movie/top/search=${encoded}.json`);
+    const movieData = await movieRes.json();
+    if (movieData?.metas && movieData.metas.length > 0) {
+      const match = movieData.metas[0];
+      cinemetaMemoryCache.set(clean.toLowerCase(), match);
+      return match;
+    }
+
+    // 2. Check series catalog endpoint
+    const seriesRes = await fetch(`https://v3-cinemeta.strem.io/catalog/series/top/search=${encoded}.json`);
+    const seriesData = await seriesRes.json();
+    if (seriesData?.metas && seriesData.metas.length > 0) {
+      const match = seriesData.metas[0];
+      cinemetaMemoryCache.set(clean.toLowerCase(), match);
+      return match;
+    }
+  } catch {}
+
+  return null;
+};
+
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
   onNavigateRoute?: (route: TVRoute) => void;
@@ -89,18 +135,42 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       let year = item.year || null;
       let genres = item.genres || [];
 
+      // 1. Vega Internal Metadata Cache check
       if (targetUrl && targetProvider) {
         try {
-          const cachedMeta = await getMetadata(targetUrl, targetProvider);
-          if (cachedMeta) {
-            if (cachedMeta.background) {
-              backdrop = cachedMeta.background;
+          const cached = await getMetadata(targetUrl, targetProvider);
+          if (cached) {
+            if (cached.background) {
+              backdrop = cached.background;
               hasLandscape = true;
             }
-            if (cachedMeta.description) description = cachedMeta.description;
-            if (cachedMeta.rating) rating = String(cachedMeta.rating);
-            if (cachedMeta.year) year = String(cachedMeta.year);
-            if (cachedMeta.genres?.length) genres = cachedMeta.genres;
+            if (cached.description) description = cached.description;
+            if (cached.rating) rating = String(cached.rating);
+            if (cached.year) year = String(cached.year);
+            if (cached.genres?.length) genres = cached.genres;
+          }
+        } catch {}
+      }
+
+      // 2. Inbuilt Cinemeta metadata check if no landscape fanart exists yet
+      if (!backdrop && item.title) {
+        try {
+          const cineMeta = await fetchCinemetaMeta(item.title);
+          if (cineMeta) {
+            if (cineMeta.background) {
+              backdrop = cineMeta.background;
+              hasLandscape = true;
+            }
+            if (!description && cineMeta.description) description = cineMeta.description;
+            if (!rating && (cineMeta.imdbRating || cineMeta.rating)) {
+              rating = String(cineMeta.imdbRating || cineMeta.rating);
+            }
+            if (!year && (cineMeta.releaseInfo || cineMeta.year)) {
+              year = String(cineMeta.releaseInfo || cineMeta.year);
+            }
+            if (genres.length === 0 && cineMeta.genres?.length) {
+              genres = cineMeta.genres;
+            }
           }
         } catch {}
       }
@@ -144,6 +214,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     }
   }, [displayRows, activeHero, updateHeroWithBestMetadata]);
 
+  // Translate rows container up smoothly when moving D-pad Down
   const handleCardFocus = useCallback(
     (rowIndex: number, item: any, isHistory: boolean = false) => {
       initialFocusSetRef.current = true;
@@ -273,7 +344,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               resizeMode="cover"
                             />
 
-                            {/* Continue Watching Progress */}
+                            {/* Continue Watching Progress Fill */}
                             {row.isHistory && progressPercent > 0 && (
                               <View style={styles.progressBarTrack}>
                                 <View
@@ -285,6 +356,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               </View>
                             )}
 
+                            {/* Focused White Glow Border */}
                             {focused && <View style={styles.focusBorderGlow} />}
                           </View>
                         )}
