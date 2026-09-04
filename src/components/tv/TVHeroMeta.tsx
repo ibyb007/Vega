@@ -36,17 +36,17 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
             resizeMode={isLandscape ? 'cover' : 'stretch'}
           />
 
-          {/* Bottom blend into the rows below */}
+          {/* Bottom fade into the rows */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.05)', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
-            locations={[0, 0.6, 1]}
+            colors={['transparent', 'rgba(10, 10, 14, 0.45)', '#0A0A0E']}
+            locations={[0, 0.55, 1]}
             style={styles.bottomGradient}
           />
 
-          {/* Left vignette protecting top-left title & metadata */}
+          {/* Left vignette protecting text contrast */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.85)', 'transparent']}
-            locations={[0, 0.48, 0.88]}
+            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.82)', 'transparent']}
+            locations={[0, 0.45, 0.85]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.leftGradient}
@@ -54,7 +54,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
         </View>
       ) : null}
 
-      {/* Top-Left Metadata Block over Backdrop */}
+      {/* Top-Left Stremio Metadata Block */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media?.title || ''}
@@ -75,7 +75,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
           ) : null}
         </View>
 
-        <Text numberOfLines={3} style={styles.overview}>
+        <Text numberOfLines={2} style={styles.overview}>
           {media?.overview || ''}
         </Text>
 
@@ -91,45 +91,43 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 260,
+    height: 195,
     width: SCREEN_WIDTH,
     position: 'relative',
     backgroundColor: '#0A0A0E',
-    justifyContent: 'flex-start',
-    paddingTop: 16,
   },
   backdropLayer: {
-    ...StyleSheet.absoluteFillObject,
-    height: 400,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 360,
     overflow: 'hidden',
   },
   backdropImage: {
     width: '100%',
     height: '100%',
-    position: 'absolute',
-    right: 0,
-    top: 0,
   },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '82%',
+    width: '80%',
   },
   contentWrapper: {
     position: 'absolute',
-    top: 16,
-    left: 72, // Matches collapsed sidebar width perfectly
+    top: 14,
+    left: 84, // Aligns cleanly next to the 68dp sidebar
     maxWidth: 660,
     zIndex: 10,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '900',
     letterSpacing: -0.4,
-    marginBottom: 6,
+    marginBottom: 4,
     textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
@@ -138,11 +136,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   metaText: {
     color: '#D1D5DB',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   ratingBadge: {
@@ -153,26 +151,26 @@ const styles = StyleSheet.create({
   },
   ratingText: {
     color: '#000000',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
   },
   genresText: {
     color: '#9CA3AF',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
   },
   overview: {
     color: '#D1D5DB',
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 17,
     textShadowColor: 'rgba(0, 0, 0, 0.9)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
   castText: {
     color: '#6B7280',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '500',
-    marginTop: 4,
+    marginTop: 2,
   },
 });
