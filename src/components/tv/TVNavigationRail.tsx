@@ -38,7 +38,7 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const homeRef = useRef<View>(null);
+  const homeTargetRef = useRef<View>(null);
 
   const activeIndex = NAV_ITEMS.findIndex((it) => it.id === currentRoute);
   const indicatorY = useSharedValue(
@@ -46,9 +46,9 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
   );
 
   useEffect(() => {
-    if (homeRef.current) {
-      const handle = findNodeHandle(homeRef.current);
-      if (handle && onRegisterHomeHandle) {
+    if (homeTargetRef.current && onRegisterHomeHandle) {
+      const handle = findNodeHandle(homeTargetRef.current);
+      if (handle) {
         onRegisterHomeHandle(handle);
       }
     }
@@ -113,62 +113,60 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
 
   return (
     <Animated.View style={[styles.container, containerStyle]}>
-      {/* Brand Header */}
       <View style={styles.header}>
         <MaterialCommunityIcons name="play-circle" size={30} color="#8A5CF6" />
         {isExpanded && <Text style={styles.brandText}>VEGA TV</Text>}
       </View>
 
-      {/* Navigation List with Single Sliding Pill */}
       <View style={styles.menuContainer}>
-        {/* Continuous Stremio-Style Sliding Pill */}
+        {/* Continuous sliding pill */}
         <Animated.View style={[styles.slidingPill, indicatorStyle]} />
 
         {NAV_ITEMS.map((item, index) => {
           const isActive = currentRoute === item.id;
+          const isHome = item.id === 'home';
 
           return (
-            <View
+            <TVFocusablePressable
               key={item.id}
-              ref={item.id === 'home' ? homeRef : undefined}
-              collapsable={false}
+              scaleFocused={1}
+              focusedBorderColor="transparent"
+              borderRadius={10}
+              onFocusChange={(focused) => {
+                if (focused) handleItemFocus(index);
+                else handleItemBlur();
+              }}
+              onPress={() => onRouteChange(item.id)}
+              style={styles.navItem}
             >
-              <TVFocusablePressable
-                scaleFocused={1}
-                focusedBorderColor="transparent"
-                borderRadius={10}
-                onFocusChange={(focused) => {
-                  if (focused) handleItemFocus(index);
-                  else handleItemBlur();
-                }}
-                onPress={() => onRouteChange(item.id)}
-                style={styles.navItem}
-              >
-                {({ focused }) => (
-                  <View style={styles.itemInner}>
-                    <MaterialCommunityIcons
-                      name={item.icon}
-                      size={22}
-                      color={focused || isActive ? '#FFFFFF' : '#6B7280'}
-                    />
-                    {isExpanded && (
-                      <Text
-                        numberOfLines={1}
-                        style={[
-                          styles.itemLabel,
-                          {
-                            color: focused || isActive ? '#FFFFFF' : '#9CA3AF',
-                            fontWeight: isActive ? '800' : '600',
-                          },
-                        ]}
-                      >
-                        {item.label}
-                      </Text>
-                    )}
-                  </View>
-                )}
-              </TVFocusablePressable>
-            </View>
+              {({ focused }) => (
+                <View
+                  ref={isHome ? homeTargetRef : undefined}
+                  collapsable={false}
+                  style={styles.itemInner}
+                >
+                  <MaterialCommunityIcons
+                    name={item.icon}
+                    size={22}
+                    color={focused || isActive ? '#FFFFFF' : '#6B7280'}
+                  />
+                  {isExpanded && (
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.itemLabel,
+                        {
+                          color: focused || isActive ? '#FFFFFF' : '#9CA3AF',
+                          fontWeight: isActive ? '800' : '600',
+                        },
+                      ]}
+                    >
+                      {item.label}
+                    </Text>
+                  )}
+                </View>
+              )}
+            </TVFocusablePressable>
           );
         })}
       </View>
