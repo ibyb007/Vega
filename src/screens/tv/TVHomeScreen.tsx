@@ -29,7 +29,9 @@ import { TVRoute } from '../../components/tv/TVNavigationRail';
 const ROW_HEIGHT = 235;
 const imdbMetaCache = new Map<string, any>();
 
-// Fetch high-res landscape backdrop via IMDb ID (100% accurate, no text matching errors)
+let lastFocusedKey: string | null = null;
+let lastFocusedRowIndex = 0;
+
 const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Promise<any | null> => {
   if (!imdbId || !imdbId.startsWith('tt')) return null;
 
@@ -67,11 +69,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const removeItemFromHistory = useContinueWatchingStore((state) => state.removeItem);
 
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
-  const [activeRowIndex, setActiveRowIndex] = useState<number>(0);
+  const [activeRowIndex, setActiveRowIndex] = useState<number>(lastFocusedRowIndex);
   const [itemToDelete, setItemToDelete] = useState<any | null>(null);
 
-  const translateY = useSharedValue(0);
-  const initialFocusSetRef = useRef(false);
+  const translateY = useSharedValue(-lastFocusedRowIndex * ROW_HEIGHT);
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
@@ -101,7 +102,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     return rows.concat(homeData.filter((r) => r.Posts && r.Posts.length > 0));
   }, [watchHistory, homeData]);
 
-  // Accurate metadata resolution matching TVDetailsScreen / TVInfoScreen
   const updateHeroWithBestMetadata = useCallback(
     async (item: any, isHistory: boolean = false) => {
       const posterImage = item.poster || item.background || item.image;
@@ -109,25 +109,25 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       const targetProvider = item.providerValue || item.provider || provider?.value;
 
       let backdrop = item.backdrop || item.banner || null;
-      let hasLandscape = Boolean(backdrop);
       let description = item.extra || item.description || '';
       let rating = item.rating || null;
       let year = item.year || null;
+      let runtime = item.runtime || null;
       let genres = item.genres || [];
       let foundImdbId: string | null = null;
 
-      // 1. Vega Internal Provider Metadata Cache (same source used by TVDetailsScreen)
+      // 1. Check Vega internal metadata cache
       if (targetUrl && targetProvider) {
         try {
           const cached = await getMetadata(targetUrl, targetProvider);
           if (cached) {
             if (cached.background || cached.backdrop) {
               backdrop = cached.background || cached.backdrop;
-              hasLandscape = true;
             }
             if (cached.description) description = cached.description;
             if (cached.rating) rating = String(cached.rating);
             if (cached.year) year = String(cached.year);
+            if (cached.runtime) runtime = cached.runtime;
             if (cached.genres?.length) genres = cached.genres;
             if (cached.imdbId && typeof cached.imdbId === 'string') {
               foundImdbId = cached.imdbId;
@@ -136,19 +136,17 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         } catch {}
       }
 
-      // Check item properties for IMDb ID
       if (!foundImdbId && item.imdbId) {
         foundImdbId = item.imdbId;
       }
 
-      // 2. Query Cinemeta strictly with valid IMDb ID (guarantees 100% correct title fanart)
+      // 2. Fetch Cinemeta landscape fanart if IMDb ID is known
       if (foundImdbId) {
         try {
           const cineMeta = await fetchCinemetaByImdb(foundImdbId, item.type);
           if (cineMeta) {
             if (cineMeta.background) {
               backdrop = cineMeta.background;
-              hasLandscape = true;
             }
             if (!description && cineMeta.description) description = cineMeta.description;
             if (!rating && (cineMeta.imdbRating || cineMeta.rating)) {
@@ -179,16 +177,15 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         title: item.title,
         backdropUrl: backdrop || posterImage || undefined,
         posterUrl: posterImage,
-        hasLandscapeBackdrop: hasLandscape,
         overview: isHistory
           ? episodeTitle
             ? `${episodeTitle} • Resume (${progressPercent}%)`
             : `Resume watching (${progressPercent}%)`
           : description || 'Select title to browse stream links and episodes.',
-        year: year || '2024',
-        rating: rating || '8.2',
-        runtime: item.runtime || '114 min',
-        genres: genres.length > 0 ? genres : ['Movie'],
+        year: year ? String(year) : undefined,
+        rating: rating ? String(rating) : undefined,
+        runtime: runtime || undefined,
+        genres: genres.length > 0 ? genres : undefined,
       });
     },
     [provider?.value]
@@ -204,8 +201,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   }, [displayRows, activeHero, updateHeroWithBestMetadata]);
 
   const handleCardFocus = useCallback(
-    (rowIndex: number, item: any, isHistory: boolean = false) => {
-      initialFocusSetRef.current = true;
+    (rowIndex: number, item: any, itemKey: string, isHistory: boolean = false) => {
+      lastFocusedKey = itemKey;
+      lastFocusedRowIndex = rowIndex;
       setActiveRowIndex(rowIndex);
 
       translateY.value = withTiming(-rowIndex * ROW_HEIGHT, {
@@ -262,12 +260,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Stationary Stremio Header */}
       <View style={styles.fixedHeroContainer}>
         <TVHeroMeta media={activeHero} />
       </View>
 
-      {/* Sliding Row Viewport */}
       <View style={styles.stageViewport}>
         <Animated.View style={[styles.slidingRowsContainer, animatedRowsStyle]}>
           {displayRows.map((row: any, rowIndex: number) => {
@@ -286,9 +282,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   removeClippedSubviews={false}
                 >
                   {rowPosts.map((item: any, pIndex: number) => {
+                    const itemKey = `${item.infoUrl || item.link || item.id}-${rowIndex}-${pIndex}`;
                     const isFirstInRow = pIndex === 0;
-                    const isPreferred =
-                      !initialFocusSetRef.current && rowIndex === 0 && isFirstInRow;
+                    const shouldFocus = lastFocusedKey
+                      ? lastFocusedKey === itemKey
+                      : rowIndex === 0 && isFirstInRow;
+
                     const posterImage = item.poster || item.background || item.image;
                     const progressPercent =
                       item.duration && item.position
@@ -297,8 +296,8 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
                     return (
                       <TVFocusablePressable
-                        key={`${item.infoUrl || item.link || item.id}-${pIndex}`}
-                        hasTVPreferredFocus={isPreferred}
+                        key={itemKey}
+                        hasTVPreferredFocus={shouldFocus}
                         scaleFocused={1.06}
                         focusedBorderColor="#FFFFFF"
                         borderRadius={8}
@@ -306,8 +305,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         {...(isFirstInRow && homeFocusTarget
                           ? { nextFocusLeft: homeFocusTarget }
                           : { trapFocusLeft: !isFirstInRow })}
-                        onFocus={() => handleCardFocus(rowIndex, item, isHistoryRow)}
+                        onFocus={() => handleCardFocus(rowIndex, item, itemKey, isHistoryRow)}
                         onPress={() => {
+                          lastFocusedKey = itemKey;
+                          lastFocusedRowIndex = rowIndex;
                           if (isHistoryRow) {
                             onSelectItem({
                               link: item.infoUrl || item.link,
@@ -324,10 +325,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                             setItemToDelete(item);
                           }
                         }}
-                        style={[
-                          styles.card,
-                          isHistoryRow && styles.cardCompact,
-                        ]}
+                        style={[styles.card, isHistoryRow && styles.cardCompact]}
                       >
                         {({ focused }) => (
                           <View style={styles.cardInner}>
@@ -368,7 +366,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         </Animated.View>
       </View>
 
-      {/* Remove from Continue Watching Confirmation Modal */}
       <Modal
         visible={Boolean(itemToDelete)}
         transparent={true}
@@ -422,7 +419,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   fixedHeroContainer: {
-    height: 195,
+    height: 230,
     width: '100%',
     position: 'absolute',
     top: 0,
@@ -432,7 +429,7 @@ const styles = StyleSheet.create({
   },
   stageViewport: {
     position: 'absolute',
-    top: 185, // Starts higher so Row 1 is fully visible and Row 2 peeks out from the bottom
+    top: 220,
     bottom: 0,
     left: 0,
     right: 0,
@@ -440,7 +437,7 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   slidingRowsContainer: {
-    paddingLeft: 84, // 68dp sidebar + 16dp spacing
+    paddingLeft: 84,
     paddingTop: 0,
   },
   rowContainer: {
