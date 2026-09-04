@@ -33,21 +33,20 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
             key={displayImage}
             source={{ uri: displayImage }}
             style={styles.backdropImage}
-            // 16:9 uses cover; portrait fallback stretches along width without zooming or cropping
             resizeMode={isLandscape ? 'cover' : 'stretch'}
           />
 
           {/* Bottom blend into the rows below */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.1)', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
-            locations={[0, 0.55, 1]}
+            colors={['rgba(10, 10, 14, 0.05)', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
+            locations={[0, 0.6, 1]}
             style={styles.bottomGradient}
           />
 
           {/* Left vignette protecting top-left title & metadata */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.82)', 'transparent']}
-            locations={[0, 0.45, 0.85]}
+            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.85)', 'transparent']}
+            locations={[0, 0.48, 0.88]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.leftGradient}
@@ -55,7 +54,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
         </View>
       ) : null}
 
-      {/* Top-Left Stremio Metadata Block */}
+      {/* Top-Left Metadata Block over Backdrop */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media?.title || ''}
@@ -92,16 +91,16 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 230,
+    height: 260,
     width: SCREEN_WIDTH,
     position: 'relative',
     backgroundColor: '#0A0A0E',
     justifyContent: 'flex-start',
-    paddingTop: 12,
+    paddingTop: 16,
   },
   backdropLayer: {
     ...StyleSheet.absoluteFillObject,
-    height: 380,
+    height: 400,
     overflow: 'hidden',
   },
   backdropImage: {
@@ -116,16 +115,16 @@ const styles = StyleSheet.create({
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '80%',
+    width: '82%',
   },
   contentWrapper: {
     paddingLeft: 88,
-    maxWidth: 620,
+    maxWidth: 640,
     zIndex: 10,
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 30,
+    fontSize: 32,
     fontWeight: '900',
     letterSpacing: -0.4,
     marginBottom: 6,
