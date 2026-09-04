@@ -87,6 +87,7 @@ module.exports = () => {
       name: 'Vega TV',
       scheme: 'com.vega',
       displayName: 'Vega TV',
+      icon: './assets/icon.png',
       jsEngine: 'hermes',
       newArchEnabled: true,
       autolinking: { exclude: ['expo-splash-screen'] },
