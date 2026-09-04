@@ -8,6 +8,7 @@ import {
   Modal,
   BackHandler,
   ScrollView,
+  Pressable,
   findNodeHandle,
 } from 'react-native';
 import Video, { VideoRef, SelectedTrackType, ResizeMode } from 'react-native-video';
@@ -116,8 +117,14 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     duration: 0,
   });
 
-  const wakeOverlayRef = useRef<View>(null);
-  const [wakeNodeId, setWakeNodeId] = useState<number | undefined>(undefined);
+  const wakeCenterRef = useRef<View>(null);
+  const wakeUpRef = useRef<React.ElementRef<typeof Pressable>>(null);
+  const wakeDownRef = useRef<React.ElementRef<typeof Pressable>>(null);
+  const wakeLeftRef = useRef<React.ElementRef<typeof Pressable>>(null);
+  const wakeRightRef = useRef<React.ElementRef<typeof Pressable>>(null);
+  const [wakeHandles, setWakeHandles] = useState<{
+    up?: number; down?: number; left?: number; right?: number;
+  }>({});
 
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(true);
@@ -149,15 +156,27 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, [streamUrl]);
 
+  // Compute the 4 decoy nodes' handles once they've mounted, so the
+  // center catcher's nextFocus props can point at genuinely distinct
+  // views (see the multi-directional focus trap below for why).
   useEffect(() => {
-    if (wakeOverlayRef.current) {
-      const handle = findNodeHandle(wakeOverlayRef.current);
-      if (handle) setWakeNodeId(handle);
+    if (!showControls) {
+      setWakeHandles({
+        up: findNodeHandle(wakeUpRef.current) ?? undefined,
+        down: findNodeHandle(wakeDownRef.current) ?? undefined,
+        left: findNodeHandle(wakeLeftRef.current) ?? undefined,
+        right: findNodeHandle(wakeRightRef.current) ?? undefined,
+      });
     }
   }, [showControls]);
 
-  // Automatically select English subtitle by default if present
+  // Automatically select English subtitle by default if present -- but
+  // only ever attempt this once, and never after the user has manually
+  // picked something from the subtitle dropdown (see refs above).
   const autoSelectEnglishSubtitle = useCallback((tracks: any[]) => {
+    if (userChoseSubtitleRef.current || hasAutoSelectedSubtitleRef.current) return;
+    hasAutoSelectedSubtitleRef.current = true;
+
     if (!tracks || tracks.length === 0) return;
     const enIndex = tracks.findIndex((t: any) => {
       const lang = (t.language || t.lang || '').toLowerCase();
@@ -178,6 +197,16 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const lastSeekTimestamp = useRef<number>(0);
   const seekStreak = useRef<number>(0);
   const seekReleaseTimer = useRef<NodeJS.Timeout | null>(null);
+  const holdSeekInterval = useRef<NodeJS.Timeout | null>(null);
+
+  // Guards so the one-time "auto-pick English subtitle" convenience never
+  // fights the user's own choice. `onTextTracks`/`onLoad` can fire more
+  // than once during playback (not just at the very start) -- without
+  // these, every subsequent firing called `autoSelectEnglishSubtitle`
+  // again and silently snapped the selection back to English a moment
+  // after the user picked something else from the dropdown.
+  const hasAutoSelectedSubtitleRef = useRef(false);
+  const userChoseSubtitleRef = useRef(false);
 
   const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
   const continueWatchingId = itemLink || streamUrl;
@@ -280,6 +309,41 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
     handleSeek(dir === 'right' ? step : -step);
   }, [handleSeek, resetInactivityTimer]);
+
+  // Press-and-hold fast seek for the Rewind/Forward buttons -- the
+  // Stremio-style "hold to seek continuously" behavior. This can't be
+  // wired to the raw D-pad LEFT/RIGHT keys themselves (that needs a
+  // global key listener, unavailable in plain React Native -- see the
+  // note near the focus-wake trap below), but holding the OK/center
+  // button while focused on Rewind/Forward achieves the same result.
+  const holdFiredRef = useRef(false);
+
+  const startHoldSeek = useCallback((dir: 'left' | 'right') => {
+    holdFiredRef.current = false;
+    if (holdSeekInterval.current) clearTimeout(holdSeekInterval.current);
+
+    // Wait a beat before the first repeat so a quick tap doesn't also
+    // trigger the hold path (which would double-seek on release).
+    const tick = () => {
+      holdFiredRef.current = true;
+      handleContinuousDPadSeek(dir);
+      holdSeekInterval.current = setTimeout(tick, 220);
+    };
+    holdSeekInterval.current = setTimeout(tick, 350);
+  }, [handleContinuousDPadSeek]);
+
+  const stopHoldSeek = useCallback(() => {
+    if (holdSeekInterval.current) {
+      clearTimeout(holdSeekInterval.current);
+      holdSeekInterval.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (holdSeekInterval.current) clearTimeout(holdSeekInterval.current);
+    };
+  }, []);
 
   const handleCatcherPress = useCallback(() => {
     setPaused((prev) => {
@@ -484,28 +548,50 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Invisible TV Focus Trap when controls are hidden */}
+      {/* Multi-directional focus trap shown while controls are hidden.
+          One "center" catcher holds preferred focus and handles the
+          OK/select button (play/pause toggle). Its nextFocusUp/Down/
+          Left/Right point at 4 separate tiny decoy views rather than at
+          itself: Android only fires a fresh onFocus when focus actually
+          moves to a *different* view, so pointing back at itself (as a
+          self-reference) never generated an event for a plain directional
+          press -- which is why controls previously only ever came back on
+          OK/select. Routing each direction to its own real sibling view
+          means any single D-pad press now genuinely changes focus and
+          fires onFocus, revealing the controls. This relies only on
+          standard `nextFocusX` props (no native key listener needed).
+          True "seek while still hidden" via holding an arrow key isn't
+          covered by this -- that still needs a global key listener like
+          `react-native-tvos`'s TVEventHandler or `react-native-keyevent`,
+          neither of which is in this project's dependencies. */}
       {!showControls && (
-        <View
-          ref={wakeOverlayRef}
-          style={StyleSheet.absoluteFill}
-          focusable={true}
-          hasTVPreferredFocus={true}
-          nextFocusUp={wakeNodeId}
-          nextFocusDown={wakeNodeId}
-          nextFocusLeft={wakeNodeId}
-          nextFocusRight={wakeNodeId}
-        >
-          <TVFocusablePressable
-            hasTVPreferredFocus
-            style={StyleSheet.absoluteFillObject}
-            onPress={handleCatcherPress}
-            focusedBorderColor="transparent"
-            scaleFocused={1}
+        <>
+          <View
+            ref={wakeCenterRef}
+            style={StyleSheet.absoluteFill}
+            focusable={true}
+            hasTVPreferredFocus={true}
+            nextFocusUp={wakeHandles.up}
+            nextFocusDown={wakeHandles.down}
+            nextFocusLeft={wakeHandles.left}
+            nextFocusRight={wakeHandles.right}
           >
-            {() => <View style={StyleSheet.absoluteFillObject} />}
-          </TVFocusablePressable>
-        </View>
+            <TVFocusablePressable
+              hasTVPreferredFocus
+              style={StyleSheet.absoluteFillObject}
+              onPress={handleCatcherPress}
+              focusedBorderColor="transparent"
+              scaleFocused={1}
+            >
+              {() => <View style={StyleSheet.absoluteFillObject} />}
+            </TVFocusablePressable>
+          </View>
+
+          <Pressable ref={wakeUpRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
+          <Pressable ref={wakeDownRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
+          <Pressable ref={wakeLeftRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
+          <Pressable ref={wakeRightRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
+        </>
       )}
 
       {/* Bottom Controls Overlay */}
@@ -587,25 +673,36 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 )}
               </TVFocusablePressable>
 
-              {/* 10s Rewind */}
+              {/* 10s Rewind -- tap seeks once; press-and-hold repeats with
+                  acceleration (matches Stremio's hold-to-seek), using the
+                  same streak logic as the (currently inert) global D-pad
+                  handler below. */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
                 onFocus={() => resetInactivityTimer()}
-                onPress={() => handleSeek(-10)}
+                onPress={() => {
+                  if (!holdFiredRef.current) handleSeek(-10);
+                }}
+                onPressIn={() => startHoldSeek('left')}
+                onPressOut={stopHoldSeek}
                 style={styles.controlBtn}
               >
                 {() => <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />}
               </TVFocusablePressable>
 
-              {/* 10s Forward */}
+              {/* 10s Forward -- same hold-to-repeat behavior as Rewind. */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
                 onFocus={() => resetInactivityTimer()}
-                onPress={() => handleSeek(10)}
+                onPress={() => {
+                  if (!holdFiredRef.current) handleSeek(10);
+                }}
+                onPressIn={() => startHoldSeek('right')}
+                onPressOut={stopHoldSeek}
                 style={styles.controlBtn}
               >
                 {() => <MaterialCommunityIcons name="fast-forward-10" size={24} color="#FFFFFF" />}
@@ -767,6 +864,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     focusedBorderColor="#8A5CF6"
                     borderRadius={8}
                     onPress={() => {
+                      userChoseSubtitleRef.current = true;
                       setSelectedSub({ type: SelectedTrackType.DISABLED });
                       setActiveDialog(null);
                       resetInactivityTimer();
@@ -785,6 +883,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                       focusedBorderColor="#8A5CF6"
                       borderRadius={8}
                       onPress={() => {
+                        userChoseSubtitleRef.current = true;
                         setSelectedSub({ type: SelectedTrackType.INDEX, value: i });
                         setActiveDialog(null);
                         resetInactivityTimer();
@@ -894,6 +993,14 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  wakeDecoy: {
+    position: 'absolute',
+    top: -10,
+    left: -10,
+    width: 1,
+    height: 1,
+    opacity: 0,
   },
   controlsWrapper: {
     position: 'absolute',
