@@ -24,6 +24,11 @@ module.exports = function withAndroidTV(config) {
       },
     });
 
+    // Reference the Leanback launcher banner (res/drawable-*/tv_banner.png)
+    // on the <application> tag -- without this the launcher row has no
+    // artwork to show even once the banner PNGs are in place under res/.
+    androidManifest.application[0].$['android:banner'] = '@drawable/tv_banner';
+
     // Add LEANBACK_LAUNCHER category to MainActivity
     const mainActivity = androidManifest.application[0].activity.find(
       (a) => a.$['android:name'] === '.MainActivity'
