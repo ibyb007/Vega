@@ -71,11 +71,13 @@ const fetchCinemetaMeta = async (title: string): Promise<any | null> => {
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
   onNavigateRoute?: (route: TVRoute) => void;
+  homeFocusTarget?: number | null;
 }
 
 export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onSelectItem,
   onNavigateRoute,
+  homeFocusTarget,
 }) => {
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
@@ -130,7 +132,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       let year = item.year || null;
       let genres = item.genres || [];
 
-      // 1. Vega Internal Provider Metadata Cache (mirrors TVDetailsScreen / TVInfoScreen)
       if (targetUrl && targetProvider) {
         try {
           const cached = await getMetadata(targetUrl, targetProvider);
@@ -147,7 +148,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         } catch {}
       }
 
-      // 2. Cinemeta fallback only if Vega does not have landscape fanart
       if (!backdrop && item.title) {
         try {
           const cineMeta = await fetchCinemetaMeta(item.title);
@@ -268,12 +268,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* 1. Stationary Stremio Header Over Full Backdrop */}
       <View style={styles.fixedHeroContainer}>
         <TVHeroMeta media={activeHero} />
       </View>
 
-      {/* 2. Sliding Row Viewport */}
       <View style={styles.stageViewport}>
         <Animated.View style={[styles.slidingRowsContainer, animatedRowsStyle]}>
           {displayRows.map((row: any, rowIndex: number) => {
@@ -292,8 +290,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   removeClippedSubviews={false}
                 >
                   {rowPosts.map((item: any, pIndex: number) => {
+                    const isFirstInRow = pIndex === 0;
                     const isPreferred =
-                      !initialFocusSetRef.current && rowIndex === 0 && pIndex === 0;
+                      !initialFocusSetRef.current && rowIndex === 0 && isFirstInRow;
                     const posterImage = item.poster || item.background || item.image;
                     const progressPercent =
                       item.duration && item.position
@@ -307,6 +306,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         scaleFocused={1.06}
                         focusedBorderColor="#FFFFFF"
                         borderRadius={8}
+                        // Leftmost poster explicitly delegates D-pad Left to the Home rail item
+                        {...(isFirstInRow && homeFocusTarget
+                          ? { nextFocusLeft: homeFocusTarget }
+                          : { trapFocusLeft: !isFirstInRow })}
                         onFocus={() => handleCardFocus(rowIndex, item, isHistoryRow)}
                         onPress={() => {
                           if (isHistoryRow) {
@@ -370,7 +373,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         </Animated.View>
       </View>
 
-      {/* Remove from Continue Watching Confirmation Modal */}
       <Modal
         visible={Boolean(itemToDelete)}
         transparent={true}
