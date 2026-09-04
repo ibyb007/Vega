@@ -46,6 +46,7 @@ export default function App() {
   const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
+  const [homeFocusHandle, setHomeFocusHandle] = useState<number | null>(null);
   const currentProvider = useContentStore((state) => state.provider);
 
   useEffect(() => {
@@ -74,7 +75,7 @@ export default function App() {
     });
   }, []);
 
-  // Back button handling: Player -> Details Screen -> Route History -> App Exit
+  // Back button handling: Player -> Details -> Backstack -> Exit
   useEffect(() => {
     const handleBackPress = () => {
       if (activeStream) {
@@ -120,7 +121,6 @@ export default function App() {
                 <AppDialogHost />
 
                 {activeStream ? (
-                  /* Fullscreen TV Player */
                   <TVPlayerScreen
                     streamUrl={activeStream.url}
                     title={activeStream.title}
@@ -145,9 +145,6 @@ export default function App() {
                               headers: nextEp.headers,
                               subtitles: nextEp.subtitles,
                               qualities: nextEp.qualities,
-                              // A fresh episode has its own stream; the
-                              // previous episode's server list no longer
-                              // applies to it.
                               servers: undefined,
                             }
                           : null
@@ -156,7 +153,6 @@ export default function App() {
                     onClose={() => setActiveStream(null)}
                   />
                 ) : selectedItem ? (
-                  /* TV Details, Episode & Quality Selector Screen */
                   <TVDetailsScreen
                     item={selectedItem}
                     onBack={() => setSelectedItem(null)}
@@ -172,31 +168,25 @@ export default function App() {
                     }
                   />
                 ) : (
-                  /* Master TV Layout: Rail + Viewport */
                   <View style={styles.layout}>
-                    <TVNavigationRail
-                      currentRoute={currentRoute}
-                      onRouteChange={navigateTo}
-                    />
-
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
+                          homeFocusTarget={homeFocusHandle}
                         />
                       )}
 
                       {currentRoute === 'search' && (
-                        <TVSearch
-                          onSelectItem={(item) => setSelectedItem(item)}
-                        />
+                        <TVSearch onSelectItem={(item) => setSelectedItem(item)} />
                       )}
 
                       {currentRoute === 'discover' && (
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
+                          homeFocusTarget={homeFocusHandle}
                         />
                       )}
 
@@ -219,6 +209,13 @@ export default function App() {
 
                       {currentRoute === 'settings' && <TVSettingsScreen />}
                     </View>
+
+                    {/* True Overlay Rail (Does not shift viewport) */}
+                    <TVNavigationRail
+                      currentRoute={currentRoute}
+                      onRouteChange={navigateTo}
+                      onRegisterHomeHandle={(h) => setHomeFocusHandle(h)}
+                    />
                   </View>
                 )}
 
@@ -242,7 +239,7 @@ const styles = StyleSheet.create({
   },
   layout: {
     flex: 1,
-    flexDirection: 'row',
+    position: 'relative',
     width: '100%',
     height: '100%',
   },
@@ -250,5 +247,6 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     backgroundColor: '#0A0A0E',
+    paddingLeft: 68,
   },
 });
