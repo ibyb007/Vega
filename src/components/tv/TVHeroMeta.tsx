@@ -118,8 +118,10 @@ const styles = StyleSheet.create({
     width: '82%',
   },
   contentWrapper: {
-    paddingLeft: 88,
-    maxWidth: 640,
+    position: 'absolute',
+    top: 16,
+    left: 72, // Matches collapsed sidebar width perfectly
+    maxWidth: 660,
     zIndex: 10,
   },
   title: {
