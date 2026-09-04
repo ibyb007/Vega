@@ -8,12 +8,11 @@ import {
   Modal,
   BackHandler,
   ScrollView,
-  Pressable,
-  findNodeHandle,
 } from 'react-native';
 import Video, { VideoRef, SelectedTrackType, ResizeMode } from 'react-native-video';
 import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import KeyEvent from 'react-native-keyevent';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
@@ -21,7 +20,15 @@ import { providerManager } from '../../lib/services/ProviderManager';
 import { launchVideo } from '../../lib/services/PlayerLauncher';
 import type { EpisodeLink, TextTracks } from '../../lib/providers/types';
 
-const useTVEventHandler = (require('react-native') as any).useTVEventHandler;
+// Android hardware key codes used by the global listener below.
+// (react-native-keyevent reports raw Android KeyEvent.KEYCODE_* values.)
+const KEYCODE_DPAD_UP = 19;
+const KEYCODE_DPAD_DOWN = 20;
+const KEYCODE_DPAD_LEFT = 21;
+const KEYCODE_DPAD_RIGHT = 22;
+const KEYCODE_DPAD_CENTER = 23;
+const KEYCODE_ENTER = 66;
+const KEYCODE_MEDIA_PLAY_PAUSE = 85;
 
 const LANGUAGE_NAMES: Record<string, string> = {
   en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German',
@@ -117,15 +124,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     duration: 0,
   });
 
-  const wakeCenterRef = useRef<View>(null);
-  const wakeUpRef = useRef<React.ElementRef<typeof Pressable>>(null);
-  const wakeDownRef = useRef<React.ElementRef<typeof Pressable>>(null);
-  const wakeLeftRef = useRef<React.ElementRef<typeof Pressable>>(null);
-  const wakeRightRef = useRef<React.ElementRef<typeof Pressable>>(null);
-  const [wakeHandles, setWakeHandles] = useState<{
-    up?: number; down?: number; left?: number; right?: number;
-  }>({});
-
   const [paused, setPaused] = useState(false);
   const [buffering, setBuffering] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -155,20 +153,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       currentProgRef.current = { currentTime: 0, duration: 0 };
     }
   }, [streamUrl]);
-
-  // Compute the 4 decoy nodes' handles once they've mounted, so the
-  // center catcher's nextFocus props can point at genuinely distinct
-  // views (see the multi-directional focus trap below for why).
-  useEffect(() => {
-    if (!showControls) {
-      setWakeHandles({
-        up: findNodeHandle(wakeUpRef.current) ?? undefined,
-        down: findNodeHandle(wakeDownRef.current) ?? undefined,
-        left: findNodeHandle(wakeLeftRef.current) ?? undefined,
-        right: findNodeHandle(wakeRightRef.current) ?? undefined,
-      });
-    }
-  }, [showControls]);
 
   // Automatically select English subtitle by default if present -- but
   // only ever attempt this once, and never after the user has manually
@@ -354,34 +338,76 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     resetInactivityTimer();
   }, [resetInactivityTimer, syncProgressToStore]);
 
-  // Global D-pad Remote Listener (Allows seek both when controls are hidden OR when seekbar is focused)
-  if (typeof useTVEventHandler === 'function') {
-    useTVEventHandler((evt: any) => {
-      if (!evt?.eventType || activeDialog) return;
-      const type = evt.eventType;
+  // Global D-pad / remote key listener via react-native-keyevent.
+  //
+  // Why this exists: React Native's own focus system only tells a view
+  // "you were pressed" (onPress) or "you gained focus" (onFocus) -- it has
+  // no concept of "the LEFT key is being held down" independent of what's
+  // currently focused. That meant two things were previously impossible
+  // without navigating focus onto a specific button first: (1) holding the
+  // raw D-pad LEFT/RIGHT to seek continuously like Stremio, and (2) truly
+  // any key (not just OK/select) waking the hidden control overlay.
+  //
+  // react-native-keyevent hooks Android's raw key event stream directly
+  // (independent of focus), and Android's own input system automatically
+  // re-fires key-down events at a steady cadence while a hardware key is
+  // held -- so no manual repeat-timer is needed here, we just react to
+  // each event as it arrives. `handleContinuousDPadSeek`'s existing streak
+  // logic turns that natural repeat cadence into the accelerating seek.
+  useEffect(() => {
+    const handleKeyDown = (keyEvent: { keyCode?: number }) => {
+      const keyCode = keyEvent?.keyCode;
+      if (keyCode == null) return;
+      // While a dialog (subtitle/audio/quality picker) is open, let its
+      // own focus navigation own every key -- don't seek or toggle
+      // playback underneath it.
+      if (activeDialog) return;
+
+      const isLeft = keyCode === KEYCODE_DPAD_LEFT;
+      const isRight = keyCode === KEYCODE_DPAD_RIGHT;
+      const isUp = keyCode === KEYCODE_DPAD_UP;
+      const isDown = keyCode === KEYCODE_DPAD_DOWN;
+      const isSelect = keyCode === KEYCODE_DPAD_CENTER || keyCode === KEYCODE_ENTER;
+      const isPlayPause = keyCode === KEYCODE_MEDIA_PLAY_PAUSE;
 
       if (!showControls) {
-        if (['up', 'down', 'select', 'playPause'].includes(type)) {
+        if (isRight) {
+          handleContinuousDPadSeek('right');
+        } else if (isLeft) {
+          handleContinuousDPadSeek('left');
+        } else if (isSelect || isPlayPause) {
+          handleCatcherPress();
+        } else {
+          // Any other key (up/down/menu/info/etc.) just wakes the
+          // overlay without also seeking or toggling playback.
           resetInactivityTimer();
         }
-
-        if (type === 'right') handleContinuousDPadSeek('right');
-        else if (type === 'left') handleContinuousDPadSeek('left');
-        else if (type === 'select' || type === 'playPause') {
-          handleCatcherPress();
-        }
       } else {
-        if (isSeekbarFocused && (type === 'left' || type === 'right')) {
-          handleContinuousDPadSeek(type as 'left' | 'right');
+        // Controls are visible: only hijack left/right when the seekbar
+        // itself is the focused element (otherwise let left/right move
+        // focus between buttons normally).
+        if (isSeekbarFocused && (isLeft || isRight)) {
+          handleContinuousDPadSeek(isRight ? 'right' : 'left');
           return;
         }
-
-        if (['up', 'down', 'left', 'right', 'select'].includes(type)) {
+        if (isUp || isDown || isLeft || isRight || isSelect) {
           resetInactivityTimer();
         }
       }
-    });
-  }
+    };
+
+    KeyEvent.onKeyDownListener(handleKeyDown);
+    return () => {
+      KeyEvent.removeKeyDownListener();
+    };
+  }, [
+    activeDialog,
+    showControls,
+    isSeekbarFocused,
+    handleContinuousDPadSeek,
+    handleCatcherPress,
+    resetInactivityTimer,
+  ]);
 
   // Remote Back Button Handler
   useEffect(() => {
@@ -548,50 +574,22 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Multi-directional focus trap shown while controls are hidden.
-          One "center" catcher holds preferred focus and handles the
-          OK/select button (play/pause toggle). Its nextFocusUp/Down/
-          Left/Right point at 4 separate tiny decoy views rather than at
-          itself: Android only fires a fresh onFocus when focus actually
-          moves to a *different* view, so pointing back at itself (as a
-          self-reference) never generated an event for a plain directional
-          press -- which is why controls previously only ever came back on
-          OK/select. Routing each direction to its own real sibling view
-          means any single D-pad press now genuinely changes focus and
-          fires onFocus, revealing the controls. This relies only on
-          standard `nextFocusX` props (no native key listener needed).
-          True "seek while still hidden" via holding an arrow key isn't
-          covered by this -- that still needs a global key listener like
-          `react-native-tvos`'s TVEventHandler or `react-native-keyevent`,
-          neither of which is in this project's dependencies. */}
+      {/* Fallback catcher shown while controls are hidden. The
+          `react-native-keyevent` listener above is what makes any D-pad
+          key wake the controls now (it doesn't depend on what's
+          focused) -- this Pressable stays only as a touch-input
+          fallback (for remotes/pointers that send touch events rather
+          than key events) and as somewhere for initial focus to land. */}
       {!showControls && (
-        <>
-          <View
-            ref={wakeCenterRef}
-            style={StyleSheet.absoluteFill}
-            focusable={true}
-            hasTVPreferredFocus={true}
-            nextFocusUp={wakeHandles.up}
-            nextFocusDown={wakeHandles.down}
-            nextFocusLeft={wakeHandles.left}
-            nextFocusRight={wakeHandles.right}
-          >
-            <TVFocusablePressable
-              hasTVPreferredFocus
-              style={StyleSheet.absoluteFillObject}
-              onPress={handleCatcherPress}
-              focusedBorderColor="transparent"
-              scaleFocused={1}
-            >
-              {() => <View style={StyleSheet.absoluteFillObject} />}
-            </TVFocusablePressable>
-          </View>
-
-          <Pressable ref={wakeUpRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
-          <Pressable ref={wakeDownRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
-          <Pressable ref={wakeLeftRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
-          <Pressable ref={wakeRightRef} focusable style={styles.wakeDecoy} onFocus={resetInactivityTimer} />
-        </>
+        <TVFocusablePressable
+          hasTVPreferredFocus
+          style={StyleSheet.absoluteFillObject}
+          onPress={handleCatcherPress}
+          focusedBorderColor="transparent"
+          scaleFocused={1}
+        >
+          {() => <View style={StyleSheet.absoluteFillObject} />}
+        </TVFocusablePressable>
       )}
 
       {/* Bottom Controls Overlay */}
@@ -674,9 +672,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               </TVFocusablePressable>
 
               {/* 10s Rewind -- tap seeks once; press-and-hold repeats with
-                  acceleration (matches Stremio's hold-to-seek), using the
-                  same streak logic as the (currently inert) global D-pad
-                  handler below. */}
+                  acceleration. Holding the raw D-pad LEFT key (without
+                  navigating focus here first) now does the same thing via
+                  the global key listener above. */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -993,14 +991,6 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  wakeDecoy: {
-    position: 'absolute',
-    top: -10,
-    left: -10,
-    width: 1,
-    height: 1,
-    opacity: 0,
   },
   controlsWrapper: {
     position: 'absolute',
