@@ -14,7 +14,6 @@ export interface TVHeroMedia {
   runtime?: string;
   genres?: string[];
   cast?: string[];
-  hasLandscapeBackdrop?: boolean;
 }
 
 interface TVHeroMetaProps {
@@ -22,7 +21,6 @@ interface TVHeroMetaProps {
 }
 
 export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
-  const isLandscape = Boolean(media?.backdropUrl && media.hasLandscapeBackdrop);
   const displayImage = media?.backdropUrl || media?.posterUrl;
 
   return (
@@ -33,19 +31,19 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
             key={displayImage}
             source={{ uri: displayImage }}
             style={styles.backdropImage}
-            resizeMode={isLandscape ? 'cover' : 'stretch'}
+            resizeMode="cover"
           />
 
           {/* Bottom fade into the rows */}
           <LinearGradient
             colors={['transparent', 'rgba(10, 10, 14, 0.45)', '#0A0A0E']}
-            locations={[0, 0.55, 1]}
+            locations={[0, 0.65, 1]}
             style={styles.bottomGradient}
           />
 
           {/* Left vignette protecting text contrast */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.82)', 'transparent']}
+            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.85)', 'transparent']}
             locations={[0, 0.45, 0.85]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
@@ -54,7 +52,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
         </View>
       ) : null}
 
-      {/* Top-Left Stremio Metadata Block */}
+      {/* Top-Left Metadata Block */}
       <View style={styles.contentWrapper}>
         <Text numberOfLines={1} style={styles.title}>
           {media?.title || ''}
@@ -91,7 +89,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
 
 const styles = StyleSheet.create({
   container: {
-    height: 195,
+    height: 230,
     width: SCREEN_WIDTH,
     position: 'relative',
     backgroundColor: '#0A0A0E',
@@ -99,14 +97,17 @@ const styles = StyleSheet.create({
   backdropLayer: {
     position: 'absolute',
     top: 0,
-    left: 0,
     right: 0,
-    height: 360,
+    width: '100%',
+    height: 400,
     overflow: 'hidden',
   },
   backdropImage: {
     width: '100%',
     height: '100%',
+    position: 'absolute',
+    right: 0,
+    top: 0,
   },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
@@ -118,8 +119,8 @@ const styles = StyleSheet.create({
   contentWrapper: {
     position: 'absolute',
     top: 14,
-    left: 84, // Aligns cleanly next to the 68dp sidebar
-    maxWidth: 660,
+    left: 84,
+    maxWidth: 680,
     zIndex: 10,
   },
   title: {
