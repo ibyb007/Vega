@@ -124,6 +124,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [showControls, setShowControls] = useState(false);
+  const [isSeekbarFocused, setIsSeekbarFocused] = useState(false);
 
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
   const [audioTracks, setAudioTracks] = useState<any[]>([]);
@@ -215,6 +216,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     setShowControls(true);
     hideControlsTimer.current = setTimeout(() => {
       setShowControls((prev) => (activeDialog ? true : false));
+      setIsSeekbarFocused(false);
     }, 3500);
   }, [activeDialog]);
 
@@ -235,7 +237,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     });
   }, [duration, resetInactivityTimer, syncProgressToStore]);
 
-  // Handle D-pad directional holds with progressive acceleration
   const handleContinuousDPadSeek = useCallback((dir: 'left' | 'right') => {
     resetInactivityTimer();
     const now = Date.now();
@@ -272,7 +273,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     resetInactivityTimer();
   }, [resetInactivityTimer, syncProgressToStore]);
 
-  // Global D-pad Remote Listener
+  // Global D-pad Remote Listener (Allows seek both when controls are hidden OR when seekbar is focused)
   if (typeof useTVEventHandler === 'function') {
     useTVEventHandler((evt: any) => {
       if (!evt?.eventType || activeDialog) return;
@@ -289,6 +290,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           handleCatcherPress();
         }
       } else {
+        // When controls are visible:
+        if (isSeekbarFocused && (type === 'left' || type === 'right')) {
+          handleContinuousDPadSeek(type as 'left' | 'right');
+          return;
+        }
+
         if (['up', 'down', 'left', 'right', 'select'].includes(type)) {
           resetInactivityTimer();
         }
@@ -306,6 +313,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       }
       if (showControls) {
         setShowControls(false);
+        setIsSeekbarFocused(false);
         if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
         return true;
       }
@@ -382,7 +390,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   };
 
-  // Toggles display mode without key remounting (prevents playback reload)
   const toggleAspectRatio = () => {
     resetInactivityTimer();
     setResizeMode((prev) => {
@@ -411,13 +418,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
         textTracks={subtitles}
-        // #00000000 zeros out the ExoPlayer bounding box color; fontSize scales to 28
         subtitleStyle={{
-          backgroundColor: '#00000000',
-          opacity: 1,
           fontSize: 28,
           subtitlesFollowVideo: true,
-          paddingBottom: 40,
+          paddingBottom: 45,
         }}
         onLoad={(meta: any) => {
           const totalDur = meta.duration || 0;
@@ -483,10 +487,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       {/* Bottom Controls Overlay */}
       {showControls && (
         <View style={styles.controlsWrapper}>
-          {/* Subtle bottom-only gradient that avoids casting a shadow over center video */}
+          {/* Subtle gradient pinned strictly to the bottom */}
           <LinearGradient
-            colors={['transparent', 'rgba(5, 5, 8, 0.4)', 'rgba(5, 5, 8, 0.88)']}
-            locations={[0, 0.35, 1]}
+            colors={['transparent', 'rgba(0, 0, 0, 0.4)', 'rgba(0, 0, 0, 0.85)']}
+            locations={[0, 0.4, 1]}
             style={styles.gradientOverlay}
           />
 
@@ -502,6 +506,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 scaleFocused={1}
                 focusedBorderColor="transparent"
                 borderRadius={0}
+                onFocusChange={(f) => setIsSeekbarFocused(f)}
                 onFocus={() => resetInactivityTimer()}
                 onPress={() => handleSeek(15)}
                 style={styles.progressHitArea}
@@ -537,7 +542,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             <View style={styles.actionRow}>
               {/* Play / Pause */}
               <TVFocusablePressable
-                hasTVPreferredFocus={true}
+                hasTVPreferredFocus={!isSeekbarFocused}
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
@@ -802,6 +807,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   </TVFocusablePressable>
                 ))}
 
+              {/* Server Options */}
               {activeDialog === 'server' &&
                 servers.map((srv, i) => (
                   <TVFocusablePressable
@@ -825,6 +831,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   </TVFocusablePressable>
                 ))}
 
+              {/* Quality Options */}
               {activeDialog === 'quality' &&
                 qualities.map((q, i) => (
                   <TVFocusablePressable
@@ -870,32 +877,35 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
+    height: 120, // Constrain bounds so the gradient cannot climb into center screen
     justifyContent: 'flex-end',
   },
   gradientOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    height: 110,
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 120,
   },
   controlsContent: {
     paddingHorizontal: 40,
-    paddingBottom: 20,
-    paddingTop: 8,
+    paddingBottom: 16,
     zIndex: 10,
   },
   mediaTitle: {
     color: '#FFFFFF',
     fontSize: 20,
     fontWeight: '800',
-    marginBottom: 8,
+    marginBottom: 6,
     textShadowColor: 'rgba(0,0,0,0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
   progressContainer: {
-    marginBottom: 10,
+    marginBottom: 8,
   },
   progressHitArea: {
-    paddingVertical: 6,
+    paddingVertical: 4,
     justifyContent: 'center',
   },
   progressTrack: {
