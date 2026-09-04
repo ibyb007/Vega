@@ -23,57 +23,35 @@ interface TVHeroMetaProps {
 
 export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
   const isLandscape = Boolean(media?.backdropUrl && media.hasLandscapeBackdrop);
-  const posterFallback = media?.posterUrl || media?.backdropUrl;
+  const displayImage = media?.backdropUrl || media?.posterUrl;
 
   return (
     <View style={styles.container}>
-      {/* Background Graphic Layer */}
-      {isLandscape && media?.backdropUrl ? (
-        // 1. Genuine 16:9 Landscape Fanart Layer
+      {displayImage ? (
         <View style={styles.backdropLayer} pointerEvents="none">
           <Image
-            key={media.backdropUrl}
-            source={{ uri: media.backdropUrl }}
+            key={displayImage}
+            source={{ uri: displayImage }}
             style={styles.backdropImage}
-            resizeMode="cover"
+            // 16:9 uses cover; portrait fallback stretches along width without zooming or cropping
+            resizeMode={isLandscape ? 'cover' : 'stretch'}
           />
+
+          {/* Bottom blend into the rows below */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.2)', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
+            colors={['rgba(10, 10, 14, 0.1)', 'rgba(10, 10, 14, 0.65)', '#0A0A0E']}
             locations={[0, 0.55, 1]}
             style={styles.bottomGradient}
           />
+
+          {/* Left vignette protecting top-left title & metadata */}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.75)', 'transparent']}
+            colors={['rgba(10, 10, 14, 0.98)', 'rgba(10, 10, 14, 0.82)', 'transparent']}
             locations={[0, 0.45, 0.85]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.leftGradient}
           />
-        </View>
-      ) : posterFallback ? (
-        // 2. Portrait Poster Fallback (~38% Width, No Cropping/Zooming)
-        <View style={styles.posterFallbackLayer} pointerEvents="none">
-          <View style={styles.posterContainer}>
-            <Image
-              key={posterFallback}
-              source={{ uri: posterFallback }}
-              style={styles.posterImage}
-              resizeMode="contain"
-            />
-            {/* Soft edge blend into dark canvas */}
-            <LinearGradient
-              colors={['#0A0A0E', 'transparent', 'transparent', '#0A0A0E']}
-              locations={[0, 0.15, 0.85, 1]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={StyleSheet.absoluteFill}
-            />
-            <LinearGradient
-              colors={['transparent', 'rgba(10, 10, 14, 0.8)', '#0A0A0E']}
-              locations={[0, 0.6, 1]}
-              style={StyleSheet.absoluteFill}
-            />
-          </View>
         </View>
       ) : null}
 
@@ -133,30 +111,12 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
   },
-  posterFallbackLayer: {
-    position: 'absolute',
-    top: 0,
-    right: 32,
-    bottom: 0,
-    width: '38%',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  posterContainer: {
-    width: '100%',
-    height: 220,
-    position: 'relative',
-  },
-  posterImage: {
-    width: '100%',
-    height: '100%',
-  },
   bottomGradient: {
     ...StyleSheet.absoluteFillObject,
   },
   leftGradient: {
     ...StyleSheet.absoluteFillObject,
-    width: '75%',
+    width: '80%',
   },
   contentWrapper: {
     paddingLeft: 88,
