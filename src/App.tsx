@@ -75,7 +75,6 @@ export default function App() {
     });
   }, []);
 
-  // Back button handling: Player -> Details -> Backstack -> Exit
   useEffect(() => {
     const handleBackPress = () => {
       if (activeStream) {
@@ -117,7 +116,13 @@ export default function App() {
           <GlobalErrorBoundary>
             <QueryClientProvider client={queryClient}>
               <View style={styles.rootContainer}>
-                <StatusBar hidden={true} />
+                {/* Translucent status bar eliminates the 1.6cm top black letterbox bar */}
+                <StatusBar
+                  hidden={true}
+                  translucent={true}
+                  backgroundColor="transparent"
+                  barStyle="light-content"
+                />
                 <AppDialogHost />
 
                 {activeStream ? (
@@ -210,7 +215,6 @@ export default function App() {
                       {currentRoute === 'settings' && <TVSettingsScreen />}
                     </View>
 
-                    {/* True Overlay Rail (Does not shift viewport) */}
                     <TVNavigationRail
                       currentRoute={currentRoute}
                       onRouteChange={navigateTo}
@@ -247,6 +251,6 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     backgroundColor: '#0A0A0E',
-    paddingLeft: 68,
+    // Removed paddingLeft: 68 so TVHomeScreen can manage its padding cleanly
   },
 });
