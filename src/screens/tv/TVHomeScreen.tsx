@@ -23,45 +23,27 @@ import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { getMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
+import { providerManager } from '../../lib/services/ProviderManager';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 
-const ROW_HEIGHT = 250;
-const cinemetaMemoryCache = new Map<string, any>();
+const ROW_HEIGHT = 235;
+const imdbMetaCache = new Map<string, any>();
 
-const sanitizeQueryTitle = (raw: string): string => {
-  return raw
-    .replace(/\(.*?\)/g, '')
-    .replace(/\[.*?\]/g, '')
-    .replace(/season\s*\d+/gi, '')
-    .replace(/s\d+/gi, '')
-    .replace(/-+/g, ' ')
-    .trim();
-};
+// Fetch high-res landscape backdrop via IMDb ID (100% accurate, no text matching errors)
+const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Promise<any | null> => {
+  if (!imdbId || !imdbId.startsWith('tt')) return null;
 
-const fetchCinemetaMeta = async (title: string): Promise<any | null> => {
-  const clean = sanitizeQueryTitle(title);
-  if (!clean) return null;
-
-  if (cinemetaMemoryCache.has(clean.toLowerCase())) {
-    return cinemetaMemoryCache.get(clean.toLowerCase());
+  if (imdbMetaCache.has(imdbId)) {
+    return imdbMetaCache.get(imdbId);
   }
 
   try {
-    const encoded = encodeURIComponent(clean);
-    const movieRes = await fetch(`https://v3-cinemeta.strem.io/catalog/movie/top/search=${encoded}.json`);
-    const movieData = await movieRes.json();
-    if (movieData?.metas && movieData.metas.length > 0) {
-      const match = movieData.metas[0];
-      cinemetaMemoryCache.set(clean.toLowerCase(), match);
-      return match;
-    }
-
-    const seriesRes = await fetch(`https://v3-cinemeta.strem.io/catalog/series/top/search=${encoded}.json`);
-    const seriesData = await seriesRes.json();
-    if (seriesData?.metas && seriesData.metas.length > 0) {
-      const match = seriesData.metas[0];
-      cinemetaMemoryCache.set(clean.toLowerCase(), match);
-      return match;
+    const mediaType = type === 'series' ? 'series' : 'movie';
+    const res = await fetch(`https://v3-cinemeta.strem.io/meta/${mediaType}/${imdbId}.json`);
+    const data = await res.json();
+    if (data?.meta) {
+      imdbMetaCache.set(imdbId, data.meta);
+      return data.meta;
     }
   } catch {}
 
@@ -119,20 +101,22 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     return rows.concat(homeData.filter((r) => r.Posts && r.Posts.length > 0));
   }, [watchHistory, homeData]);
 
+  // Accurate metadata resolution matching TVDetailsScreen / TVInfoScreen
   const updateHeroWithBestMetadata = useCallback(
     async (item: any, isHistory: boolean = false) => {
       const posterImage = item.poster || item.background || item.image;
       const targetUrl = item.infoUrl || item.link;
       const targetProvider = item.providerValue || item.provider || provider?.value;
 
-      let backdrop = null;
-      let hasLandscape = false;
+      let backdrop = item.backdrop || item.banner || null;
+      let hasLandscape = Boolean(backdrop);
       let description = item.extra || item.description || '';
       let rating = item.rating || null;
       let year = item.year || null;
       let genres = item.genres || [];
+      let foundImdbId: string | null = null;
 
-      // 1. Prioritize Vega's own provider metadata cache (ensures 100% accuracy matching TVInfoScreen)
+      // 1. Vega Internal Provider Metadata Cache (same source used by TVDetailsScreen)
       if (targetUrl && targetProvider) {
         try {
           const cached = await getMetadata(targetUrl, targetProvider);
@@ -145,20 +129,22 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             if (cached.rating) rating = String(cached.rating);
             if (cached.year) year = String(cached.year);
             if (cached.genres?.length) genres = cached.genres;
+            if (cached.imdbId && typeof cached.imdbId === 'string') {
+              foundImdbId = cached.imdbId;
+            }
           }
         } catch {}
       }
 
-      // 2. Fall back to item properties if provider cache didn't have backdrop
-      if (!backdrop) {
-        backdrop = item.backdrop || item.banner || item.background || null;
-        hasLandscape = Boolean(backdrop);
+      // Check item properties for IMDb ID
+      if (!foundImdbId && item.imdbId) {
+        foundImdbId = item.imdbId;
       }
 
-      // 3. Final fallback to Cinemeta search if still missing fanart
-      if (!backdrop && item.title) {
+      // 2. Query Cinemeta strictly with valid IMDb ID (guarantees 100% correct title fanart)
+      if (foundImdbId) {
         try {
-          const cineMeta = await fetchCinemetaMeta(item.title);
+          const cineMeta = await fetchCinemetaByImdb(foundImdbId, item.type);
           if (cineMeta) {
             if (cineMeta.background) {
               backdrop = cineMeta.background;
@@ -276,10 +262,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
+      {/* Stationary Stremio Header */}
       <View style={styles.fixedHeroContainer}>
         <TVHeroMeta media={activeHero} />
       </View>
 
+      {/* Sliding Row Viewport */}
       <View style={styles.stageViewport}>
         <Animated.View style={[styles.slidingRowsContainer, animatedRowsStyle]}>
           {displayRows.map((row: any, rowIndex: number) => {
@@ -314,6 +302,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         scaleFocused={1.06}
                         focusedBorderColor="#FFFFFF"
                         borderRadius={8}
+                        delayLongPress={350}
                         {...(isFirstInRow && homeFocusTarget
                           ? { nextFocusLeft: homeFocusTarget }
                           : { trapFocusLeft: !isFirstInRow })}
@@ -379,6 +368,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         </Animated.View>
       </View>
 
+      {/* Remove from Continue Watching Confirmation Modal */}
       <Modal
         visible={Boolean(itemToDelete)}
         transparent={true}
@@ -432,7 +422,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   fixedHeroContainer: {
-    height: 260,
+    height: 195,
     width: '100%',
     position: 'absolute',
     top: 0,
@@ -442,7 +432,7 @@ const styles = StyleSheet.create({
   },
   stageViewport: {
     position: 'absolute',
-    top: 260,
+    top: 185, // Starts higher so Row 1 is fully visible and Row 2 peeks out from the bottom
     bottom: 0,
     left: 0,
     right: 0,
@@ -450,33 +440,33 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   slidingRowsContainer: {
-    paddingLeft: 72, // Minimized gap matching collapsed sidebar
-    paddingTop: 4,
+    paddingLeft: 84, // 68dp sidebar + 16dp spacing
+    paddingTop: 0,
   },
   rowContainer: {
     height: ROW_HEIGHT,
   },
   rowCategoryTitle: {
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
-    marginBottom: 8,
+    marginBottom: 6,
     letterSpacing: 0.2,
   },
   horizontalRowScroll: {
     paddingRight: 60,
     gap: 14,
-    paddingVertical: 4,
+    paddingVertical: 2,
   },
   card: {
-    width: 135,
-    height: 195,
+    width: 130,
+    height: 190,
     backgroundColor: '#16161E',
     borderRadius: 8,
   },
   cardCompact: {
-    width: 130,
-    height: 185,
+    width: 125,
+    height: 180,
   },
   cardInner: {
     flex: 1,
@@ -496,12 +486,12 @@ const styles = StyleSheet.create({
     right: 0,
     backgroundColor: 'rgba(5, 5, 8, 0.85)',
     paddingHorizontal: 6,
-    paddingTop: 4,
-    paddingBottom: 4,
+    paddingTop: 3,
+    paddingBottom: 3,
   },
   historyPercentText: {
     color: '#D1D5DB',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     marginBottom: 2,
   },
