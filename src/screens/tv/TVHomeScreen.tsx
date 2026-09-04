@@ -25,12 +25,9 @@ import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { getMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 
-const ROW_HEIGHT = 245;
-
-// In-memory Cinemeta fanart and details cache (0ms lookup on remote navigation)
+const ROW_HEIGHT = 250;
 const cinemetaMemoryCache = new Map<string, any>();
 
-// Sanitizes title query strings (e.g. "The Gentlemen (Season 1 - 2)" -> "The Gentlemen")
 const sanitizeQueryTitle = (raw: string): string => {
   return raw
     .replace(/\(.*?\)/g, '')
@@ -51,7 +48,6 @@ const fetchCinemetaMeta = async (title: string): Promise<any | null> => {
 
   try {
     const encoded = encodeURIComponent(clean);
-    // 1. Check movie catalog endpoint
     const movieRes = await fetch(`https://v3-cinemeta.strem.io/catalog/movie/top/search=${encoded}.json`);
     const movieData = await movieRes.json();
     if (movieData?.metas && movieData.metas.length > 0) {
@@ -60,7 +56,6 @@ const fetchCinemetaMeta = async (title: string): Promise<any | null> => {
       return match;
     }
 
-    // 2. Check series catalog endpoint
     const seriesRes = await fetch(`https://v3-cinemeta.strem.io/catalog/series/top/search=${encoded}.json`);
     const seriesData = await seriesRes.json();
     if (seriesData?.metas && seriesData.metas.length > 0) {
@@ -135,13 +130,13 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       let year = item.year || null;
       let genres = item.genres || [];
 
-      // 1. Vega Internal Metadata Cache check
+      // 1. Vega Internal Provider Metadata Cache (mirrors TVDetailsScreen / TVInfoScreen)
       if (targetUrl && targetProvider) {
         try {
           const cached = await getMetadata(targetUrl, targetProvider);
           if (cached) {
-            if (cached.background) {
-              backdrop = cached.background;
+            if (cached.background || cached.backdrop) {
+              backdrop = cached.background || cached.backdrop;
               hasLandscape = true;
             }
             if (cached.description) description = cached.description;
@@ -152,7 +147,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         } catch {}
       }
 
-      // 2. Inbuilt Cinemeta metadata check if no landscape fanart exists yet
+      // 2. Cinemeta fallback only if Vega does not have landscape fanart
       if (!backdrop && item.title) {
         try {
           const cineMeta = await fetchCinemetaMeta(item.title);
@@ -214,7 +209,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     }
   }, [displayRows, activeHero, updateHeroWithBestMetadata]);
 
-  // Translate rows container up smoothly when moving D-pad Down
   const handleCardFocus = useCallback(
     (rowIndex: number, item: any, isHistory: boolean = false) => {
       initialFocusSetRef.current = true;
@@ -274,7 +268,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* 1. Stationary Stremio Header Over Backdrop */}
+      {/* 1. Stationary Stremio Header Over Full Backdrop */}
       <View style={styles.fixedHeroContainer}>
         <TVHeroMeta media={activeHero} />
       </View>
@@ -285,6 +279,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           {displayRows.map((row: any, rowIndex: number) => {
             const rowPosts = row.Posts || [];
             if (rowPosts.length === 0) return null;
+            const isHistoryRow = Boolean(row.isHistory);
 
             return (
               <View key={`${row.filter || row.title}-${rowIndex}`} style={styles.rowContainer}>
@@ -309,12 +304,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                       <TVFocusablePressable
                         key={`${item.infoUrl || item.link || item.id}-${pIndex}`}
                         hasTVPreferredFocus={isPreferred}
-                        scaleFocused={1.07}
+                        scaleFocused={1.06}
                         focusedBorderColor="#FFFFFF"
                         borderRadius={8}
-                        onFocus={() => handleCardFocus(rowIndex, item, Boolean(row.isHistory))}
+                        onFocus={() => handleCardFocus(rowIndex, item, isHistoryRow)}
                         onPress={() => {
-                          if (row.isHistory) {
+                          if (isHistoryRow) {
                             onSelectItem({
                               link: item.infoUrl || item.link,
                               provider: item.providerValue || item.provider,
@@ -326,11 +321,14 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                           }
                         }}
                         onLongPress={() => {
-                          if (row.isHistory) {
+                          if (isHistoryRow) {
                             setItemToDelete(item);
                           }
                         }}
-                        style={styles.card}
+                        style={[
+                          styles.card,
+                          isHistoryRow && styles.cardCompact,
+                        ]}
                       >
                         {({ focused }) => (
                           <View style={styles.cardInner}>
@@ -344,19 +342,21 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               resizeMode="cover"
                             />
 
-                            {/* Continue Watching Progress Fill */}
-                            {row.isHistory && progressPercent > 0 && (
-                              <View style={styles.progressBarTrack}>
-                                <View
-                                  style={[
-                                    styles.progressBarFill,
-                                    { width: `${progressPercent}%` },
-                                  ]}
-                                />
+                            {/* Continue Watching Progress Overlay & Percent Tag */}
+                            {isHistoryRow && progressPercent > 0 && (
+                              <View style={styles.historyMetaOverlay}>
+                                <Text style={styles.historyPercentText}>{progressPercent}%</Text>
+                                <View style={styles.progressBarTrack}>
+                                  <View
+                                    style={[
+                                      styles.progressBarFill,
+                                      { width: `${progressPercent}%` },
+                                    ]}
+                                  />
+                                </View>
                               </View>
                             )}
 
-                            {/* Focused White Glow Border */}
                             {focused && <View style={styles.focusBorderGlow} />}
                           </View>
                         )}
@@ -424,7 +424,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   fixedHeroContainer: {
-    height: 230,
+    height: 260,
     width: '100%',
     position: 'absolute',
     top: 0,
@@ -434,7 +434,7 @@ const styles = StyleSheet.create({
   },
   stageViewport: {
     position: 'absolute',
-    top: 230,
+    top: 260,
     bottom: 0,
     left: 0,
     right: 0,
@@ -466,6 +466,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#16161E',
     borderRadius: 8,
   },
+  cardCompact: {
+    width: 130,
+    height: 185,
+  },
   cardInner: {
     flex: 1,
     borderRadius: 8,
@@ -477,13 +481,28 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 8,
   },
-  progressBarTrack: {
+  historyMetaOverlay: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    height: 4,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: 'rgba(5, 5, 8, 0.85)',
+    paddingHorizontal: 6,
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  historyPercentText: {
+    color: '#D1D5DB',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  progressBarTrack: {
+    width: '100%',
+    height: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderRadius: 1.5,
+    overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
