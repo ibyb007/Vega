@@ -125,13 +125,14 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       const targetUrl = item.infoUrl || item.link;
       const targetProvider = item.providerValue || item.provider || provider?.value;
 
-      let backdrop = item.backdrop || item.banner || null;
-      let hasLandscape = Boolean(backdrop);
+      let backdrop = null;
+      let hasLandscape = false;
       let description = item.extra || item.description || '';
       let rating = item.rating || null;
       let year = item.year || null;
       let genres = item.genres || [];
 
+      // 1. Prioritize Vega's own provider metadata cache (ensures 100% accuracy matching TVInfoScreen)
       if (targetUrl && targetProvider) {
         try {
           const cached = await getMetadata(targetUrl, targetProvider);
@@ -148,6 +149,13 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         } catch {}
       }
 
+      // 2. Fall back to item properties if provider cache didn't have backdrop
+      if (!backdrop) {
+        backdrop = item.backdrop || item.banner || item.background || null;
+        hasLandscape = Boolean(backdrop);
+      }
+
+      // 3. Final fallback to Cinemeta search if still missing fanart
       if (!backdrop && item.title) {
         try {
           const cineMeta = await fetchCinemetaMeta(item.title);
@@ -183,7 +191,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
       setActiveHero({
         title: item.title,
-        backdropUrl: backdrop || undefined,
+        backdropUrl: backdrop || posterImage || undefined,
         posterUrl: posterImage,
         hasLandscapeBackdrop: hasLandscape,
         overview: isHistory
@@ -306,7 +314,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         scaleFocused={1.06}
                         focusedBorderColor="#FFFFFF"
                         borderRadius={8}
-                        // Leftmost poster explicitly delegates D-pad Left to the Home rail item
                         {...(isFirstInRow && homeFocusTarget
                           ? { nextFocusLeft: homeFocusTarget }
                           : { trapFocusLeft: !isFirstInRow })}
@@ -345,7 +352,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               resizeMode="cover"
                             />
 
-                            {/* Continue Watching Progress Overlay & Percent Tag */}
                             {isHistoryRow && progressPercent > 0 && (
                               <View style={styles.historyMetaOverlay}>
                                 <Text style={styles.historyPercentText}>{progressPercent}%</Text>
@@ -444,7 +450,7 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   slidingRowsContainer: {
-    paddingLeft: 88,
+    paddingLeft: 72, // Minimized gap matching collapsed sidebar
     paddingTop: 4,
   },
   rowContainer: {
