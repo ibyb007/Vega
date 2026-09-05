@@ -15,8 +15,12 @@ module.exports = function withKeyEvent(config) {
       if (!src.includes('dispatchKeyEvent')) {
         const method = `
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        KeyEventModule.getInstance().onKeyDownEvent(event.keyCode, event)
-        KeyEventModule.getInstance().onKeyUpEvent(event.keyCode, event)
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            KeyEventModule.getInstance().onKeyDownEvent(event.keyCode, event)
+        }
+        if (event.action == KeyEvent.ACTION_UP) {
+            KeyEventModule.getInstance().onKeyUpEvent(event.keyCode, event)
+        }
         return super.dispatchKeyEvent(event)
     }
 `;
@@ -35,8 +39,12 @@ module.exports = function withKeyEvent(config) {
         const method = `
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        KeyEventModule.getInstance().onKeyDownEvent(event.getKeyCode(), event);
-        KeyEventModule.getInstance().onKeyUpEvent(event.getKeyCode(), event);
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            KeyEventModule.getInstance().onKeyDownEvent(event.getKeyCode(), event);
+        }
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            KeyEventModule.getInstance().onKeyUpEvent(event.getKeyCode(), event);
+        }
         return super.dispatchKeyEvent(event);
     }
 `;
