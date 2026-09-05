@@ -31,7 +31,16 @@ export const launchVideo = async (
       });
       return true;
     } catch {
-      // Fallback if VLC package is not directly found
+      // VLC itself isn't installed / couldn't handle this intent -- let
+      // the person know specifically that, rather than silently handing
+      // off to whatever the device's own default video-handler is (which
+      // is easy to mistake for "it's using the app's Settings player
+      // choice" when actually neither this function nor its caller ever
+      // reads that setting).
+      Alert.alert(
+        'VLC not available',
+        'VLC could not be opened (it may not be installed). Falling back to another external player.'
+      );
       return launchGenericExternal(streamUrl, title);
     }
   }
