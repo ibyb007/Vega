@@ -7,7 +7,6 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
-  Dimensions,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
@@ -17,10 +16,9 @@ import { providerManager } from '../lib/services/ProviderManager';
 import { extensionStorage } from '../lib/storage';
 import { Post, Provider } from '../lib/providers/types';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-
 interface SearchResultGroup {
   provider: Provider;
+  providerName: string;
   posts: Post[];
   isLoading: boolean;
   error?: string;
@@ -29,6 +27,10 @@ interface SearchResultGroup {
 interface TVSearchProps {
   onSelectItem: (item: Post) => void;
 }
+
+const getProviderDisplayName = (p: Provider | any): string => {
+  return p?.display_name || p?.displayTitle || p?.name || p?.value || 'Provider';
+};
 
 export default function TVSearch({ onSelectItem }: TVSearchProps) {
   const [query, setQuery] = useState('');
@@ -39,6 +41,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
     title: string;
     backdropUrl?: string;
     overview?: string;
+    sourceName?: string;
   } | null>(null);
 
   const storeProviders = useContentStore((state) => state.installedProviders);
@@ -48,7 +51,6 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
   const searchInputRef = useRef<TextInput>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Helper: Read directly from MMKV storage if Zustand store is empty
   const getPersistedProviders = useCallback((): Provider[] => {
     try {
       const raw = extensionStorage.getString('installedProviders');
@@ -64,7 +66,6 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
     return [];
   }, []);
 
-  // Hydrate provider list on mount or when store updates
   useEffect(() => {
     let list = storeProviders || [];
     if (!list || list.length === 0) {
@@ -77,8 +78,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
     setActiveProviders(list);
   }, [storeProviders, getPersistedProviders, setInstalledProviders]);
 
-  // Unpack any provider's return payload format into clean Post[]
-  const normalizePosts = (data: any, providerValue: string): Post[] => {
+  const normalizePosts = (data: any, providerValue: string, providerName: string): Post[] => {
     let rawList: any[] = [];
     if (Array.isArray(data)) {
       rawList = data;
@@ -98,6 +98,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
         image: item.image || item.poster || item.banner || '',
         link: item.link || item.url || '',
         provider: item.provider || providerValue,
+        providerName: providerName,
       }));
   };
 
@@ -110,7 +111,6 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
         return;
       }
 
-      // Read most up-to-date provider list
       let currentList = activeProviders;
       if (!currentList || currentList.length === 0) {
         currentList = getPersistedProviders();
@@ -128,35 +128,32 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
 
       setIsSearching(true);
 
-      // Create initial placeholders for all installed extensions
       const initialGroups: SearchResultGroup[] = currentList.map((p) => ({
         provider: p,
+        providerName: getProviderDisplayName(p),
         posts: [],
         isLoading: true,
       }));
       setResults(initialGroups);
 
-      // Query every provider in parallel using original Vega providerManager
       await Promise.allSettled(
         currentList.map(async (p, index) => {
+          const pName = getProviderDisplayName(p);
           try {
             let data: any = null;
 
-            // 1. Try standard providerManager.search
-            if (typeof (providerManager as any).search === 'function') {
-              data = await (providerManager as any).search(p.value, trimmed, 1);
-            }
-            // 2. Fallback to getSearchPosts if present in core
-            else if (typeof (providerManager as any).getSearchPosts === 'function') {
+            if (typeof (providerManager as any).getSearchPosts === 'function') {
               data = await (providerManager as any).getSearchPosts({
                 searchQuery: trimmed,
                 page: 1,
                 providerValue: p.value,
                 signal: abortControllerRef.current?.signal,
               });
+            } else if (typeof (providerManager as any).search === 'function') {
+              data = await (providerManager as any).search(p.value, trimmed, 1);
             }
 
-            const cleanPosts = normalizePosts(data, p.value);
+            const cleanPosts = normalizePosts(data, p.value, pName);
 
             setResults((prev) => {
               const next = [...prev];
@@ -191,16 +188,16 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
     [activeProviders, getPersistedProviders]
   );
 
-  // Set fanart hero preview when first result arrives
   useEffect(() => {
     if (!activeHero && results.length > 0) {
       for (const group of results) {
         if (group.posts && group.posts.length > 0) {
-          const first = group.posts[0];
+          const first: any = group.posts[0];
           setActiveHero({
             title: first.title,
             backdropUrl: first.image,
             overview: first.extra || 'Select to browse stream links and episodes.',
+            sourceName: group.providerName,
           });
           break;
         }
@@ -216,7 +213,6 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
 
   return (
     <View style={styles.container}>
-      {/* Top Fanart Hero Background */}
       {activeHero?.backdropUrl && (
         <View style={styles.heroBackgroundContainer} pointerEvents="none">
           <Image
@@ -238,23 +234,28 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
         </View>
       )}
 
-      {/* Main Content Area */}
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* Dynamic Title Meta */}
         <View style={styles.heroMetaWrapper}>
-          <Text numberOfLines={1} style={styles.heroTitle}>
-            {activeHero?.title || 'Universal Search'}
-          </Text>
+          <View style={styles.heroHeaderRow}>
+            <Text numberOfLines={1} style={styles.heroTitle}>
+              {activeHero?.title || 'Universal Search'}
+            </Text>
+            {activeHero?.sourceName ? (
+              <View style={styles.sourceBadge}>
+                <MaterialCommunityIcons name="server-network" size={12} color="#FFFFFF" />
+                <Text style={styles.sourceBadgeText}>{activeHero.sourceName}</Text>
+              </View>
+            ) : null}
+          </View>
           <Text numberOfLines={2} style={styles.heroOverview}>
             {activeHero?.overview ||
               `Simultaneously query across all ${activeProviders.length} active addon providers.`}
           </Text>
         </View>
 
-        {/* Search Input Bar & Remote Button */}
         <View style={styles.header}>
           <View style={styles.searchBarWrapper}>
             <MaterialCommunityIcons name="magnify" size={24} color="#8A5CF6" />
@@ -308,7 +309,6 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
           </TVFocusablePressable>
         </View>
 
-        {/* Provider Source Filter Pills */}
         {results.length > 0 && (
           <View style={styles.tabBar}>
             <ScrollView
@@ -350,7 +350,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
                           activeTab === group.provider.value && styles.tabTextActive,
                         ]}
                       >
-                        {group.provider.displayTitle || group.provider.name}
+                        {group.providerName}
                       </Text>
                       <View style={styles.tabBadge}>
                         <Text style={styles.tabBadgeText}>{group.posts.length}</Text>
@@ -363,7 +363,6 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
           </View>
         )}
 
-        {/* Empty States */}
         {activeProviders.length === 0 ? (
           <View style={styles.emptyContainer}>
             <MaterialCommunityIcons name="puzzle-outline" size={64} color="#4B5563" />
@@ -381,7 +380,6 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
             </Text>
           </View>
         ) : (
-          /* Multi-Provider Result Sections */
           <View style={styles.resultsWrapper}>
             {displayResults.map((group) => {
               if (!group.isLoading && group.posts.length === 0) return null;
@@ -389,9 +387,10 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
               return (
                 <View key={group.provider.value} style={styles.providerSection}>
                   <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>
-                      {group.provider.displayTitle || group.provider.name}
-                    </Text>
+                    <View style={styles.sectionTitleRow}>
+                      <MaterialCommunityIcons name="server-network" size={18} color="#8A5CF6" />
+                      <Text style={styles.sectionTitle}>{group.providerName}</Text>
+                    </View>
                     {group.isLoading ? (
                       <ActivityIndicator size="small" color="#8A5CF6" />
                     ) : (
@@ -405,7 +404,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
                       showsHorizontalScrollIndicator={false}
                       contentContainerStyle={styles.horizontalRow}
                     >
-                      {group.posts.map((item, pIndex) => (
+                      {group.posts.map((item: any, pIndex) => (
                         <TVFocusablePressable
                           key={`${item.link}-${pIndex}`}
                           scaleFocused={1.08}
@@ -416,6 +415,7 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
                               title: item.title,
                               backdropUrl: item.image,
                               overview: item.extra || 'Select to browse stream links and episodes.',
+                              sourceName: group.providerName,
                             })
                           }
                           onPress={() => onSelectItem(item)}
@@ -432,6 +432,11 @@ export default function TVSearch({ onSelectItem }: TVSearchProps) {
                                 style={styles.cardPoster}
                                 resizeMode="cover"
                               />
+                              <View style={styles.cardTopSourceBadge}>
+                                <Text numberOfLines={1} style={styles.cardTopSourceText}>
+                                  {group.providerName}
+                                </Text>
+                              </View>
                               {focused && <View style={styles.cardGlow} />}
                               <View style={styles.cardLabelBottom}>
                                 <Text numberOfLines={1} style={styles.cardLabelText}>
@@ -481,15 +486,34 @@ const styles = StyleSheet.create({
     maxWidth: 680,
     marginBottom: 20,
   },
+  heroHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 6,
+  },
   heroTitle: {
     color: '#FFFFFF',
     fontSize: 32,
     fontWeight: '800',
     letterSpacing: 0.4,
-    marginBottom: 6,
     textShadowColor: 'rgba(0,0,0,0.9)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
+  },
+  sourceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#8A5CF6',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  sourceBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
   },
   heroOverview: {
     color: '#9CA3AF',
@@ -596,6 +620,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 12,
   },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   sectionTitle: {
     color: '#FFFFFF',
     fontSize: 18,
@@ -625,6 +654,22 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     borderRadius: 10,
+  },
+  cardTopSourceBadge: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    backgroundColor: 'rgba(10, 10, 14, 0.85)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  cardTopSourceText: {
+    color: '#D1D5DB',
+    fontSize: 10,
+    fontWeight: '700',
   },
   cardGlow: {
     ...StyleSheet.absoluteFillObject,
