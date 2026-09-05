@@ -44,38 +44,34 @@ export const launchVideo = async (
   }
 
   if (player === 'vlc') {
-    // Try to target VLC directly first (skips the chooser when it works).
-    // IMPORTANT: this explicit-package attempt is unreliable in practice --
-    // pairing an explicit `packageName` with a wildcard `type: 'video/*'`
-    // fails to resolve on a number of real Android TV / VLC builds even
-    // when VLC is installed, because explicit-component intent resolution
-    // doesn't go through VLC's manifest `<data>` mime-matching the same
-    // way an implicit intent does. The original (working) mobile app's
-    // `openExternalPlayer` never sets `packageName` at all -- it sends a
-    // plain implicit VIEW intent and lets Android resolve it -- so that's
-    // the fallback here, and it's what actually needs to succeed.
+    // The previous version tried an explicit `packageName: 'org.videolan.vlc'`
+    // intent first. That's now removed: it's still not launching VLC even
+    // though it's confirmed installed, which points at Android TV's VLC
+    // build simply not exposing a matching explicit-component intent
+    // filter (some TV ports of VLC only register the Leanback launcher
+    // activity, not a generic ACTION_VIEW handler reachable by package
+    // name) -- no combination of intent flags fixes that from our side.
+    // Going straight to the plain implicit intent below, exactly like the
+    // original (working) mobile app's `openExternalPlayer`, is the
+    // reliable path: Android resolves it against every installed app's
+    // manifest-declared `<data>` filters rather than requiring a specific
+    // package to match, so it reaches VLC (or shows a chooser, if more
+    // than one compatible player is installed) instead of silently
+    // failing to resolve.
     try {
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
         data: streamUrl,
         type: 'video/*',
         flags: 1,
-        packageName: 'org.videolan.vlc',
         extra: buildExtra(title, headers),
       });
       return true;
-    } catch {
-      try {
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-          data: streamUrl,
-          type: 'video/*',
-          flags: 1,
-          extra: buildExtra(title, headers),
-        });
-        return true;
-      } catch {
-        Alert.alert('Error', 'No compatible external video player found on this device.');
-        return false;
-      }
+    } catch (error: any) {
+      Alert.alert(
+        'Error',
+        `Could not open an external player.${error?.message ? `\n\n${error.message}` : ''}`
+      );
+      return false;
     }
   }
 
