@@ -38,6 +38,8 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Must point at the focusable Pressable itself (not an inner decorative
+  // View) -- see the comment in TVFocusablePressable for why.
   const homeTargetRef = useRef<View>(null);
 
   const activeIndex = NAV_ITEMS.findIndex((it) => it.id === currentRoute);
@@ -129,6 +131,7 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
           return (
             <TVFocusablePressable
               key={item.id}
+              ref={isHome ? homeTargetRef : undefined}
               scaleFocused={1}
               focusedBorderColor="transparent"
               borderRadius={10}
@@ -140,11 +143,7 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
               style={styles.navItem}
             >
               {({ focused }) => (
-                <View
-                  ref={isHome ? homeTargetRef : undefined}
-                  collapsable={false}
-                  style={styles.itemInner}
-                >
+                <View collapsable={false} style={styles.itemInner}>
                   <MaterialCommunityIcons
                     name={item.icon}
                     size={22}
