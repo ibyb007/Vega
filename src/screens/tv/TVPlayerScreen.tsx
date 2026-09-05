@@ -361,6 +361,32 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // held -- so no manual repeat-timer is needed here, we just react to
   // each event as it arrives. `handleContinuousDPadSeek`'s existing streak
   // logic turns that natural repeat cadence into the accelerating seek.
+  //
+  // This effect intentionally registers the native listener exactly ONCE
+  // ([] deps) instead of re-subscribing whenever showControls /
+  // isSeekbarFocused change. It used to depend on those, which meant every
+  // single controls-show/hide or seekbar-focus change during an active
+  // hold-seek tore down and rebuilt the native listener -- and any key
+  // repeat that landed in the gap between removeKeyDownListener() and the
+  // next onKeyDownListener() call was silently dropped. Dropped repeats
+  // left native Android focus-search briefly unopposed, which is how focus
+  // ended up drifting onto the control-bar buttons mid-hold a few (10-12)
+  // seconds in, even though nothing had visibly changed on our end. Refs
+  // let the one long-lived listener always see current state without ever
+  // needing to unsubscribe.
+  const activeDialogRef = useRef(activeDialog);
+  activeDialogRef.current = activeDialog;
+  const showControlsRef = useRef(showControls);
+  showControlsRef.current = showControls;
+  const isSeekbarFocusedRef = useRef(isSeekbarFocused);
+  isSeekbarFocusedRef.current = isSeekbarFocused;
+  const handleContinuousDPadSeekRef = useRef(handleContinuousDPadSeek);
+  handleContinuousDPadSeekRef.current = handleContinuousDPadSeek;
+  const handleCatcherPressRef = useRef(handleCatcherPress);
+  handleCatcherPressRef.current = handleCatcherPress;
+  const resetInactivityTimerRef = useRef(resetInactivityTimer);
+  resetInactivityTimerRef.current = resetInactivityTimer;
+
   useEffect(() => {
     const handleKeyDown = (keyEvent: { keyCode?: number }) => {
       const keyCode = keyEvent?.keyCode;
@@ -368,7 +394,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       // While a dialog (subtitle/audio/quality picker) is open, let its
       // own focus navigation own every key -- don't seek or toggle
       // playback underneath it.
-      if (activeDialog) return;
+      if (activeDialogRef.current) return;
       // Never touch the hardware Back key here. It used to fall through to
       // the "any other key just wakes the overlay" branch below, which
       // called resetInactivityTimer() (revealing controls) on the exact
@@ -388,28 +414,28 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       const isSelect = keyCode === KEYCODE_DPAD_CENTER || keyCode === KEYCODE_ENTER;
       const isPlayPause = keyCode === KEYCODE_MEDIA_PLAY_PAUSE;
 
-      if (!showControls) {
+      if (!showControlsRef.current) {
         if (isRight) {
-          handleContinuousDPadSeek('right');
+          handleContinuousDPadSeekRef.current('right');
         } else if (isLeft) {
-          handleContinuousDPadSeek('left');
+          handleContinuousDPadSeekRef.current('left');
         } else if (isSelect || isPlayPause) {
-          handleCatcherPress();
+          handleCatcherPressRef.current();
         } else {
           // Any other key (up/down/menu/info/etc.) just wakes the
           // overlay without also seeking or toggling playback.
-          resetInactivityTimer();
+          resetInactivityTimerRef.current();
         }
       } else {
         // Controls are visible: only hijack left/right when the seekbar
         // itself is the focused element (otherwise let left/right move
         // focus between buttons normally).
-        if (isSeekbarFocused && (isLeft || isRight)) {
-          handleContinuousDPadSeek(isRight ? 'right' : 'left');
+        if (isSeekbarFocusedRef.current && (isLeft || isRight)) {
+          handleContinuousDPadSeekRef.current(isRight ? 'right' : 'left');
           return;
         }
         if (isUp || isDown || isLeft || isRight || isSelect) {
-          resetInactivityTimer();
+          resetInactivityTimerRef.current();
         }
       }
     };
@@ -418,14 +444,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     return () => {
       KeyEvent.removeKeyDownListener();
     };
-  }, [
-    activeDialog,
-    showControls,
-    isSeekbarFocused,
-    handleContinuousDPadSeek,
-    handleCatcherPress,
-    resetInactivityTimer,
-  ]);
+  }, []);
 
   // Remote Back Button Handler
   useEffect(() => {
@@ -466,7 +485,15 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     );
     const nextIndex = currentEpisodeIndex + 1;
     if (episodes.length <= nextIndex) {
-      ToastAndroid.show('No next episode available.', ToastAndroid.SHORT);
+      // No next episode -- either this was a movie (episodes is always []
+      // for movies) or we just finished the last episode of the series.
+      // Either way there's nothing left to play here, so go back rather
+      // than leaving the person stuck on a dead player screen.
+      ToastAndroid.show(
+        episodes.length > 0 ? 'That was the last episode.' : 'Playback finished.',
+        ToastAndroid.SHORT
+      );
+      onClose();
       return;
     }
 
@@ -580,7 +607,31 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           }
         }}
         onBuffer={(buf) => setBuffering(buf.isBuffering)}
+        onEnd={() => {
+          // Natural end of playback -- auto-advance. handleNextEpisode
+          // already closes back to TVInfoScreen when there's no next
+          // episode (movie, or last episode of a series).
+          handleNextEpisode();
+        }}
         onError={(err) => {
+          // ExoPlayer's ERROR_CODE_IO_UNEXPECTED firing in the last few
+          // seconds of playback is almost always the stream's connection
+          // closing right at (or a hair before) the true end of the file --
+          // a lot of scraped/transcoded sources report a duration or
+          // Content-Length that's a few seconds longer than what's actually
+          // servable. From the person's perspective the episode/movie
+          // finished; showing a scary "Playback error" toast and stopping
+          // dead is wrong here, so treat "errored while already essentially
+          // at the end" the same as a real onEnd.
+          const nearEnd = duration > 0 && duration - currentProgRef.current.currentTime <= 8;
+          const isIoError = err.error?.errorCode?.toString().includes('IO_UNEXPECTED')
+            || err.error?.errorString?.includes('IO_UNEXPECTED');
+
+          if (nearEnd && isIoError) {
+            handleNextEpisode();
+            return;
+          }
+
           ToastAndroid.show(`Playback error: ${err.error?.errorString || 'Failed to play stream'}`, ToastAndroid.LONG);
           setBuffering(false);
         }}
