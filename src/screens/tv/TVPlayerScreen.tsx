@@ -76,7 +76,7 @@ interface EpisodeItem {
 interface ResolvedNextEpisode extends EpisodeItem {
   headers?: Record<string, string>;
   subtitles?: TextTracks;
-  qualities?: { name: string; url: string }[];
+  qualities?: { name: string; url: string; headers?: Record<string, string> }[];
 }
 
 interface TVPlayerScreenProps {
@@ -89,8 +89,8 @@ interface TVPlayerScreenProps {
   subtitles?: TextTracks;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
-  servers?: { name: string; url: string }[];
-  qualities?: { name: string; url: string }[];
+  servers?: { name: string; url: string; headers?: Record<string, string> }[];
+  qualities?: { name: string; url: string; headers?: Record<string, string> }[];
   // Seconds to seek to once the very first stream for this screen finishes
   // loading -- used to resume a Continue Watching item from where it left
   // off. Only applied once; later stream swaps (server/quality change, next
@@ -153,22 +153,27 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [selectedAudio, setSelectedAudio] = useState<any>({ type: SelectedTrackType.INDEX, value: 0 });
   const [selectedSub, setSelectedSub] = useState<any>({ type: SelectedTrackType.DISABLED });
   const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
+  const [activeHeaders, setActiveHeaders] = useState<Record<string, string> | undefined>(headers);
   const [resolvingNextEpisode, setResolvingNextEpisode] = useState(false);
 
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
   const prevStreamUrlRef = useRef(streamUrl);
+  const pendingRecoverySeekRef = useRef<number | null>(null);
+  const recoveryAttemptsRef = useRef(0);
   useEffect(() => {
     if (streamUrl && streamUrl !== prevStreamUrlRef.current) {
       prevStreamUrlRef.current = streamUrl;
+      recoveryAttemptsRef.current = 0;
       setActiveMediaUrl(streamUrl);
+      setActiveHeaders(headers);
       setBuffering(true);
       setCurrentTime(0);
       setDuration(0);
       setPaused(false);
       currentProgRef.current = { currentTime: 0, duration: 0 };
     }
-  }, [streamUrl]);
+  }, [streamUrl, headers]);
 
   // Automatically select English subtitle by default if present -- but
   // only ever attempt this once, and never after the user has manually
@@ -484,7 +489,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   }, [activeDialog, showControls, onClose, resetInactivityTimer, syncProgressToStore]);
 
   const openInVLC = async () => {
-    await launchVideo(activeMediaUrl || streamUrl, title, 'vlc', headers);
+    await launchVideo(activeMediaUrl || streamUrl, title, 'vlc', activeHeaders);
   };
 
   const handleNextEpisode = async () => {
@@ -534,6 +539,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       const qualList = streams.map((s: any, idx: number) => ({
         name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
         url: s.link,
+        headers: s.headers,
       }));
 
       onSelectNextEpisode?.({
@@ -573,7 +579,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     <View style={styles.container}>
       <Video
         ref={videoRef}
-        source={{ uri: activeMediaUrl || streamUrl, headers }}
+        source={{ uri: activeMediaUrl || streamUrl, headers: activeHeaders }}
         style={StyleSheet.absoluteFill}
         resizeMode={resizeMode as ResizeMode}
         paused={paused}
@@ -598,7 +604,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           }
           setBuffering(false);
 
-          if (!initialSeekAppliedRef.current) {
+          if (pendingRecoverySeekRef.current != null) {
+            const resumeAt = pendingRecoverySeekRef.current;
+            pendingRecoverySeekRef.current = null;
+            videoRef.current?.seek(resumeAt);
+            setCurrentTime(resumeAt);
+            currentProgRef.current.currentTime = resumeAt;
+          } else if (!initialSeekAppliedRef.current) {
             initialSeekAppliedRef.current = true;
             if (startPosition && startPosition > 1) {
               videoRef.current?.seek(startPosition);
@@ -633,7 +645,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           // episode (movie, or last episode of a series).
           handleNextEpisode();
         }}
-        onError={(err) => {
+        onError={async (err) => {
           // ExoPlayer's ERROR_CODE_IO_UNEXPECTED firing in the last few
           // seconds of playback is almost always the stream's connection
           // closing right at (or a hair before) the true end of the file --
@@ -650,6 +662,39 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           if (nearEnd && isIoError) {
             handleNextEpisode();
             return;
+          }
+
+          // An IO error with real time still left on the clock (the 30-60s
+          // remaining case) is a different problem: these scraped sources
+          // frequently issue a short-lived signed CDN URL rather than a
+          // stable one, and the connection is simply cut once that link's
+          // validity window closes mid-playback. Re-resolving the same
+          // episode/movie from scratch gets a fresh URL; picking back up
+          // at the exact position it dropped makes the recovery invisible
+          // instead of ending the session with a cryptic error toast.
+          const recoveryLink = episodes[currentEpisodeIndex]?.link || itemLink;
+          if (isIoError && recoveryLink && providerValue && recoveryAttemptsRef.current < 2) {
+            recoveryAttemptsRef.current += 1;
+            const resumeAt = currentProgRef.current.currentTime;
+            setBuffering(true);
+            ToastAndroid.show('Connection dropped, reconnecting...', ToastAndroid.SHORT);
+            try {
+              const freshStreams = await providerManager.getStream({
+                link: recoveryLink,
+                type: episodes.length > 0 ? 'series' : 'movie',
+                providerValue,
+              });
+              const fresh = freshStreams?.[0];
+              if (fresh?.link) {
+                pendingRecoverySeekRef.current = resumeAt;
+                setActiveMediaUrl(fresh.link);
+                setActiveHeaders(fresh.headers);
+                return;
+              }
+            } catch (e) {
+              console.warn('[TVPlayerScreen] Stream recovery failed:', e);
+            }
+            setBuffering(false);
           }
 
           ToastAndroid.show(`Playback error: ${err.error?.errorString || 'Failed to play stream'}`, ToastAndroid.LONG);
@@ -1082,6 +1127,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     borderRadius={8}
                     onPress={() => {
                       setActiveMediaUrl(srv.url);
+                      setActiveHeaders(srv.headers);
                       onSelectServer?.(srv.url);
                       setActiveDialog(null);
                       resetInactivityTimer();
@@ -1106,6 +1152,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     borderRadius={8}
                     onPress={() => {
                       setActiveMediaUrl(q.url);
+                      setActiveHeaders(q.headers);
                       onSelectQuality?.(q.url);
                       setActiveDialog(null);
                       resetInactivityTimer();

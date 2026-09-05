@@ -17,6 +17,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import KeyEvent from 'react-native-keyevent';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
@@ -208,11 +209,23 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     }
   }, [displayRows, activeHero, updateHeroWithBestMetadata]);
 
+  // Tracks whichever history-row card currently has focus, and the state
+  // for detecting a D-pad OK/select "hold" on it -- see the key listener
+  // effect below for why this exists instead of just `onLongPress`.
+  const focusedHistoryItemRef = useRef<any>(null);
+  const selectHoldStreakRef = useRef(0);
+  const selectHoldTriggeredRef = useRef(false);
+  const lastSelectKeyTimeRef = useRef(0);
+
   const handleCardFocus = useCallback(
     (rowIndex: number, item: any, itemKey: string, isHistory: boolean = false) => {
       lastFocusedKey = itemKey;
       lastFocusedRowIndex = rowIndex;
       setActiveRowIndex(rowIndex);
+
+      focusedHistoryItemRef.current = isHistory ? item : null;
+      selectHoldStreakRef.current = 0;
+      selectHoldTriggeredRef.current = false;
 
       translateY.value = withTiming(-rowIndex * ROW_HEIGHT, {
         duration: 220,
@@ -229,6 +242,46 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     },
     [translateY, updateHeroWithBestMetadata, provider?.value]
   );
+
+  // `onLongPress`/`delayLongPress` (still left in place on the card below
+  // as a harmless fallback) rely on React Native's touch-responder timing
+  // pipeline, which a hardware remote's D-pad OK/select button frequently
+  // never enters on Android TV -- the key event is dispatched as a
+  // click, not a touch-down-hold-release gesture, so no long-press timer
+  // ever starts. `react-native-keyevent` (already used by the TV player
+  // for the same underlying reason) sees the raw key stream instead:
+  // Android auto-repeats a held key's key-down event at a steady cadence,
+  // so a short run of repeats on OK/select IS a hold, independent of
+  // whatever gesture-timing RN's Pressable does or doesn't manage on this
+  // device.
+  useEffect(() => {
+    const KEYCODE_DPAD_CENTER = 23;
+    const KEYCODE_ENTER = 66;
+    const HOLD_STREAK_THRESHOLD = 3;
+    const RELEASE_GAP_MS = 400;
+
+    const handleKeyDown = (e: { keyCode?: number }) => {
+      if (e?.keyCode !== KEYCODE_DPAD_CENTER && e?.keyCode !== KEYCODE_ENTER) return;
+      if (!focusedHistoryItemRef.current) return;
+
+      const now = Date.now();
+      if (now - lastSelectKeyTimeRef.current > RELEASE_GAP_MS) {
+        selectHoldStreakRef.current = 0;
+        selectHoldTriggeredRef.current = false;
+      }
+      lastSelectKeyTimeRef.current = now;
+      selectHoldStreakRef.current += 1;
+
+      if (selectHoldStreakRef.current >= HOLD_STREAK_THRESHOLD && !selectHoldTriggeredRef.current) {
+        selectHoldTriggeredRef.current = true;
+        setConfirmingRemoveAll(false);
+        setItemToDelete(focusedHistoryItemRef.current);
+      }
+    };
+
+    KeyEvent.onKeyDownListener(handleKeyDown);
+    return () => KeyEvent.removeKeyDownListener();
+  }, []);
 
   const confirmDeleteFromHistory = () => {
     if (!itemToDelete) return;
@@ -328,20 +381,40 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         onPress={() => {
                           lastFocusedKey = itemKey;
                           lastFocusedRowIndex = rowIndex;
+
+                          if (selectHoldTriggeredRef.current) {
+                            // Already handled as a hold (remove-from-history
+                            // prompt just opened) -- swallow the release
+                            // tap so it doesn't also navigate in underneath
+                            // the modal.
+                            selectHoldTriggeredRef.current = false;
+                            return;
+                          }
+
                           if (isHistoryRow) {
-                            if (onResumeItem) {
-                              onResumeItem(item);
-                            } else {
-                              // Fallback if the resume path isn't wired up --
-                              // at least gets the user to the title instead
-                              // of silently doing nothing.
-                              onSelectItem({
-                                link: item.infoUrl || item.link,
-                                provider: item.providerValue || item.provider,
-                                image: posterImage,
-                                title: item.title,
-                              });
-                            }
+                            // Route through the same details/episode-picker
+                            // screen a fresh poster press uses, instead of
+                            // re-resolving the old stored stream link
+                            // directly. Providers' resolved stream links
+                            // (and sometimes even their info-page links)
+                            // are often short-lived, so silently replaying
+                            // one from continue-watching later tends to
+                            // fail with a "provider link invalid" error.
+                            // Going through the picker re-fetches
+                            // everything fresh; `resumeHint` lets
+                            // `TVDetailsScreen` recognize when the episode
+                            // picked is the one being resumed and seek to
+                            // the saved position instead of starting over.
+                            onSelectItem({
+                              link: item.infoUrl || item.link,
+                              provider: item.providerValue || item.provider,
+                              image: posterImage,
+                              title: item.title,
+                              resumeHint: {
+                                episodeLink: item.episode?.link,
+                                position: item.position,
+                              },
+                            });
                           } else {
                             onSelectItem(item);
                           }

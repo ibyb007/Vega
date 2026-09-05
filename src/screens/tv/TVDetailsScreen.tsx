@@ -7,6 +7,7 @@ import {
   Image,
   ActivityIndicator,
   ToastAndroid,
+  Modal,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
@@ -14,7 +15,19 @@ import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import { providerManager } from '../../lib/services/ProviderManager';
 import { getCachedMetadata, getOrFetchMetadata } from '../../lib/services/metadataCache';
+import { settingsStorage } from '../../lib/storage';
+import { launchVideo, PlayerChoice } from '../../lib/services/PlayerLauncher';
 import type { Info, Link, EpisodeLink, TextTracks } from '../../lib/providers/types';
+
+// The TV settings screen's 'exo' | 'vlc' | 'system' options map onto
+// `PlayerLauncher`'s choices ('exoplayer' being the internal player).
+const toPlayerChoice = (pref: 'exo' | 'vlc' | 'system'): PlayerChoice =>
+  pref === 'vlc' ? 'vlc' : pref === 'system' ? 'external' : 'exoplayer';
+
+interface ResumeHint {
+  episodeLink?: string;
+  position?: number;
+}
 
 interface TVDetailsScreenProps {
   item: any;
@@ -28,10 +41,11 @@ interface TVDetailsScreenProps {
       providerValue?: string;
       episodes?: any[];
       currentEpisodeIndex?: number;
-      servers?: { name: string; url: string }[];
-      qualities?: { name: string; url: string }[];
+      servers?: { name: string; url: string; headers?: Record<string, string> }[];
+      qualities?: { name: string; url: string; headers?: Record<string, string> }[];
       headers?: Record<string, string>;
       subtitles?: TextTracks;
+      startPosition?: number;
     }
   ) => void;
 }
@@ -54,6 +68,19 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [seasonIndex, setSeasonIndex] = useState(0);
   const [episodes, setEpisodes] = useState<EpisodeLink[]>([]);
   const [episodesLoading, setEpisodesLoading] = useState(false);
+
+  // When the default player is set to something other than the inbuilt
+  // one, `resolveAndPlay` stops short of launching anything and instead
+  // populates this so the person can pick which resolved server to open
+  // externally -- mirroring the mobile app's SeasonList server-picker
+  // modal instead of blindly handing off `streams[0]`.
+  const [serverPicker, setServerPicker] = useState<{
+    title: string;
+    player: PlayerChoice;
+    options: { name: string; url: string; headers?: Record<string, string> }[];
+  } | null>(null);
+
+  const resumeHint: ResumeHint | undefined = item?.resumeHint;
 
   // 1. Fetch real metadata (title/synopsis/image/linkList) for this title.
   //    If the home screen already warmed the cache for this title while it
@@ -145,7 +172,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const stillResolving = loading || isAwaitingEpisodes || episodesLoading || extractingStreams;
 
   const resolveAndPlay = useCallback(
-    async (link: string, streamTitle: string, type: string) => {
+    async (link: string, streamTitle: string, type: string, episodeIdx: number = 0) => {
       if (!providerId || !link) {
         ToastAndroid.show('No active provider found for this media', ToastAndroid.SHORT);
         return;
@@ -164,10 +191,39 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           return;
         }
 
+        // Only resume automatically when the specific episode/movie the
+        // person just picked is the exact one continue-watching was
+        // tracking -- picking anything else starts fresh at 0, same as
+        // the original app.
+        const startPosition =
+          resumeHint?.episodeLink && resumeHint.episodeLink === link
+            ? resumeHint.position
+            : undefined;
+
+        const playerPref = settingsStorage.getDefaultPlayer();
+        if (playerPref !== 'exo') {
+          // Mirrors the mobile app's SeasonList server-picker modal: show
+          // every resolved server/quality and let the person choose which
+          // one actually gets handed off to the external player, instead
+          // of silently always using `streams[0]` (which is frequently
+          // the one most likely to be dead/rate-limited).
+          setServerPicker({
+            title: streamTitle,
+            player: toPlayerChoice(playerPref),
+            options: streams.map((s, idx) => ({
+              name: s.quality ? `${s.quality}p${s.server ? ` — ${s.server}` : ''}` : s.server || `Source ${idx + 1}`,
+              url: s.link,
+              headers: s.headers,
+            })),
+          });
+          return;
+        }
+
         const best = streams[0];
         const qualities = streams.map((s, idx) => ({
           name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
           url: s.link,
+          headers: s.headers,
         }));
 
         onPlayStream(best.link, streamTitle, {
@@ -175,10 +231,11 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           itemLink: item?.link,
           providerValue: providerId,
           episodes,
-          currentEpisodeIndex: 0,
+          currentEpisodeIndex: episodeIdx,
           qualities,
           headers: best.headers,
           subtitles: best.subtitles,
+          startPosition,
         });
       } catch (e: any) {
         console.warn('[TVDetailsScreen] Stream extraction failed:', e);
@@ -187,8 +244,17 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         setExtractingStreams(false);
       }
     },
-    [providerId, info, item, episodes, onPlayStream],
+    [providerId, info, item, episodes, onPlayStream, resumeHint],
   );
+
+  const handlePickServer = async (option: { url: string; headers?: Record<string, string> }) => {
+    if (!serverPicker) return;
+    const opened = await launchVideo(option.url, serverPicker.title, serverPicker.player, option.headers);
+    setServerPicker(null);
+    if (!opened) {
+      ToastAndroid.show('External player unavailable.', ToastAndroid.SHORT);
+    }
+  };
 
   const bannerImage = info?.image || info?.poster || item?.image;
   const hasEpisodes = episodes.length > 0;
@@ -331,35 +397,48 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         ) : hasEpisodes ? (
           <View style={styles.listSection}>
             <Text style={styles.sectionHeader}>Episodes</Text>
-            {episodes.map((ep, index) => (
-              <TVFocusablePressable
-                key={`ep-${ep.id || ep.link || index}`}
-                hasTVPreferredFocus={index === 0}
-                scaleFocused={1.02}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={10}
-                onPress={() => resolveAndPlay(ep.link, ep.title || `Episode ${index + 1}`, 'series')}
-                style={styles.episodeRow}
-              >
-                {({ focused }) => (
-                  <View style={styles.episodeRowInner}>
-                    <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
-                      <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
-                    </View>
-                    <View style={styles.episodeTextWrap}>
-                      <Text numberOfLines={1} style={styles.episodeTitle}>
-                        {ep.title || `Episode ${index + 1}`}
-                      </Text>
-                      {!!ep.description && (
-                        <Text numberOfLines={1} style={styles.episodeDesc}>
-                          {ep.description}
+            {episodes.map((ep, index) => {
+              const isResumeTarget = !!resumeHint?.episodeLink && ep.link === resumeHint.episodeLink;
+              return (
+                <TVFocusablePressable
+                  key={`ep-${ep.id || ep.link || index}`}
+                  hasTVPreferredFocus={
+                    resumeHint?.episodeLink
+                      ? isResumeTarget
+                      : index === 0
+                  }
+                  scaleFocused={1.02}
+                  focusedBorderColor="#8A5CF6"
+                  borderRadius={10}
+                  onPress={() => resolveAndPlay(ep.link, ep.title || `Episode ${index + 1}`, 'series', index)}
+                  style={styles.episodeRow}
+                >
+                  {({ focused }) => (
+                    <View style={styles.episodeRowInner}>
+                      <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
+                        <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
+                      </View>
+                      <View style={styles.episodeTextWrap}>
+                        <Text numberOfLines={1} style={styles.episodeTitle}>
+                          {ep.title || `Episode ${index + 1}`}
                         </Text>
-                      )}
+                        {!!ep.description && (
+                          <Text numberOfLines={1} style={styles.episodeDesc}>
+                            {ep.description}
+                          </Text>
+                        )}
+                      </View>
+                      {isResumeTarget && resumeHint?.position ? (
+                        <Text style={styles.resumeBadge}>
+                          Resume {Math.floor(resumeHint.position / 60)}:
+                          {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+                        </Text>
+                      ) : null}
                     </View>
-                  </View>
-                )}
-              </TVFocusablePressable>
-            ))}
+                  )}
+                </TVFocusablePressable>
+              );
+            })}
           </View>
         ) : directItems.length > 1 ? (
           <View style={styles.listSection}>
@@ -417,6 +496,47 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
 
         <View style={{ height: 60 }} />
       </ScrollView>
+
+      <Modal
+        visible={Boolean(serverPicker)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setServerPicker(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Select a Server</Text>
+            <Text style={styles.modalSubtitle}>
+              Choose which stream to open in{' '}
+              {serverPicker?.player === 'vlc' ? 'VLC' : 'your external player'}.
+            </Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {serverPicker?.options.map((opt, i) => (
+                <TVFocusablePressable
+                  key={`server-opt-${i}`}
+                  hasTVPreferredFocus={i === 0}
+                  scaleFocused={1.03}
+                  focusedBorderColor="#8A5CF6"
+                  borderRadius={8}
+                  onPress={() => handlePickServer(opt)}
+                  style={styles.serverOption}
+                >
+                  {() => <Text style={styles.serverOptionText}>{opt.name}</Text>}
+                </TVFocusablePressable>
+              ))}
+            </ScrollView>
+            <TVFocusablePressable
+              scaleFocused={1.05}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={8}
+              onPress={() => setServerPicker(null)}
+              style={styles.modalCancelBtn}
+            >
+              {() => <Text style={styles.modalCancelText}>Cancel</Text>}
+            </TVFocusablePressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -576,6 +696,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
+  resumeBadge: {
+    color: '#A78BFA',
+    fontSize: 12,
+    fontWeight: '700',
+    backgroundColor: 'rgba(138, 92, 246, 0.18)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
   playActionSection: {
     marginTop: 8,
   },
@@ -615,5 +745,55 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 12,
     marginBottom: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: 460,
+    maxHeight: 460,
+    backgroundColor: '#13131A',
+    borderRadius: 14,
+    padding: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    marginBottom: 14,
+  },
+  serverOption: {
+    backgroundColor: '#1E1E28',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  serverOptionText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalCancelBtn: {
+    alignSelf: 'flex-end',
+    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+  },
+  modalCancelText: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });
