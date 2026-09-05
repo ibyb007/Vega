@@ -454,7 +454,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   }, [activeDialog, showControls, onClose, resetInactivityTimer, syncProgressToStore]);
 
   const openInVLC = async () => {
-    await launchVideo(activeMediaUrl || streamUrl, title, 'vlc');
+    await launchVideo(activeMediaUrl || streamUrl, title, 'vlc', headers);
   };
 
   const handleNextEpisode = async () => {
@@ -592,13 +592,20 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Fallback catcher shown while controls are hidden. The
-          `react-native-keyevent` listener above is what makes any D-pad
-          key wake the controls now (it doesn't depend on what's
-          focused) -- this Pressable stays only as a touch-input
-          fallback (for remotes/pointers that send touch events rather
-          than key events) and as somewhere for initial focus to land. */}
-      {!showControls && (
+      {/* Fallback catcher. Shown whenever controls are hidden, AND kept
+          mounted+focused for the duration of an active hold-seek even if
+          `showControls` is true -- see the note above `isSeeking`. Without
+          the `isSeeking` half of this condition, revealing the interactive
+          control bar mid-hold (Play/Pause, seekbar, etc. all becoming
+          focusable at once) gave Android's native D-pad focus engine
+          somewhere else to move focus to *while the physical key was still
+          held down* -- so a hold-seek would seek once, then focus would
+          drift from Play/Pause onward through the row on every subsequent
+          repeat, instead of continuing to seek. Keeping this the only
+          focusable thing on screen during `isSeeking` (see the
+          `showControls && !isSeeking` guard below) means there is nowhere
+          for focus to drift to. */}
+      {(!showControls || isSeeking) && (
         <TVFocusablePressable
           hasTVPreferredFocus
           style={StyleSheet.absoluteFillObject}
@@ -610,8 +617,41 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </TVFocusablePressable>
       )}
 
+      {/* Lightweight, non-focusable seek indicator shown in place of the
+          full interactive control bar while a hold-seek is in progress
+          (see the catcher note above for why the interactive buttons are
+          hidden, not just visually but from focus, during this time). */}
+      {isSeeking && (
+        <View style={styles.seekOverlay} pointerEvents="none">
+          <LinearGradient
+            colors={['transparent', 'rgba(0, 0, 0, 0.4)', 'rgba(0, 0, 0, 0.85)']}
+            locations={[0, 0.4, 1]}
+            style={styles.gradientOverlay}
+          />
+          <View style={styles.controlsContent}>
+            <View style={styles.seekIndicatorRow}>
+              <MaterialCommunityIcons
+                name={lastSeekDirection.current === 'left' ? 'rewind' : 'fast-forward'}
+                size={22}
+                color="#8A5CF6"
+              />
+              <Text style={styles.seekIndicatorText}>{formatTime(currentTime)}</Text>
+              <Text style={styles.timeText}> / {formatTime(duration)}</Text>
+            </View>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' },
+                ]}
+              />
+            </View>
+          </View>
+        </View>
+      )}
+
       {/* Bottom Controls Overlay */}
-      {showControls && (
+      {showControls && !isSeeking && (
         <View style={styles.controlsWrapper}>
           <LinearGradient
             colors={['transparent', 'rgba(0, 0, 0, 0.4)', 'rgba(0, 0, 0, 0.85)']}
@@ -1039,6 +1079,25 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 120,
+  },
+  seekOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 120,
+    justifyContent: 'flex-end',
+  },
+  seekIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  seekIndicatorText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
   controlsContent: {
     paddingHorizontal: 40,
