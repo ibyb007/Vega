@@ -13,6 +13,7 @@ interface TVFocusablePressableProps extends Omit<PressableProps, 'style' | 'chil
   scaleFocused?: number;
   borderRadius?: number;
   hasTVPreferredFocus?: boolean;
+  focusable?: boolean;
   onFocusChange?: (focused: boolean) => void;
   children: ((state: { focused: boolean }) => React.ReactNode) | React.ReactNode;
 }
@@ -23,6 +24,7 @@ export const TVFocusablePressable: React.FC<TVFocusablePressableProps> = ({
   scaleFocused = 1.05,
   borderRadius = 8,
   hasTVPreferredFocus = false,
+  focusable = true,
   onFocusChange,
   children,
   onFocus,
@@ -34,7 +36,7 @@ export const TVFocusablePressable: React.FC<TVFocusablePressableProps> = ({
   return (
     <Pressable
       {...rest}
-      focusable={true}
+      focusable={focusable}
       hasTVPreferredFocus={hasTVPreferredFocus}
       onFocus={(e) => {
         setIsFocused(true);
