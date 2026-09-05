@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, StatusBar, Dimensions, BackHandler } from 'react-native';
+import { View, StyleSheet, StatusBar, Dimensions, BackHandler, ToastAndroid } from 'react-native';
 import BootSplash from 'react-native-bootsplash';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/client';
@@ -12,6 +12,7 @@ import ProviderSandboxHost from './components/ProviderSandboxHost';
 import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
+import { providerManager } from './lib/services/ProviderManager';
 import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks } from './lib/providers/types';
 
@@ -39,6 +40,7 @@ export interface ActiveStreamPayload {
   qualities?: { name: string; url: string }[];
   headers?: Record<string, string>;
   subtitles?: TextTracks;
+  startPosition?: number;
 }
 
 export default function App() {
@@ -64,6 +66,59 @@ export default function App() {
       } catch {}
     };
   }, []);
+
+  // Continue Watching items already know exactly which stream to resolve
+  // (`episode.link` -- the specific episode's link for a series, or the
+  // title's own link for a movie) and where to resume from (`position`), so
+  // this resolves and opens the player directly instead of routing through
+  // TVDetailsScreen, which would otherwise restart the title from 0:00.
+  const handleResumeWatch = useCallback(
+    async (item: any) => {
+      const link = item?.episode?.link || item?.infoUrl || item?.link;
+      const providerValue = item?.providerValue || currentProvider?.value;
+
+      if (!link || !providerValue) {
+        ToastAndroid.show('Unable to resume this title.', ToastAndroid.SHORT);
+        return;
+      }
+
+      ToastAndroid.show(`Resuming ${item.title || 'playback'}...`, ToastAndroid.SHORT);
+      try {
+        const streams = await providerManager.getStream({
+          link,
+          type: item.type || 'movie',
+          providerValue,
+        });
+
+        if (!streams || streams.length === 0) {
+          ToastAndroid.show('No valid stream links found for this title.', ToastAndroid.LONG);
+          return;
+        }
+
+        const best = streams[0];
+        const qualities = streams.map((s: any, idx: number) => ({
+          name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
+          url: s.link,
+        }));
+
+        setActiveStream({
+          url: best.link,
+          title: item.episodeTitle || item.title,
+          posterUrl: item.poster || item.background,
+          itemLink: item.infoUrl || item.link,
+          providerValue,
+          headers: best.headers,
+          subtitles: best.subtitles,
+          qualities,
+          startPosition: item.position,
+        });
+      } catch (e: any) {
+        console.warn('[App] Resume watch failed:', e);
+        ToastAndroid.show(e?.message || 'Failed to resume playback.', ToastAndroid.LONG);
+      }
+    },
+    [currentProvider?.value]
+  );
 
   const navigateTo = useCallback((route: TVRoute) => {
     setSelectedItem(null);
@@ -138,6 +193,7 @@ export default function App() {
                     currentEpisodeIndex={activeStream.currentEpisodeIndex}
                     servers={activeStream.servers}
                     qualities={activeStream.qualities}
+                    startPosition={activeStream.startPosition}
                     onSelectNextEpisode={(nextEp) => {
                       const nextIndex = (activeStream.currentEpisodeIndex ?? 0) + 1;
                       setActiveStream((prev) =>
@@ -179,6 +235,7 @@ export default function App() {
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
+                          onResumeItem={handleResumeWatch}
                           homeFocusTarget={homeFocusHandle}
                         />
                       )}
@@ -191,6 +248,7 @@ export default function App() {
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
+                          onResumeItem={handleResumeWatch}
                           homeFocusTarget={homeFocusHandle}
                         />
                       )}
