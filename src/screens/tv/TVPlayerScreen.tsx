@@ -29,6 +29,7 @@ const KEYCODE_DPAD_RIGHT = 22;
 const KEYCODE_DPAD_CENTER = 23;
 const KEYCODE_ENTER = 66;
 const KEYCODE_MEDIA_PLAY_PAUSE = 85;
+const KEYCODE_BACK = 4;
 
 const LANGUAGE_NAMES: Record<string, string> = {
   en: 'English', hi: 'Hindi', es: 'Spanish', fr: 'French', de: 'German',
@@ -130,6 +131,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [duration, setDuration] = useState(0);
   const [showControls, setShowControls] = useState(false);
   const [isSeekbarFocused, setIsSeekbarFocused] = useState(false);
+  // True for as long as a D-pad hold-seek streak is active. Used purely to
+  // drive UI feedback (see below) -- it's not real TV focus, since the
+  // global key listener seeks without ever moving native focus.
+  const [isSeeking, setIsSeeking] = useState(false);
 
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
   const [audioTracks, setAudioTracks] = useState<any[]>([]);
@@ -269,6 +274,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   const handleContinuousDPadSeek = useCallback((dir: 'left' | 'right') => {
     resetInactivityTimer();
+    setIsSeeking(true);
     const now = Date.now();
     const isRapidRepeat = lastSeekDirection.current === dir && now - lastSeekTimestamp.current < 450;
 
@@ -285,6 +291,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     seekReleaseTimer.current = setTimeout(() => {
       seekStreak.current = 0;
       lastSeekDirection.current = null;
+      setIsSeeking(false);
     }, 500);
 
     let step = 10;
@@ -362,6 +369,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       // own focus navigation own every key -- don't seek or toggle
       // playback underneath it.
       if (activeDialog) return;
+      // Never touch the hardware Back key here. It used to fall through to
+      // the "any other key just wakes the overlay" branch below, which
+      // called resetInactivityTimer() (revealing controls) on the exact
+      // same key press that the separate BackHandler listener further down
+      // was also reacting to. Depending on which handler's state update
+      // landed first, that race meant a single Back press could reveal the
+      // controls and then have the BackHandler's own "hide controls"
+      // branch swallow the press instead of closing the player -- so Back
+      // looked like it did nothing. Back must stay exclusively owned by
+      // the dedicated `hardwareBackPress` handler below.
+      if (keyCode === KEYCODE_BACK) return;
 
       const isLeft = keyCode === KEYCODE_DPAD_LEFT;
       const isRight = keyCode === KEYCODE_DPAD_RIGHT;
@@ -618,25 +636,35 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 onPress={() => handleSeek(15)}
                 style={styles.progressHitArea}
               >
-                {({ focused }) => (
-                  <View style={[styles.progressTrack, focused && styles.progressTrackFocused]}>
-                    <View
-                      style={[
-                        styles.progressFill,
-                        { width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' },
-                        focused && styles.progressFillFocused,
-                      ]}
-                    />
-                    {focused && (
+                {({ focused }) => {
+                  // While a hold-seek streak is active, show the seekbar's
+                  // "active" look even though real TV focus hasn't (and
+                  // shouldn't) moved there -- the global key listener seeks
+                  // directly without navigating focus. Without this, a
+                  // long-press on L/R visibly moved the video position but
+                  // all the visual feedback stayed on whatever button
+                  // (usually Play/Pause) happened to have focus.
+                  const active = focused || isSeeking;
+                  return (
+                    <View style={[styles.progressTrack, active && styles.progressTrackFocused]}>
                       <View
                         style={[
-                          styles.scrubThumb,
-                          { left: `${Math.min(99, Math.max(0, duration > 0 ? (currentTime / duration) * 100 : 0))}%` },
+                          styles.progressFill,
+                          { width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' },
+                          active && styles.progressFillFocused,
                         ]}
                       />
-                    )}
-                  </View>
-                )}
+                      {active && (
+                        <View
+                          style={[
+                            styles.scrubThumb,
+                            { left: `${Math.min(99, Math.max(0, duration > 0 ? (currentTime / duration) * 100 : 0))}%` },
+                          ]}
+                        />
+                      )}
+                    </View>
+                  );
+                }}
               </TVFocusablePressable>
 
               <View style={styles.timeRow}>
@@ -649,7 +677,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             <View style={styles.actionRow}>
               {/* Play / Pause */}
               <TVFocusablePressable
-                hasTVPreferredFocus={!isSeekbarFocused}
+                // Don't steal initial focus onto Play/Pause when the
+                // control bar was revealed by an active hold-seek -- that
+                // stole visual attention away from the seekbar (where the
+                // actual action is happening) onto a button the user isn't
+                // interacting with. See the `isSeeking` note above.
+                hasTVPreferredFocus={!isSeekbarFocused && !isSeeking}
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
