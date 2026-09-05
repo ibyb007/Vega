@@ -16,6 +16,7 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
@@ -54,12 +55,18 @@ const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Prom
 
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
+  // Called instead of onSelectItem when a Continue Watching card is
+  // pressed -- resolves the saved episode/movie link directly and starts
+  // playback at the stored position, without detouring through the details
+  // screen (which would restart from 0:00).
+  onResumeItem?: (item: any) => void;
   onNavigateRoute?: (route: TVRoute) => void;
   homeFocusTarget?: number | null;
 }
 
 export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onSelectItem,
+  onResumeItem,
   onNavigateRoute,
   homeFocusTarget,
 }) => {
@@ -71,6 +78,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
   const [activeRowIndex, setActiveRowIndex] = useState<number>(lastFocusedRowIndex);
   const [itemToDelete, setItemToDelete] = useState<any | null>(null);
+  const [confirmingRemoveAll, setConfirmingRemoveAll] = useState(false);
 
   const translateY = useSharedValue(-lastFocusedRowIndex * ROW_HEIGHT);
 
@@ -230,6 +238,17 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       ToastAndroid.show('Removed from Continue Watching', ToastAndroid.SHORT);
     }
     setItemToDelete(null);
+    setConfirmingRemoveAll(false);
+  };
+
+  const confirmRemoveAllHistory = () => {
+    watchHistory.forEach((histItem: any) => {
+      const identifier = histItem.id || histItem.infoUrl || histItem.link;
+      if (identifier) removeItemFromHistory(identifier);
+    });
+    ToastAndroid.show('Cleared Continue Watching', ToastAndroid.SHORT);
+    setItemToDelete(null);
+    setConfirmingRemoveAll(false);
   };
 
   const animatedRowsStyle = useAnimatedStyle(() => {
@@ -310,18 +329,26 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                           lastFocusedKey = itemKey;
                           lastFocusedRowIndex = rowIndex;
                           if (isHistoryRow) {
-                            onSelectItem({
-                              link: item.infoUrl || item.link,
-                              provider: item.providerValue || item.provider,
-                              image: posterImage,
-                              title: item.title,
-                            });
+                            if (onResumeItem) {
+                              onResumeItem(item);
+                            } else {
+                              // Fallback if the resume path isn't wired up --
+                              // at least gets the user to the title instead
+                              // of silently doing nothing.
+                              onSelectItem({
+                                link: item.infoUrl || item.link,
+                                provider: item.providerValue || item.provider,
+                                image: posterImage,
+                                title: item.title,
+                              });
+                            }
                           } else {
                             onSelectItem(item);
                           }
                         }}
                         onLongPress={() => {
                           if (isHistoryRow) {
+                            setConfirmingRemoveAll(false);
                             setItemToDelete(item);
                           }
                         }}
@@ -370,18 +397,38 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         visible={Boolean(itemToDelete)}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setItemToDelete(null)}
+        onRequestClose={() => {
+          setItemToDelete(null);
+          setConfirmingRemoveAll(false);
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <MaterialCommunityIcons name="movie-remove-outline" size={38} color="#EF4444" />
-            <Text style={styles.modalTitle}>Remove From History?</Text>
-            <Text numberOfLines={2} style={styles.modalSubtitle}>
-              {itemToDelete?.title}
+            <MaterialCommunityIcons
+              name={confirmingRemoveAll ? 'playlist-remove' : 'movie-remove-outline'}
+              size={38}
+              color="#EF4444"
+            />
+            <Text style={styles.modalTitle}>
+              {confirmingRemoveAll ? 'Clear Continue Watching?' : 'Remove From History?'}
             </Text>
-            <Text style={styles.modalDescription}>
-              This will remove the title and its resume progress from your Continue Watching row.
-            </Text>
+            {confirmingRemoveAll ? (
+              <Text style={styles.modalDescription}>
+                This will remove all {watchHistory.length} title
+                {watchHistory.length === 1 ? '' : 's'} and their resume progress from your
+                Continue Watching row.
+              </Text>
+            ) : (
+              <>
+                <Text numberOfLines={2} style={styles.modalSubtitle}>
+                  {itemToDelete?.title}
+                </Text>
+                <Text style={styles.modalDescription}>
+                  This will remove the title and its resume progress from your Continue Watching
+                  row.
+                </Text>
+              </>
+            )}
 
             <View style={styles.modalActions}>
               <TVFocusablePressable
@@ -389,21 +436,62 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                 scaleFocused={1.05}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
-                onPress={() => setItemToDelete(null)}
+                onPress={() => {
+                  setItemToDelete(null);
+                  setConfirmingRemoveAll(false);
+                }}
                 style={styles.cancelBtn}
               >
                 {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
               </TVFocusablePressable>
 
-              <TVFocusablePressable
-                scaleFocused={1.05}
-                focusedBorderColor="#FFFFFF"
-                borderRadius={8}
-                onPress={confirmDeleteFromHistory}
-                style={styles.removeBtn}
-              >
-                {() => <Text style={styles.removeBtnText}>Remove</Text>}
-              </TVFocusablePressable>
+              {confirmingRemoveAll ? (
+                <TVFocusablePressable
+                  scaleFocused={1.05}
+                  focusedBorderColor="#FFFFFF"
+                  borderRadius={8}
+                  onPress={confirmRemoveAllHistory}
+                  style={styles.removeBtn}
+                >
+                  {() => <Text style={styles.removeBtnText}>Clear All</Text>}
+                </TVFocusablePressable>
+              ) : (
+                <>
+                  <TVFocusablePressable
+                    scaleFocused={1.05}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={8}
+                    onPress={() => setConfirmingRemoveAll(true)}
+                    style={styles.selectAllBtn}
+                  >
+                    {() => (
+                      <View style={styles.selectAllBtnInner}>
+                        <MaterialIcons name="select-all" size={16} color="#D1D5DB" />
+                        <Text style={styles.selectAllBtnText}>Remove All</Text>
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+
+                  <TVFocusablePressable
+                    scaleFocused={1.05}
+                    focusedBorderColor="#FFFFFF"
+                    borderRadius={8}
+                    onPress={confirmDeleteFromHistory}
+                    style={styles.removeBtn}
+                  >
+                    {() => (
+                      <View style={styles.selectAllBtnInner}>
+                        <MaterialCommunityIcons
+                          name="trash-can-outline"
+                          size={16}
+                          color="#FFFFFF"
+                        />
+                        <Text style={styles.removeBtnText}>Remove</Text>
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                </>
+              )}
             </View>
           </View>
         </View>
@@ -581,5 +669,20 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
+  },
+  selectAllBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+  },
+  selectAllBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  selectAllBtnText: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

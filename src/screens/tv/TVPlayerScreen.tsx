@@ -91,6 +91,11 @@ interface TVPlayerScreenProps {
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string }[];
   qualities?: { name: string; url: string }[];
+  // Seconds to seek to once the very first stream for this screen finishes
+  // loading -- used to resume a Continue Watching item from where it left
+  // off. Only applied once; later stream swaps (server/quality change, next
+  // episode) start from 0 as normal.
+  startPosition?: number;
   onSelectNextEpisode?: (nextEpisode: ResolvedNextEpisode) => void;
   onSelectServer?: (serverUrl: string) => void;
   onSelectQuality?: (qualityUrl: string) => void;
@@ -112,12 +117,18 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   currentEpisodeIndex = 0,
   servers = [],
   qualities = [],
+  startPosition,
   onSelectNextEpisode,
   onSelectServer,
   onSelectQuality,
   onClose,
 }) => {
   const videoRef = useRef<VideoRef>(null);
+  // Guards the resume seek so it only ever fires once, on the very first
+  // `onLoad` -- without this, swapping servers/qualities or advancing to the
+  // next episode later in the same session would keep jumping back to the
+  // original resume point instead of starting at 0.
+  const initialSeekAppliedRef = useRef(false);
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
   const currentProgRef = useRef<{ currentTime: number; duration: number }>({
@@ -586,6 +597,15 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             autoSelectEnglishSubtitle(meta.textTracks);
           }
           setBuffering(false);
+
+          if (!initialSeekAppliedRef.current) {
+            initialSeekAppliedRef.current = true;
+            if (startPosition && startPosition > 1) {
+              videoRef.current?.seek(startPosition);
+              setCurrentTime(startPosition);
+              currentProgRef.current.currentTime = startPosition;
+            }
+          }
         }}
         onAudioTracks={(e: any) => {
           if (e?.audioTracks?.length) setAudioTracks(e.audioTracks);
