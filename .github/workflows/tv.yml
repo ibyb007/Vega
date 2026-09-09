@@ -1,0 +1,145 @@
+name: Build Android TV Release APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-tv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: 17
+
+      - name: Setup Gradle Build Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Extract Version & Generate Auto-Incremented Code
+        id: release_meta
+        run: |
+          # Keep manual version from package.json/app.config.js
+          VERSION_NAME=$(node -p "require('./package.json').version || '4.0.6'")
+          
+          # Automatically increment versionCode above 192 (e.g., Run 103 -> 203)
+          VERSION_CODE=$((100 + ${{ github.run_number }}))
+          RUN_ATTEMPT=${{ github.run_attempt }}
+
+          # Ensure unique tag name across runs and re-run attempts
+          if [ "$RUN_ATTEMPT" -gt 1 ]; then
+            TAG_NAME="v${VERSION_NAME}-tv-${{ github.run_number }}.${RUN_ATTEMPT}"
+          else
+            TAG_NAME="v${VERSION_NAME}-tv-${{ github.run_number }}"
+          fi
+
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+          git fetch --tags origin 2>/dev/null || true
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"* %s (%h)")
+          else
+            CHANGELOG=$(git log --pretty=format:"* %s (%h)" -n 10)
+          fi
+
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="* TV optimizations and bug fixes."
+          fi
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android Native Project
+        env:
+          APP_VARIANT: standalone
+          APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Decode Release Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build Android TV Release APKs
+        working-directory: ./android
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
+          APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
+          MYAPP_UPLOAD_STORE_FILE: "release.keystore"
+          MYAPP_UPLOAD_STORE_PASSWORD: "${{ secrets.KEYSTORE_PASSWORD }}"
+          MYAPP_UPLOAD_KEY_ALIAS: "${{ secrets.KEY_ALIAS }}"
+          MYAPP_UPLOAD_KEY_PASSWORD: "${{ secrets.KEY_PASSWORD }}"
+        run: |
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+
+      - name: Prepare APK Artifacts
+        run: |
+          mkdir -p output_apks
+          TAG="${{ steps.release_meta.outputs.tag_name }}"
+
+          find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" | while read -r file; do
+            filename=$(basename "$file")
+            if [[ "$filename" == *"arm64-v8a"* ]]; then
+              cp "$file" "output_apks/Vega-TV-${TAG}-arm64-v8a.apk"
+            elif [[ "$filename" == *"armeabi-v7a"* ]]; then
+              cp "$file" "output_apks/Vega-TV-${TAG}-armeabi-v7a.apk"
+            else
+              cp "$file" "output_apks/Vega-TV-${TAG}-universal.apk"
+            fi
+          done
+          ls -la output_apks/
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vega-TV-Release-APKs
+          path: output_apks/*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag_name }}
+          name: Vega TV ${{ steps.release_meta.outputs.tag_name }}
+          make_latest: true
+          body: |
+            ## What's Changed
+            ${{ steps.release_meta.outputs.changelog }}
+
+            ---
+            * **App Version**: `${{ steps.release_meta.outputs.version_name }}`
+            * **Build Code (versionCode)**: `${{ steps.release_meta.outputs.version_code }}`
+            * **Target Architecture**: Android TV (`armeabi-v7a`, `arm64-v8a`)
+          files: output_apks/*.apk
+          generate_release_notes: false
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
