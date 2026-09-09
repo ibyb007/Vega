@@ -778,17 +778,11 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           // finished; showing a scary "Playback error" toast and stopping
           // dead is wrong here, so treat "errored while already essentially
           // at the end" the same as a real onEnd.
-          const remainingTime = duration > 0 ? duration - currentProgRef.current.currentTime : 999;
-          const errStr = (err.error?.errorString || err.error?.errorCode?.toString() || '').toUpperCase();
+          const nearEnd = duration > 0 && duration - currentProgRef.current.currentTime <= 8;
+          const isIoError = err.error?.errorCode?.toString().includes('IO_UNEXPECTED')
+            || err.error?.errorString?.includes('IO_UNEXPECTED');
 
-          const isTerminalPostCreditFault =
-            errStr.includes('IO_UNEXPECTED') ||
-            errStr.includes('BEHIND_LIVE') ||
-            errStr.includes('PARSING') ||
-            errStr.includes('DECODER');
-
-          // Gracefully complete post-credit playback within 75s of completion
-          if (duration > 0 && remainingTime <= 75 && isTerminalPostCreditFault) {
+          if (nearEnd && isIoError) {
             handleNextEpisode();
             return;
           }
@@ -802,7 +796,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           // at the exact position it dropped makes the recovery invisible
           // instead of ending the session with a cryptic error toast.
           const recoveryLink = episodes[currentEpisodeIndex]?.link || itemLink;
-          if (isTerminalPostCreditFault && recoveryLink && providerValue && recoveryAttemptsRef.current < 2) {
+          if (isIoError && recoveryLink && providerValue && recoveryAttemptsRef.current < 2) {
             recoveryAttemptsRef.current += 1;
             const resumeAt = currentProgRef.current.currentTime;
             setBuffering(true);
