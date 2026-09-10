@@ -20,6 +20,7 @@ import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import useSettingsStore, { AudioBoostProfile } from '../../lib/zustand/settingsStore';
 import { providerManager } from '../../lib/services/ProviderManager';
 import { launchVideo } from '../../lib/services/PlayerLauncher';
+import { settingsStorage } from '../../lib/storage';
 import type { EpisodeLink, TextTracks } from '../../lib/providers/types';
 
 // Android hardware key codes used by the global listener below.
@@ -49,6 +50,25 @@ const LANGUAGE_NAMES: Record<string, string> = {
   kn: 'Kannada', bn: 'Bengali', mr: 'Marathi', pa: 'Punjabi', ur: 'Urdu',
   tr: 'Turkish', pl: 'Polish', nl: 'Dutch', th: 'Thai', vi: 'Vietnamese',
   id: 'Indonesian', ms: 'Malay', fa: 'Persian', he: 'Hebrew', uk: 'Ukrainian',
+};
+
+const isQualityExcluded = (
+  target: string | undefined | null,
+  excludedList: string[],
+): boolean => {
+  if (!target || !excludedList || excludedList.length === 0) return false;
+  const text = target.toLowerCase().trim();
+
+  return excludedList.some((ex) => {
+    const exLower = ex.toLowerCase().trim();
+    if (!exLower) return false;
+
+    if (exLower === '4k' || exLower === '2160p' || exLower === '2160') {
+      return text.includes('4k') || text.includes('2160');
+    }
+    const cleanNum = exLower.replace('p', '');
+    return text.includes(exLower) || (cleanNum.length >= 3 && text.includes(cleanNum));
+  });
 };
 
 const describeTrack = (trk: any, fallbackLabel: string): string => {
@@ -81,13 +101,6 @@ const NON_LANGUAGE_TAGS = new Set([
   'ac3', 'dts', 'aac', '5.1', '2.0', 'sub', 'subs', 'subtitle', 'subtitles',
 ]);
 
-// Compact label for the control-panel subtitle button. Track titles coming from
-// scraped file names are messy and inconsistent -- "1VegaMoviex.xx - [English]",
-// "English [SDH]", "SDH-English", "Hindi-HC" and similar all show up in the wild.
-// Rather than special-casing each format, scan the raw title for any known
-// language name as a whole word and use that; fall back to the track's language
-// code, then to a bracket/paren tag that isn't a known non-language marker, then
-// to the fallback label. This always resolves to a plain "English"/"Hindi"/etc.
 const describeTrackCompact = (trk: any, fallbackLabel: string): string => {
   if (!trk) return fallbackLabel;
   const rawTitle = (trk?.title || trk?.label || '').trim();
@@ -134,20 +147,15 @@ interface TVPlayerScreenProps {
   title: string;
   posterUrl?: string;
   itemLink?: string;
+  episodeId?: string;
   providerValue?: string;
   headers?: Record<string, string>;
-  // The resolved stream's container/format hint from the provider (e.g.
-  // 'm3u8', 'mpd') -- see `activeSourceType` below for why this matters.
   sourceType?: string;
   subtitles?: TextTracks;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
   qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
-  // Seconds to seek to once the very first stream for this screen finishes
-  // loading -- used to resume a Continue Watching item from where it left
-  // off. Only applied once; later stream swaps (server/quality change, next
-  // episode) start from 0 as normal.
   startPosition?: number;
   onSelectNextEpisode?: (nextEpisode: ResolvedNextEpisode) => void;
   onSelectServer?: (serverUrl: string) => void;
@@ -163,6 +171,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   title,
   posterUrl,
   itemLink,
+  episodeId,
   providerValue,
   headers,
   sourceType,
@@ -183,15 +192,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const audioBoostProfile = useSettingsStore((state) => state.audioBoostProfile);
   const cycleAudioBoostProfile = useSettingsStore((state) => state.cycleAudioBoostProfile);
 
-  // Matches the mobile app's proven-working ExoPlayer buffer config
-  // exactly (see `Player.tsx`'s `videoPlayerProps.source.bufferConfig`).
-  // The TV player previously passed none at all, which meant it ran on
-  // react-native-video/ExoPlayer's own defaults -- notably a 50-second
-  // `maxBufferMs` versus the mobile app's 20 seconds. A much larger
-  // buffering window means far fewer, much larger sustained HTTP reads
-  // against these scraped sources' CDNs, which is a very plausible reason
-  // ERROR_CODE_IO_UNEXPECTED shows up specifically on the TV player and
-  // not on mobile even for the exact same stream.
   const bufferConfig = useMemo(
     () => ({
       minBufferMs: 8000,
@@ -207,8 +207,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     []
   );
 
-  // Focus-trap tag for the seekbar (see the `nextFocusLeft`/`nextFocusRight`
-  // usage on its TVFocusablePressable below).
   const seekbarRef = useRef<View>(null);
   const [seekbarSelfTag, setSeekbarSelfTag] = useState<number | undefined>(undefined);
   useEffect(() => {
@@ -217,10 +215,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       if (tag) setSeekbarSelfTag(tag);
     }
   }, []);
-  // Guards the resume seek so it only ever fires once, on the very first
-  // `onLoad` -- without this, swapping servers/qualities or advancing to the
-  // next episode later in the same session would keep jumping back to the
-  // original resume point instead of starting at 0.
+
   const initialSeekAppliedRef = useRef(false);
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
   const lastSyncTimeRef = useRef<number>(0);
@@ -235,9 +230,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [duration, setDuration] = useState(0);
   const [showControls, setShowControls] = useState(false);
   const [isSeekbarFocused, setIsSeekbarFocused] = useState(false);
-  // True for as long as a D-pad hold-seek streak is active. Used purely to
-  // drive UI feedback (see below) -- it's not real TV focus, since the
-  // global key listener seeks without ever moving native focus.
   const [isSeeking, setIsSeeking] = useState(false);
 
   const [resizeMode, setResizeMode] = useState<AspectRatioMode>('contain');
@@ -247,25 +239,30 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [selectedSub, setSelectedSub] = useState<any>({ type: SelectedTrackType.DISABLED });
   const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
   const [activeHeaders, setActiveHeaders] = useState<Record<string, string> | undefined>(headers);
-  // The container/format hint (e.g. 'm3u8', 'mpd') for whatever source is
-  // currently loaded. The mobile app's player explicitly forwards this to
-  // react-native-video (`...(selectedStream?.type === 'm3u8' && { type:
-  // 'm3u8' })`) so ExoPlayer parses the stream with the correct HLS/DASH
-  // media source instead of guessing purely from the URL string -- most of
-  // these scraped CDN links have no `.m3u8`/`.mpd` extension to guess from
-  // at all. The TV player never carried this field anywhere, which left
-  // ExoPlayer to auto-detect and risk misclassifying a stream, most
-  // plausibly surfacing right at a structural boundary like an HLS
-  // discontinuity tag -- which is exactly what a post-credits scene often
-  // is in these re-encoded sources.
   const [activeSourceType, setActiveSourceType] = useState<string | undefined>(sourceType);
   const [resolvingNextEpisode, setResolvingNextEpisode] = useState(false);
 
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
+  const excludedQualities = useMemo(
+    () => settingsStorage.getExcludedQualities() || [],
+    [],
+  );
+
+  const usableQualities = useMemo(() => {
+    if (!qualities || qualities.length === 0) return [];
+    if (!excludedQualities || excludedQualities.length === 0) return qualities;
+
+    const filtered = qualities.filter(
+      (q) => !isQualityExcluded(q.name, excludedQualities),
+    );
+    return filtered.length > 0 ? filtered : qualities;
+  }, [qualities, excludedQualities]);
+
   const prevStreamUrlRef = useRef(streamUrl);
   const pendingRecoverySeekRef = useRef<number | null>(null);
   const recoveryAttemptsRef = useRef(0);
+
   useEffect(() => {
     if (streamUrl && streamUrl !== prevStreamUrlRef.current) {
       prevStreamUrlRef.current = streamUrl;
@@ -281,15 +278,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, [streamUrl, headers, sourceType]);
 
-  // Memoized so its object identity is stable across the frequent
-  // re-renders `onProgress` drives (up to several times a second) --
-  // react-native-video's docs explicitly warn that some props (notably
-  // `bufferConfig`) trigger a full source reload when their reference
-  // changes, and an unmemoized inline `source={{...}}` object is a fresh
-  // reference on every single render regardless of whether `uri`/`headers`
-  // actually changed. Whether or not this was silently causing full
-  // reload/reinit churn on every progress tick, there's no reason to give
-  // ExoPlayer the opportunity.
   const videoSource = useMemo(
     () => ({
       uri: activeMediaUrl || streamUrl,
@@ -300,9 +288,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     [activeMediaUrl, streamUrl, activeHeaders, activeSourceType]
   );
 
-  // Automatically select English subtitle by default if present -- but
-  // only ever attempt this once, and never after the user has manually
-  // picked something from the subtitle dropdown (see refs above).
   const autoSelectEnglishSubtitle = useCallback((tracks: any[]) => {
     if (userChoseSubtitleRef.current || hasAutoSelectedSubtitleRef.current) return;
     hasAutoSelectedSubtitleRef.current = true;
@@ -322,24 +307,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, []);
 
-  // Repeat & acceleration tracking for D-pad seek
   const lastSeekDirection = useRef<'left' | 'right' | null>(null);
   const lastSeekTimestamp = useRef<number>(0);
   const seekStreak = useRef<number>(0);
   const seekReleaseTimer = useRef<NodeJS.Timeout | null>(null);
   const holdSeekInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // Guards so the one-time "auto-pick English subtitle" convenience never
-  // fights the user's own choice. `onTextTracks`/`onLoad` can fire more
-  // than once during playback (not just at the very start) -- without
-  // these, every subsequent firing called `autoSelectEnglishSubtitle`
-  // again and silently snapped the selection back to English a moment
-  // after the user picked something else from the dropdown.
   const hasAutoSelectedSubtitleRef = useRef(false);
   const userChoseSubtitleRef = useRef(false);
 
   const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
-  const continueWatchingId = itemLink || streamUrl;
+  const continueWatchingId = episodeId || itemLink || streamUrl;
 
   const syncProgressToStore = useCallback(
     (timeSec: number, totalDur: number) => {
@@ -364,13 +342,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         poster: posterUrl,
         background: posterUrl,
         providerValue: providerValue || useContentStore.getState().provider?.value || '',
-        infoUrl: continueWatchingId,
+        infoUrl: itemLink || continueWatchingId,
         position: Math.floor(timeSec),
         duration: Math.floor(totalDur),
         updatedAt: Date.now(),
       });
     },
-    [continueWatchingId, episodes, currentEpisodeIndex, title, posterUrl, providerValue, upsertContinueWatching]
+    [continueWatchingId, itemLink, episodes, currentEpisodeIndex, title, posterUrl, providerValue, upsertContinueWatching]
   );
 
   useEffect(() => {
@@ -442,20 +420,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     handleSeek(dir === 'right' ? step : -step);
   }, [handleSeek, resetInactivityTimer]);
 
-  // Press-and-hold fast seek for the Rewind/Forward buttons -- the
-  // Stremio-style "hold to seek continuously" behavior. This can't be
-  // wired to the raw D-pad LEFT/RIGHT keys themselves (that needs a
-  // global key listener, unavailable in plain React Native -- see the
-  // note near the focus-wake trap below), but holding the OK/center
-  // button while focused on Rewind/Forward achieves the same result.
   const holdFiredRef = useRef(false);
 
   const startHoldSeek = useCallback((dir: 'left' | 'right') => {
     holdFiredRef.current = false;
     if (holdSeekInterval.current) clearTimeout(holdSeekInterval.current);
 
-    // Wait a beat before the first repeat so a quick tap doesn't also
-    // trigger the hold path (which would double-seek on release).
     const tick = () => {
       holdFiredRef.current = true;
       handleContinuousDPadSeek(dir);
@@ -505,60 +475,14 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     ToastAndroid.show(label, ToastAndroid.SHORT);
   }, [cycleAudioBoostProfile, resetInactivityTimer]);
 
-  // Actual gain applied to the native LoudnessEnhancer effect (see the react-native-video
-  // patch). Cycling audioBoostProfile above only changes stored state + UI; this is what
-  // makes the boost audible.
   const audioBoostGain = useMemo(() => AUDIO_BOOST_GAIN_DB[audioBoostProfile], [audioBoostProfile]);
 
-  // Global D-pad / remote key listener via react-native-keyevent.
-  //
-  // Why this exists: React Native's own focus system only tells a view
-  // "you were pressed" (onPress) or "you gained focus" (onFocus) -- it has
-  // no concept of "the LEFT key is being held down" independent of what's
-  // currently focused. That meant two things were previously impossible
-  // without navigating focus onto a specific button first: (1) holding the
-  // raw D-pad LEFT/RIGHT to seek continuously like Stremio, and (2) truly
-  // any key (not just OK/select) waking the hidden control overlay.
-  //
-  // react-native-keyevent hooks Android's raw key event stream directly
-  // (independent of focus), and Android's own input system automatically
-  // re-fires key-down events at a steady cadence while a hardware key is
-  // held -- so no manual repeat-timer is needed here, we just react to
-  // each event as it arrives. `handleContinuousDPadSeek`'s existing streak
-  // logic turns that natural repeat cadence into the accelerating seek.
-  //
-  // This effect intentionally registers the native listener exactly ONCE
-  // ([] deps) instead of re-subscribing whenever showControls /
-  // isSeekbarFocused change. It used to depend on those, which meant every
-  // single controls-show/hide or seekbar-focus change during an active
-  // hold-seek tore down and rebuilt the native listener -- and any key
-  // repeat that landed in the gap between removeKeyDownListener() and the
-  // next onKeyDownListener() call was silently dropped. Dropped repeats
-  // left native Android focus-search briefly unopposed, which is how focus
-  // ended up drifting onto the control-bar buttons mid-hold a few (10-12)
-  // seconds in, even though nothing had visibly changed on our end. Refs
-  // let the one long-lived listener always see current state without ever
-  // needing to unsubscribe.
   const activeDialogRef = useRef(activeDialog);
   activeDialogRef.current = activeDialog;
   const showControlsRef = useRef(showControls);
   showControlsRef.current = showControls;
   const isSeekbarFocusedRef = useRef(isSeekbarFocused);
   isSeekbarFocusedRef.current = isSeekbarFocused;
-  // The control bar (including the seekbar itself) is only mounted while
-  // `showControls && !isSeeking` (see the render guard further down) --
-  // the very first `handleContinuousDPadSeek` call sets `isSeeking` true,
-  // which unmounts the seekbar and blurs it, flipping `isSeekbarFocused`
-  // false. Without also checking `isSeeking` in the key dispatcher below,
-  // every repeat *after* that first one fell through to the "controls
-  // visible, seekbar not focused" branch -- which only wakes the overlay
-  // instead of continuing to seek -- even though `showControls` itself
-  // never changed. This is what made a held L/R seek exactly once and
-  // then stop: the D-pad press does correctly reveal/refresh the control
-  // overlay each time (that part is intentional, same as any other key),
-  // but that overlay-reveal swaps which component tree is mounted
-  // (control bar vs. the invisible catcher), and the seek routing logic
-  // wasn't accounting for that swap.
   const isSeekingRef = useRef(isSeeking);
   isSeekingRef.current = isSeeking;
   const handleContinuousDPadSeekRef = useRef(handleContinuousDPadSeek);
@@ -572,20 +496,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     const handleKeyDown = (keyEvent: { keyCode?: number }) => {
       const keyCode = keyEvent?.keyCode;
       if (keyCode == null) return;
-      // While a dialog (subtitle/audio/quality picker) is open, let its
-      // own focus navigation own every key -- don't seek or toggle
-      // playback underneath it.
       if (activeDialogRef.current) return;
-      // Never touch the hardware Back key here. It used to fall through to
-      // the "any other key just wakes the overlay" branch below, which
-      // called resetInactivityTimer() (revealing controls) on the exact
-      // same key press that the separate BackHandler listener further down
-      // was also reacting to. Depending on which handler's state update
-      // landed first, that race meant a single Back press could reveal the
-      // controls and then have the BackHandler's own "hide controls"
-      // branch swallow the press instead of closing the player -- so Back
-      // looked like it did nothing. Back must stay exclusively owned by
-      // the dedicated `hardwareBackPress` handler below.
       if (keyCode === KEYCODE_BACK) return;
 
       const isLeft = keyCode === KEYCODE_DPAD_LEFT;
@@ -603,14 +514,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         } else if (isSelect || isPlayPause) {
           handleCatcherPressRef.current();
         } else {
-          // Any other key (up/down/menu/info/etc.) just wakes the
-          // overlay without also seeking or toggling playback.
           resetInactivityTimerRef.current();
         }
       } else {
-        // Controls are visible: only hijack left/right when the seekbar
-        // itself is the focused element (otherwise let left/right move
-        // focus between buttons normally).
         if (isSeekbarFocusedRef.current && (isLeft || isRight)) {
           handleContinuousDPadSeekRef.current(isRight ? 'right' : 'left');
           return;
@@ -621,24 +527,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       }
     };
 
-    // Safety net for the hold-seek state machine below (`isSeeking`).
-    // `startHoldSeek`/`stopHoldSeek` normally stop the repeat loop via the
-    // Rewind/Forward buttons' onPressIn/onPressOut, and the global D-pad
-    // path relies on `seekReleaseTimer` (see handleContinuousDPadSeek)
-    // timing out 500ms after the last repeat. Both of those depend on
-    // *something* reliably firing on release -- but Android TV remotes are
-    // well known for dropping onPressOut when a key is held a long time or
-    // released while focus/press state is mid-transition, and a key-repeat
-    // landing right as the 500ms release timer is about to fire re-arms it
-    // for another 500ms. If either of those independently keeps missing
-    // its release, `isSeeking` never flips back to `false`, which -- per
-    // the `showControls && !isSeeking` render guard above -- means the
-    // interactive control bar never remounts: the small non-focusable seek
-    // overlay (and the full-screen invisible catcher) stay on screen
-    // forever, and every other control becomes unreachable. Hooking the
-    // raw hardware key-UP event (independent of RN's press-state tracking)
-    // guarantees a hard stop the moment the physical key is actually
-    // released, regardless of what RN's own gesture/press system did.
     const handleKeyUp = (keyEvent: { keyCode?: number }) => {
       const keyCode = keyEvent?.keyCode;
       if (keyCode == null) return;
@@ -671,7 +559,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     };
   }, []);
 
-  // Remote Back Button Handler
   useEffect(() => {
     const handleBackPress = () => {
       if (activeDialog) {
@@ -710,10 +597,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     );
     const nextIndex = currentEpisodeIndex + 1;
     if (episodes.length <= nextIndex) {
-      // No next episode -- either this was a movie (episodes is always []
-      // for movies) or we just finished the last episode of the series.
-      // Either way there's nothing left to play here, so go back rather
-      // than leaving the person stuck on a dead player screen.
       ToastAndroid.show(
         episodes.length > 0 ? 'That was the last episode.' : 'Playback finished.',
         ToastAndroid.SHORT
@@ -854,38 +737,21 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         }}
         onBuffer={(buf) => setBuffering(buf.isBuffering)}
         onEnd={() => {
-          // Natural end of playback -- auto-advance. handleNextEpisode
-          // already closes back to TVInfoScreen when there's no next
-          // episode (movie, or last episode of a series).
           handleNextEpisode();
         }}
         onError={async (err) => {
-          // ExoPlayer's ERROR_CODE_IO_UNEXPECTED firing in the last few
-          // seconds of playback is almost always the stream's connection
-          // closing right at (or a hair before) the true end of the file --
-          // a lot of scraped/transcoded sources report a duration or
-          // Content-Length that's a few seconds longer than what's actually
-          // servable. From the person's perspective the episode/movie
-          // finished; showing a scary "Playback error" toast and stopping
-          // dead is wrong here, so treat "errored while already essentially
-          // at the end" the same as a real onEnd.
-          const nearEnd = duration > 0 && duration - currentProgRef.current.currentTime <= 8;
-          const isIoError = err.error?.errorCode?.toString().includes('IO_UNEXPECTED')
-            || err.error?.errorString?.includes('IO_UNEXPECTED');
+          const nearEnd = duration > 0 && duration - currentProgRef.current.currentTime <= 75;
+          const isIoError =
+            err.error?.errorCode?.toString().includes('IO_UNEXPECTED') ||
+            err.error?.errorString?.includes('IO_UNEXPECTED') ||
+            err.error?.errorString?.includes('BehindLiveWindowException') ||
+            err.error?.errorString?.includes('ParsingException');
 
           if (nearEnd && isIoError) {
             handleNextEpisode();
             return;
           }
 
-          // An IO error with real time still left on the clock (the 30-60s
-          // remaining case) is a different problem: these scraped sources
-          // frequently issue a short-lived signed CDN URL rather than a
-          // stable one, and the connection is simply cut once that link's
-          // validity window closes mid-playback. Re-resolving the same
-          // episode/movie from scratch gets a fresh URL; picking back up
-          // at the exact position it dropped makes the recovery invisible
-          // instead of ending the session with a cryptic error toast.
           const recoveryLink = episodes[currentEpisodeIndex]?.link || itemLink;
           if (isIoError && recoveryLink && providerValue && recoveryAttemptsRef.current < 2) {
             recoveryAttemptsRef.current += 1;
@@ -923,19 +789,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       )}
 
-      {/* Fallback catcher. Shown whenever controls are hidden, AND kept
-          mounted+focused for the duration of an active hold-seek even if
-          `showControls` is true -- see the note above `isSeeking`. Without
-          the `isSeeking` half of this condition, revealing the interactive
-          control bar mid-hold (Play/Pause, seekbar, etc. all becoming
-          focusable at once) gave Android's native D-pad focus engine
-          somewhere else to move focus to *while the physical key was still
-          held down* -- so a hold-seek would seek once, then focus would
-          drift from Play/Pause onward through the row on every subsequent
-          repeat, instead of continuing to seek. Keeping this the only
-          focusable thing on screen during `isSeeking` (see the
-          `showControls && !isSeeking` guard below) means there is nowhere
-          for focus to drift to. */}
       {(!showControls || isSeeking) && (
         <TVFocusablePressable
           hasTVPreferredFocus
@@ -948,10 +801,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </TVFocusablePressable>
       )}
 
-      {/* Lightweight, non-focusable seek indicator shown in place of the
-          full interactive control bar while a hold-seek is in progress
-          (see the catcher note above for why the interactive buttons are
-          hidden, not just visually but from focus, during this time). */}
       {isSeeking && (
         <View style={styles.seekOverlay} pointerEvents="none">
           <LinearGradient
@@ -1014,13 +863,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 style={styles.progressHitArea}
               >
                 {({ focused }) => {
-                  // While a hold-seek streak is active, show the seekbar's
-                  // "active" look even though real TV focus hasn't (and
-                  // shouldn't) moved there -- the global key listener seeks
-                  // directly without navigating focus. Without this, a
-                  // long-press on L/R visibly moved the video position but
-                  // all the visual feedback stayed on whatever button
-                  // (usually Play/Pause) happened to have focus.
                   const active = focused || isSeeking;
                   return (
                     <View style={[styles.progressTrack, active && styles.progressTrackFocused]}>
@@ -1054,11 +896,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             <View style={styles.actionRow}>
               {/* Play / Pause */}
               <TVFocusablePressable
-                // Don't steal initial focus onto Play/Pause when the
-                // control bar was revealed by an active hold-seek -- that
-                // stole visual attention away from the seekbar (where the
-                // actual action is happening) onto a button the user isn't
-                // interacting with. See the `isSeeking` note above.
                 hasTVPreferredFocus={!isSeekbarFocused && !isSeeking}
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -1081,10 +918,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 )}
               </TVFocusablePressable>
 
-              {/* 10s Rewind -- tap seeks once; press-and-hold repeats with
-                  acceleration. Holding the raw D-pad LEFT key (without
-                  navigating focus here first) now does the same thing via
-                  the global key listener above. */}
+              {/* 10s Rewind */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -1100,7 +934,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 {() => <MaterialCommunityIcons name="rewind-10" size={24} color="#FFFFFF" />}
               </TVFocusablePressable>
 
-              {/* 10s Forward -- same hold-to-repeat behavior as Rewind. */}
+              {/* 10s Forward */}
               <TVFocusablePressable
                 scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
@@ -1246,7 +1080,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               )}
 
               {/* Quality Selector */}
-              {qualities.length > 0 && (
+              {usableQualities.length > 0 && (
                 <TVFocusablePressable
                   scaleFocused={1.08}
                   focusedBorderColor="#8A5CF6"
@@ -1388,6 +1222,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     focusedBorderColor="#8A5CF6"
                     borderRadius={8}
                     onPress={() => {
+                      const resumeAt = currentProgRef.current.currentTime || currentTime;
+                      pendingRecoverySeekRef.current = resumeAt;
                       setActiveMediaUrl(srv.url);
                       setActiveHeaders(srv.headers);
                       setActiveSourceType(srv.sourceType);
@@ -1406,7 +1242,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
               {/* Quality Options */}
               {activeDialog === 'quality' &&
-                qualities.map((q, i) => (
+                usableQualities.map((q, i) => (
                   <TVFocusablePressable
                     key={`quality-${i}`}
                     hasTVPreferredFocus={i === 0}
@@ -1414,6 +1250,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     focusedBorderColor="#8A5CF6"
                     borderRadius={8}
                     onPress={() => {
+                      const resumeAt = currentProgRef.current.currentTime || currentTime;
+                      pendingRecoverySeekRef.current = resumeAt;
                       setActiveMediaUrl(q.url);
                       setActiveHeaders(q.headers);
                       setActiveSourceType(q.sourceType);
@@ -1635,3 +1473,5 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+
+export default TVPlayerScreen;
