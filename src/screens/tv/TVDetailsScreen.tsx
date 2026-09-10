@@ -31,8 +31,35 @@ import type { Info, Link, EpisodeLink, TextTracks } from '../../lib/providers/ty
 const toPlayerChoice = (pref: 'exo' | 'vlc' | 'system'): PlayerChoice =>
   pref === 'vlc' ? 'vlc' : pref === 'system' ? 'external' : 'exoplayer';
 
+// Check against Settings' excluded qualities (Settings -> Quality). Handles
+// "1080", "1080p", "4k", "2160p" etc. -- same helper used by
+// TVDiscoverScreen/TVPlayerScreen so a quality excluded there is excluded
+// everywhere.
+const isQualityExcluded = (
+  target: string | undefined | null,
+  excludedList: string[],
+): boolean => {
+  if (!target || !excludedList || excludedList.length === 0) return false;
+  const text = target.toLowerCase().trim();
+
+  return excludedList.some((ex) => {
+    const exLower = ex.toLowerCase().trim();
+    if (!exLower) return false;
+
+    if (exLower === '4k' || exLower === '2160p' || exLower === '2160') {
+      return text.includes('4k') || text.includes('2160');
+    }
+    const cleanNum = exLower.replace('p', '');
+    return text.includes(exLower) || (cleanNum.length >= 3 && text.includes(cleanNum));
+  });
+};
+
 interface ResumeHint {
   episodeLink?: string;
+  // Stable "S{season}E{episode}" key -- see ContinueWatchingItem.episodeKey.
+  // Preferred over `episodeLink` when present; `episodeLink` stays as a
+  // fallback for entries saved before this key existed.
+  episodeKey?: string;
   position?: number;
 }
 
@@ -45,6 +72,7 @@ interface TVDetailsScreenProps {
     extraMeta?: {
       posterUrl?: string;
       itemLink?: string;
+      episodeId?: string;
       providerValue?: string;
       episodes?: any[];
       currentEpisodeIndex?: number;
@@ -74,7 +102,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [extractingStreams, setExtractingStreams] = useState(false);
 
   const [seasonIndex, setSeasonIndex] = useState(0);
-  const [episodes, setEpisodes] = useState<EpisodeLink[]>([]);
+  const [rawEpisodes, setEpisodes] = useState<EpisodeLink[]>([]);
   const [episodesLoading, setEpisodesLoading] = useState(false);
 
   // Cinemeta enrichment -- canonical title/year formatting plus, for
@@ -159,7 +187,24 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     };
   }, [info?.imdbId, info?.type, info?.populateMeta, info?.title, item?.title]);
 
-  const linkList: Link[] = info?.linkList || [];
+  const excludedQualities = useMemo(
+    () => settingsStorage.getExcludedQualities() || [],
+    [],
+  );
+
+  // Filter season/quality tabs against excluded settings -- falls back to
+  // the unfiltered list if every entry would otherwise be excluded, so
+  // there's always something pickable.
+  const rawLinkList: Link[] = info?.linkList || [];
+  const linkList: Link[] = useMemo(() => {
+    if (!excludedQualities.length) return rawLinkList;
+    const filtered = rawLinkList.filter(
+      (l) =>
+        !isQualityExcluded(l?.quality, excludedQualities) &&
+        !isQualityExcluded(l?.title, excludedQualities),
+    );
+    return filtered.length > 0 ? filtered : rawLinkList;
+  }, [rawLinkList, excludedQualities]);
   const activeLink = linkList[seasonIndex];
   const hasEpisodesLink = !!activeLink?.episodesLink;
 
@@ -200,6 +245,31 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
 
   const directItems = activeLink?.directLinks || [];
 
+  // Filter fetched episodes/direct-links against excluded settings -- a
+  // few providers tag quality directly on the episode/source title (e.g.
+  // "Episode 5 [1080p]"), so check both a `quality` field (if the source
+  // sets one) and the title text. Falls back to the unfiltered list if
+  // everything would otherwise be excluded.
+  const episodes: EpisodeLink[] = useMemo(() => {
+    if (!excludedQualities.length) return rawEpisodes;
+    const filtered = rawEpisodes.filter(
+      (ep: any) =>
+        !isQualityExcluded(ep?.quality, excludedQualities) &&
+        !isQualityExcluded(ep?.title, excludedQualities),
+    );
+    return filtered.length > 0 ? filtered : rawEpisodes;
+  }, [rawEpisodes, excludedQualities]);
+
+  const usableDirectItems = useMemo(() => {
+    if (!excludedQualities.length) return directItems;
+    const filtered = directItems.filter(
+      (d: any) =>
+        !isQualityExcluded(d?.title, excludedQualities) &&
+        !isQualityExcluded(d?.quality, excludedQualities),
+    );
+    return filtered.length > 0 ? filtered : directItems;
+  }, [directItems, excludedQualities]);
+
   // Closes the race that caused a "flash" of the wrong screen: there is one
   // render frame after `getMetaData` resolves but before the episodes
   // effect has had a chance to flip `episodesLoading` to true, during which
@@ -210,7 +280,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const stillResolving = loading || isAwaitingEpisodes || episodesLoading || extractingStreams;
 
   const resolveAndPlay = useCallback(
-    async (link: string, streamTitle: string, type: string, episodeIdx: number = 0) => {
+    async (
+      link: string,
+      streamTitle: string,
+      type: string,
+      episodeIdx: number = 0,
+      episodeKey?: string,
+    ) => {
       if (!providerId || !link) {
         ToastAndroid.show('No active provider found for this media', ToastAndroid.SHORT);
         return;
@@ -218,25 +294,42 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
 
       setExtractingStreams(true);
       try {
-        const streams = await providerManager.getStream({
+        const rawStreams = await providerManager.getStream({
           link,
           type,
           providerValue: providerId,
         });
 
-        if (!streams || streams.length === 0) {
+        if (!rawStreams || rawStreams.length === 0) {
           ToastAndroid.show('No valid stream links found from this source.', ToastAndroid.LONG);
           return;
         }
 
-        // Only resume automatically when the specific episode/movie the
-        // person just picked is the exact one continue-watching was
-        // tracking -- picking anything else starts fresh at 0, same as
-        // the original app.
-        const startPosition =
-          resumeHint?.episodeLink && resumeHint.episodeLink === link
-            ? resumeHint.position
-            : undefined;
+        // Filter out qualities excluded in Settings -- falls back to the
+        // unfiltered list if every stream would otherwise be excluded, so
+        // playback never dead-ends.
+        const filteredStreams = rawStreams.filter(
+          (s) =>
+            !isQualityExcluded(s?.quality, excludedQualities) &&
+            !isQualityExcluded(s?.server, excludedQualities),
+        );
+        const streams = filteredStreams.length > 0 ? filteredStreams : rawStreams;
+
+        // Resume matching: a series episode is only the one continue-
+        // watching was tracking if its *stable* season/episode key matches
+        // (raw provider links can differ across quality picks or separate
+        // fetches even for the exact same episode, so they're only used as
+        // a fallback for entries saved before this key existed). A movie
+        // has nothing else to disambiguate -- if we got here with a
+        // resumeHint at all, this *is* the title it's for, regardless of
+        // which quality/source was just picked.
+        const isSeriesEpisode = !!episodeKey;
+        const startPosition = isSeriesEpisode
+          ? resumeHint?.episodeKey === episodeKey ||
+            (resumeHint?.episodeLink && resumeHint.episodeLink === link)
+            ? resumeHint?.position
+            : undefined
+          : resumeHint?.position;
 
         const playerPref = settingsStorage.getDefaultPlayer();
         if (playerPref !== 'exo') {
@@ -268,6 +361,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         onPlayStream(best.link, streamTitle, {
           posterUrl: info?.image || info?.poster || item?.image,
           itemLink: item?.link,
+          episodeId: episodeKey,
           providerValue: providerId,
           episodes,
           currentEpisodeIndex: episodeIdx,
@@ -284,7 +378,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         setExtractingStreams(false);
       }
     },
-    [providerId, info, item, episodes, onPlayStream, resumeHint],
+    [providerId, info, item, episodes, onPlayStream, resumeHint, excludedQualities],
   );
 
   const handlePickServer = async (option: { url: string; headers?: Record<string, string> }) => {
@@ -443,7 +537,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           <View style={styles.listSection}>
             <Text style={styles.sectionHeader}>Episodes</Text>
             {episodes.map((ep, index) => {
-              const isResumeTarget = !!resumeHint?.episodeLink && ep.link === resumeHint.episodeLink;
               // Prefer real season/episode numbers parsed from the source's
               // own labels (handles S01/s1/Season01/Season 1 etc. on the
               // season chip, and E12/Episode 12/leading "12." etc. on the
@@ -451,6 +544,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               // number genuinely can't be found.
               const seasonNum = parseSeasonNumber(activeLink?.title) ?? seasonIndex + 1;
               const episodeNum = parseEpisodeNumber(ep.title) ?? index + 1;
+              const episodeKey = `S${seasonNum}E${episodeNum}`;
+              // Stable key match is authoritative; raw link match is only a
+              // fallback for continue-watching entries saved before this
+              // key existed.
+              const isResumeTarget =
+                resumeHint?.episodeKey
+                  ? resumeHint.episodeKey === episodeKey
+                  : !!resumeHint?.episodeLink && ep.link === resumeHint.episodeLink;
               const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNum, episodeNum);
               const episodeThumb = ep.image || cinemetaEp?.thumbnail;
               const episodeOverview = ep.description || cinemetaEp?.overview;
@@ -458,7 +559,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 <TVFocusablePressable
                   key={`ep-${ep.id || ep.link || index}`}
                   hasTVPreferredFocus={
-                    resumeHint?.episodeLink
+                    resumeHint?.episodeKey || resumeHint?.episodeLink
                       ? isResumeTarget
                       : index === 0
                   }
@@ -471,6 +572,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                       info?.title || item?.title || ep.title || `Episode ${index + 1}`,
                       'series',
                       index,
+                      episodeKey,
                     )
                   }
                   style={styles.episodeRow}
@@ -515,10 +617,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               );
             })}
           </View>
-        ) : directItems.length > 1 ? (
+        ) : usableDirectItems.length > 1 ? (
           <View style={styles.listSection}>
             <Text style={styles.sectionHeader}>Select Source</Text>
-            {directItems.map((d, index) => (
+            {usableDirectItems.map((d, index) => (
               <TVFocusablePressable
                 key={`direct-${d.link}-${index}`}
                 hasTVPreferredFocus={index === 0}
@@ -538,6 +640,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                     <Text numberOfLines={1} style={styles.episodeTitle}>
                       {d.title}
                     </Text>
+                    {resumeHint?.position ? (
+                      <Text style={styles.resumeBadge}>
+                        Resume {Math.floor(resumeHint.position / 60)}:
+                        {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+                      </Text>
+                    ) : null}
                   </View>
                 )}
               </TVFocusablePressable>
@@ -552,9 +660,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               borderRadius={14}
               onPress={() =>
                 resolveAndPlay(
-                  directItems[0]?.link || item?.link,
+                  usableDirectItems[0]?.link || item?.link,
                   info?.title || item?.title,
-                  directItems[0]?.type || info?.type || 'movie',
+                  usableDirectItems[0]?.type || info?.type || 'movie',
                 )
               }
               style={styles.playBtn}
@@ -562,7 +670,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               {() => (
                 <View style={styles.playBtnInner}>
                   <MaterialCommunityIcons name="play" size={26} color="#FFFFFF" />
-                  <Text style={styles.playBtnText}>Play Movie / Stream</Text>
+                  <Text style={styles.playBtnText}>
+                    {resumeHint?.position ? 'Resume Movie / Stream' : 'Play Movie / Stream'}
+                  </Text>
                 </View>
               )}
             </TVFocusablePressable>
