@@ -16,7 +16,7 @@ import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks } from './lib/providers/types';
 
 // TV Components & Screens
-import { TVNavigationRail, TVRoute } from './components/tv/TVNavigationRail';
+import { TVNavigationRail, TVNavigationRailHandle, TVRoute } from './components/tv/TVNavigationRail';
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
@@ -56,6 +56,11 @@ export default function App() {
   // of *any* tab's content returns to *that* tab's own rail button instead
   // of always jumping to Home.
   const [navHandles, setNavHandles] = useState<Partial<Record<TVRoute, number>>>({});
+  // Lets the hardware Back handler below imperatively move focus onto a
+  // rail button (see TVNavigationRailHandle) -- used so Back on the
+  // Settings screen always lands focus on the Settings icon instead of
+  // navigating away.
+  const navRailRef = useRef<TVNavigationRailHandle | null>(null);
   const currentProvider = useContentStore((state) => state.provider);
 
   const handleRegisterRouteHandle = useCallback((route: TVRoute, handle: number | null) => {
@@ -167,6 +172,16 @@ export default function App() {
 
       if (selectedItem) {
         setSelectedItem(null);
+        return true;
+      }
+
+      // Settings is a dead end for hardware Back: rather than popping to
+      // whatever route preceded it (which felt inconsistent depending on
+      // how the user got there), Back always just returns focus to the
+      // Settings rail button, the same way it would if the user had
+      // arrowed all the way to the left edge of the screen.
+      if (currentRoute === 'settings') {
+        navRailRef.current?.focusRoute('settings');
         return true;
       }
 
@@ -319,6 +334,7 @@ export default function App() {
                     </View>
 
                     <TVNavigationRail
+                      ref={navRailRef}
                       currentRoute={currentRoute}
                       onRouteChange={navigateTo}
                       onRegisterRouteHandle={handleRegisterRouteHandle}
