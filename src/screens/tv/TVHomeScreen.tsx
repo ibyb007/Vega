@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react';
 import {
   View,
   Text,
@@ -86,6 +86,17 @@ interface TVHomeScreenProps {
   // user browses without this screen re-rendering at all, so it has to be
   // fetched on demand rather than passed down as a prop value.
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  // Lets the rail ask this screen to hand focus back to whichever card was
+  // last focused, for when OK is pressed on the Home button while Home is
+  // already the active tab (a no-op route change, so nothing was moving
+  // focus off the rail button the way Right does). Deliberately NOT done
+  // by remounting the whole screen (that was the first fix attempted here,
+  // and it visibly "refreshed" the screen and made the rail feel laggy
+  // right after, since it re-ran every hook on the screen including the
+  // catalog data fetch) -- this only force-remounts the one poster
+  // component that needs its `hasTVPreferredFocus` to re-fire, which is
+  // enough to pull focus back without touching anything else on screen.
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
 }
 
 export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
@@ -94,6 +105,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onNavigateRoute,
   navFocusTarget,
   onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
 }) => {
   const provider = useContentStore((state) => state.provider);
   const installedProviders = useContentStore((state) => state.installedProviders);
@@ -327,6 +339,27 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     return () => onRegisterEntryHandleGetter?.(null);
   }, [onRegisterEntryHandleGetter]);
 
+  // Which poster's `key` prop should carry a remount suffix, and a nonce to
+  // actually change that suffix each time. Deliberately a ref, not state
+  // keyed directly off `lastFocusedKey` -- if the suffix were derived from
+  // "is this the currently-last-focused item" on every render, it would
+  // *revert* (and force an unwanted remount) the moment focus moved to a
+  // different poster during ordinary browsing, which is its own glitch.
+  // Only updating this ref in response to an explicit trigger, and forcing
+  // a render with a separate reducer, keeps a poster's key stable through
+  // normal use and only bumps the one poster the rail actually asked for.
+  const refocusRef = useRef<{ key: string | null; nonce: number }>({ key: null, nonce: 0 });
+  const [, forceRerenderForRefocus] = useReducer((n) => n + 1, 0);
+
+  useEffect(() => {
+    onRegisterReturnFocusTrigger?.(() => {
+      if (!lastFocusedKey) return;
+      refocusRef.current = { key: lastFocusedKey, nonce: refocusRef.current.nonce + 1 };
+      forceRerenderForRefocus();
+    });
+    return () => onRegisterReturnFocusTrigger?.(null);
+  }, [onRegisterReturnFocusTrigger]);
+
   const handleCardFocus = useCallback(
     (rowIndex: number, item: any, itemKey: string, isHistory: boolean = false) => {
       lastFocusedKey = itemKey;
@@ -478,7 +511,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
                     return (
                       <TVFocusablePressable
-                        key={itemKey}
+                        key={refocusRef.current.key === itemKey ? `${itemKey}-r${refocusRef.current.nonce}` : itemKey}
                         ref={(el) => {
                           itemRefsRef.current[itemKey] = el;
                         }}
