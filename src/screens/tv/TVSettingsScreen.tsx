@@ -35,6 +35,10 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
 ];
 
 interface TVSettingsScreenProps {
+  // Native node handle of the Settings nav rail button -- wired as
+  // `nextFocusLeft` on every row here since this screen is a single
+  // full-width column, so every item is already the "leftmost" (and only)
+  // focusable in its row.
   navFocusTarget?: number | null;
 }
 
