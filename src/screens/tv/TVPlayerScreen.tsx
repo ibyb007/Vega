@@ -74,17 +74,42 @@ const describeTrack = (trk: any, fallbackLabel: string): string => {
   return fallbackLabel;
 };
 
-// Compact label for the control-panel subtitle button: if the track's
-// title/label carries a bracketed tag (e.g. "1VegaMoviex.xx - [English]"),
-// show just that tag ("[English]") instead of the full raw title.
+// Words that show up in subtitle filenames/titles but aren't a language
+// (hearing-impaired/forced/codec tags etc.) - never treated as the language itself.
+const NON_LANGUAGE_TAGS = new Set([
+  'sdh', 'cc', 'forced', 'full', 'default', 'hi', 'vo', 'dub', 'dubbed',
+  'ac3', 'dts', 'aac', '5.1', '2.0', 'sub', 'subs', 'subtitle', 'subtitles',
+]);
+
+// Compact label for the control-panel subtitle button. Track titles coming from
+// scraped file names are messy and inconsistent -- "1VegaMoviex.xx - [English]",
+// "English [SDH]", "SDH-English", "Hindi-HC" and similar all show up in the wild.
+// Rather than special-casing each format, scan the raw title for any known
+// language name as a whole word and use that; fall back to the track's language
+// code, then to a bracket/paren tag that isn't a known non-language marker, then
+// to the fallback label. This always resolves to a plain "English"/"Hindi"/etc.
 const describeTrackCompact = (trk: any, fallbackLabel: string): string => {
   if (!trk) return fallbackLabel;
   const rawTitle = (trk?.title || trk?.label || '').trim();
-  const bracketMatch = rawTitle.match(/\[([^\]]+)\]/);
-  if (bracketMatch) {
-    return `[${bracketMatch[1]}]`;
+  const rawLang = (trk?.language || trk?.lang || '').toLowerCase().trim();
+
+  for (const lang of Object.values(LANGUAGE_NAMES)) {
+    const re = new RegExp(`\\b${lang}\\b`, 'i');
+    if (re.test(rawTitle)) return lang;
   }
-  return describeTrack(trk, fallbackLabel);
+
+  const code = rawLang.slice(0, 2);
+  if (LANGUAGE_NAMES[code]) return LANGUAGE_NAMES[code];
+
+  const bracketMatch = rawTitle.match(/\[([^\]]+)\]/) || rawTitle.match(/\(([^)]+)\)/);
+  if (bracketMatch) {
+    const inner = bracketMatch[1].trim();
+    if (inner && !NON_LANGUAGE_TAGS.has(inner.toLowerCase())) {
+      return inner.charAt(0).toUpperCase() + inner.slice(1).toLowerCase();
+    }
+  }
+
+  return fallbackLabel;
 };
 
 interface EpisodeItem {
@@ -444,6 +469,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       clearTimeout(holdSeekInterval.current);
       holdSeekInterval.current = null;
     }
+    if (seekReleaseTimer.current) {
+      clearTimeout(seekReleaseTimer.current);
+      seekReleaseTimer.current = null;
+    }
+    seekStreak.current = 0;
+    lastSeekDirection.current = null;
+    setIsSeeking(false);
   }, []);
 
   useEffect(() => {
@@ -589,9 +621,53 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       }
     };
 
+    // Safety net for the hold-seek state machine below (`isSeeking`).
+    // `startHoldSeek`/`stopHoldSeek` normally stop the repeat loop via the
+    // Rewind/Forward buttons' onPressIn/onPressOut, and the global D-pad
+    // path relies on `seekReleaseTimer` (see handleContinuousDPadSeek)
+    // timing out 500ms after the last repeat. Both of those depend on
+    // *something* reliably firing on release -- but Android TV remotes are
+    // well known for dropping onPressOut when a key is held a long time or
+    // released while focus/press state is mid-transition, and a key-repeat
+    // landing right as the 500ms release timer is about to fire re-arms it
+    // for another 500ms. If either of those independently keeps missing
+    // its release, `isSeeking` never flips back to `false`, which -- per
+    // the `showControls && !isSeeking` render guard above -- means the
+    // interactive control bar never remounts: the small non-focusable seek
+    // overlay (and the full-screen invisible catcher) stay on screen
+    // forever, and every other control becomes unreachable. Hooking the
+    // raw hardware key-UP event (independent of RN's press-state tracking)
+    // guarantees a hard stop the moment the physical key is actually
+    // released, regardless of what RN's own gesture/press system did.
+    const handleKeyUp = (keyEvent: { keyCode?: number }) => {
+      const keyCode = keyEvent?.keyCode;
+      if (keyCode == null) return;
+      const isSeekKey =
+        keyCode === KEYCODE_DPAD_LEFT ||
+        keyCode === KEYCODE_DPAD_RIGHT ||
+        keyCode === KEYCODE_DPAD_CENTER ||
+        keyCode === KEYCODE_ENTER;
+      if (!isSeekKey) return;
+
+      if (holdSeekInterval.current) {
+        clearTimeout(holdSeekInterval.current);
+        holdSeekInterval.current = null;
+      }
+      if (seekReleaseTimer.current) {
+        clearTimeout(seekReleaseTimer.current);
+        seekReleaseTimer.current = null;
+      }
+      seekStreak.current = 0;
+      lastSeekDirection.current = null;
+      setIsSeeking(false);
+      resetInactivityTimerRef.current();
+    };
+
     KeyEvent.onKeyDownListener(handleKeyDown);
+    KeyEvent.onKeyUpListener(handleKeyUp);
     return () => {
       KeyEvent.removeKeyDownListener();
+      KeyEvent.removeKeyUpListener();
     };
   }, []);
 
@@ -1120,7 +1196,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                       ]}
                     >
                       {audioBoostProfile === 'rich'
-                        ? 'Rich Boost (+12dB)'
+                        ? 'Rich Boost'
                         : audioBoostProfile === 'dialogue'
                         ? 'Dialogue Boost'
                         : 'Audio Boost'}
