@@ -641,27 +641,37 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     resultsTarget?.title,
   ]);
 
+  // Looks up a saved continue-watching position for this title.
+  // `itemLink` is the stable info-page link (the continue-watching row's
+  // identity). For a movie, that's enough -- there's only one thing to
+  // resume. For a series episode, `episodeKey` (the stable "S{n}E{n}"
+  // identity -- see ContinueWatchingItem.episodeKey) must also match, since
+  // otherwise picking a *different* episode of the same show would
+  // incorrectly inherit whatever position was saved for another one.
+  // `rawLink` is only used as a fallback match for entries saved before
+  // `episodeKey` existed.
   const getSavedResumePosition = useCallback(
-    (canonicalLink: string): number => {
+    (itemLink: string, episodeKey?: string, rawLink?: string): number => {
       try {
         const cwState: any = useContinueWatchingStore.getState?.();
         const cwItems = cwState?.items || [];
         const cwMatch = cwItems.find(
-          (c: any) =>
-            c?.infoUrl === canonicalLink ||
-            c?.link === canonicalLink ||
-            c?.id === canonicalLink ||
-            c?.episodeId === canonicalLink,
+          (c: any) => c?.infoUrl === itemLink || c?.id === itemLink,
         );
-        if (cwMatch?.position) return cwMatch.position;
+        if (cwMatch?.position) {
+          const isMovie = !episodeKey;
+          const episodeMatches = episodeKey
+            ? cwMatch.episodeKey
+              ? cwMatch.episodeKey === episodeKey
+              : !!rawLink && cwMatch.episode?.link === rawLink
+            : false;
+          if (isMovie || episodeMatches) return cwMatch.position;
+        }
 
         const csState: any = useContentStore.getState?.();
         const history = csState?.watchHistory || [];
         const hMatch = history.find(
-          (h: any) =>
-            h?.link === canonicalLink ||
-            h?.id === canonicalLink ||
-            h?.episodeId === canonicalLink,
+          (h: any) => h?.link === itemLink || h?.id === itemLink,
         );
         if (hMatch?.currentTime) return hMatch.currentTime;
       } catch (err) {
@@ -734,13 +744,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           savedDiscoverState.episodes = episodesToSend || episodes;
         }
 
-        const canonicalKey = episodeKey || link || activeSourcePost?.link;
-        const resumePos = getSavedResumePosition(canonicalKey);
+        // A stable per-episode key (season+episode number) disambiguates
+        // series episodes independent of which quality/source link was
+        // just resolved; movies have nothing to disambiguate, so there's
+        // no per-episode key for them -- the title's own info-page link is
+        // the whole identity.
+        const isSeries = type === 'series';
+        const stableEpisodeKey = isSeries ? episodeKey : undefined;
+        const resumePos = getSavedResumePosition(
+          activeSourcePost?.link || '',
+          stableEpisodeKey,
+          link,
+        );
 
         onPlayStream(best.link, title, {
           posterUrl: sourceInfo?.image || sourceInfo?.poster || activeSourcePost?.image || resultsTarget?.poster,
           itemLink: activeSourcePost?.link,
-          episodeId: canonicalKey,
+          episodeId: stableEpisodeKey,
           startPosition: resumePos,
           providerValue,
           episodes: episodesToSend,
@@ -1096,6 +1116,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             );
                             const episodeThumb = ep.image || cinemetaEp?.thumbnail;
                             const episodeOverview = ep.description || cinemetaEp?.overview;
+                            // Stable "S{season}E{episode}" identity -- not
+                            // the raw episode link, which can differ across
+                            // quality variants or separate fetches even for
+                            // the exact same episode.
+                            const episodeKey = `S${seasonNum}E${episodeNum}`;
                             return (
                               <TVFocusablePressable
                                 key={`ep-${ep.link || idx}`}
@@ -1114,7 +1139,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                     'series',
                                     idx,
                                     episodes,
-                                    ep.link || `ep-${idx + 1}`,
+                                    episodeKey,
                                   )
                                 }
                                 style={styles.episodeCard}
