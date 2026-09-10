@@ -41,6 +41,7 @@ import {
   stremioCatalogStorage,
   StremioManifestEntry,
   HiddenCatalogEntry,
+  settingsStorage,
 } from '../../lib/storage';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -666,8 +667,20 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           ToastAndroid.show('No valid stream links found from this source.', ToastAndroid.LONG);
           return;
         }
-        const best = streams[0];
-        const qualities = streams.map((s, idx) => ({
+
+        // Filter out qualities excluded in Settings -- mirrors the same
+        // exclusion applied to the in-player stream list (useStream.ts) and
+        // to TVInfoScreen, so Discover's own resolve path doesn't leak an
+        // excluded quality back into the picker. Falls back to the
+        // unfiltered list if the exclusion would leave nothing playable.
+        const excludedQualities = settingsStorage.getExcludedQualities() || [];
+        const filteredStreams = streams.filter(
+          (s) => !excludedQualities.includes((s as any)?.quality + 'p'),
+        );
+        const usableStreams = filteredStreams.length > 0 ? filteredStreams : streams;
+
+        const best = usableStreams[0];
+        const qualities = usableStreams.map((s, idx) => ({
           name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
           url: s.link,
           headers: s.headers,
