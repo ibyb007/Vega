@@ -13,6 +13,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { useContentDetails } from '../../lib/hooks/useContentInfo';
 import { useEpisodes, useStreamData } from '../../lib/hooks/useEpisodes';
+import { settingsStorage } from '../../lib/storage';
 
 export interface TVInfoItem {
   link: string;
@@ -81,8 +82,20 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
           ToastAndroid.show('No playable stream found', ToastAndroid.SHORT);
           return;
         }
-        const best = streams[0];
-        const qualities = streams.map((s, idx) => ({
+
+        // Filter out qualities excluded in Settings -- mirrors the same
+        // exclusion applied to the in-player stream list (useStream.ts), so
+        // an excluded quality doesn't reappear in this picker just because
+        // it was resolved via the TV Info flow instead. Falls back to the
+        // unfiltered list if the exclusion would leave nothing playable.
+        const excludedQualities = settingsStorage.getExcludedQualities() || [];
+        const filteredStreams = streams.filter(
+          (s) => !excludedQualities.includes(s?.quality + 'p'),
+        );
+        const usableStreams = filteredStreams.length > 0 ? filteredStreams : streams;
+
+        const best = usableStreams[0];
+        const qualities = usableStreams.map((s, idx) => ({
           label: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
           url: s.link,
           headers: s.headers,
