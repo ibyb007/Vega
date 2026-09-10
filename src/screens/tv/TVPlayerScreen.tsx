@@ -317,7 +317,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const userChoseSubtitleRef = useRef(false);
 
   const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
-  const continueWatchingId = episodeId || itemLink || streamUrl;
+  // Row identity is always the content's own info-page link when we have
+  // one -- stable no matter which quality/source/episode was actually
+  // played -- so progress on the same title always updates one row instead
+  // of fragmenting into a new row per quality pick or per screen it was
+  // launched from. `episodeId` here is repurposed as the *per-episode*
+  // disambiguator (see `episodeKey` below), not the row id.
+  const continueWatchingId = itemLink || episodeId || streamUrl;
 
   const syncProgressToStore = useCallback(
     (timeSec: number, totalDur: number) => {
@@ -338,6 +344,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         episodeTitle:
           episode.title && episode.title !== title ? episode.title : undefined,
         episode,
+        // Only meaningful for series -- a movie has nothing to
+        // disambiguate, so leave it unset rather than storing a stray key.
+        episodeKey: episodes.length > 0 ? episodeId || undefined : undefined,
         type: episodes.length > 0 ? 'series' : 'movie',
         poster: posterUrl,
         background: posterUrl,
@@ -348,7 +357,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         updatedAt: Date.now(),
       });
     },
-    [continueWatchingId, itemLink, episodes, currentEpisodeIndex, title, posterUrl, providerValue, upsertContinueWatching]
+    [continueWatchingId, itemLink, episodeId, episodes, currentEpisodeIndex, title, posterUrl, providerValue, upsertContinueWatching]
   );
 
   useEffect(() => {
