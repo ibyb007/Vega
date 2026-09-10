@@ -929,7 +929,7 @@ index 5e36ef2..3eba51d 100644
              @SuppressLint("InlinedApi")
              val result = AppOpsManagerCompat.noteOpNoThrow(
 diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
-index e16ac96..11e04df 100644
+index e16ac96..8ba29fe 100644
 --- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
 +++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerView.java
 @@ -57,9 +57,16 @@ import androidx.media3.datasource.DataSource;
@@ -959,15 +959,21 @@ index e16ac96..11e04df 100644
  import androidx.media3.exoplayer.source.ProgressiveMediaSource;
  import androidx.media3.exoplayer.source.TrackGroupArray;
  import androidx.media3.exoplayer.source.ads.AdsMediaSource;
-@@ -234,6 +244,7 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -234,6 +244,13 @@ public class ReactExoplayerView extends FrameLayout implements
      private boolean isSeeking = false;
      private long seekPosition = -1;
      private boolean hasVideoEnded = false;
 +    private boolean hasRetriedUnsupportedAudioTrack = false;
++
++    // Audio boost (LoudnessEnhancer). audioBoostGainDb is the gain requested from JS via the
++    // "audioBoostGain" prop; loudnessEnhancer is (re)created against the player's own audio
++    // session id, which ExoPlayer allocates as soon as the player instance is built.
++    private android.media.audiofx.LoudnessEnhancer loudnessEnhancer;
++    private float audioBoostGainDb = 0f;
  
      // Props from React
      private Source source = new Source();
-@@ -609,7 +620,7 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -609,7 +626,7 @@ public class ReactExoplayerView extends FrameLayout implements
                  double minBufferMemoryReservePercent = source.getBufferConfig().getMinBufferMemoryReservePercent() != BufferConfig.Companion.getBufferConfigPropUnsetDouble()
                          ? source.getBufferConfig().getMinBufferMemoryReservePercent()
                          : ReactExoplayerView.DEFAULT_MIN_BUFFER_MEMORY_RESERVE;
@@ -976,7 +982,7 @@ index e16ac96..11e04df 100644
                  long bufferedMs = bufferedDurationUs / (long) 1000;
                  if (reserveMemory > freeMemory && bufferedMs > 2000) {
                      // We don't have enough memory in reserve so we stop buffering to allow other components to use it instead
-@@ -715,6 +726,7 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -715,6 +732,7 @@ public class ReactExoplayerView extends FrameLayout implements
      private void initializePlayerCore(ReactExoplayerView self) {
          ExoTrackSelection.Factory videoTrackSelectionFactory = new AdaptiveTrackSelection.Factory();
          self.trackSelector = new DefaultTrackSelector(getContext(), videoTrackSelectionFactory);
@@ -984,7 +990,7 @@ index e16ac96..11e04df 100644
          self.trackSelector.setParameters(trackSelector.buildUponParameters()
                  .setMaxVideoBitrate(maxBitRate == 0 ? Integer.MAX_VALUE : maxBitRate));
  
-@@ -732,7 +744,7 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -732,7 +750,7 @@ public class ReactExoplayerView extends FrameLayout implements
  
          DefaultRenderersFactory renderersFactory =
                  new DefaultRenderersFactory(getContext())
@@ -993,7 +999,15 @@ index e16ac96..11e04df 100644
                          .setEnableDecoderFallback(true)
                          .forceEnableMediaCodecAsynchronousQueueing();
  
-@@ -1101,11 +1113,13 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -761,6 +779,7 @@ public class ReactExoplayerView extends FrameLayout implements
+         player.addListener(self);
+         player.setVolume(muted ? 0.f : audioVolume * 1);
+         exoPlayerView.setPlayer(player);
++        applyAudioBoostGain();
+ 
+         audioBecomingNoisyReceiver.setListener(self);
+         pictureInPictureReceiver.setListener();
+@@ -1101,11 +1120,13 @@ public class ReactExoplayerView extends FrameLayout implements
                  } else if ("file".equals(uri.getScheme()) ||
                          !useCache) {
                      mediaSourceFactory = new ProgressiveMediaSource.Factory(
@@ -1009,7 +1023,7 @@ index e16ac96..11e04df 100644
                      );
  
                  }
-@@ -1144,12 +1158,62 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -1144,12 +1165,62 @@ public class ReactExoplayerView extends FrameLayout implements
                  ? overridenMediaItemBuilder.build()
                  : mediaItemBuilder.build();
  
@@ -1073,7 +1087,7 @@ index e16ac96..11e04df 100644
  
          if (cropStartMs >= 0 && cropEndMs >= 0) {
              return new ClippingMediaSource(mediaSource, cropStartMs * 1000, cropEndMs * 1000);
-@@ -1162,6 +1226,78 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -1162,6 +1233,78 @@ public class ReactExoplayerView extends FrameLayout implements
          return mediaSource;
      }
  
@@ -1152,7 +1166,7 @@ index e16ac96..11e04df 100644
      @Nullable
      private List<MediaItem.SubtitleConfiguration> buildSubtitleConfigurations() {
          if (source.getSideLoadedTextTracks() == null || source.getSideLoadedTextTracks().getTracks().isEmpty()) {
-@@ -1183,9 +1319,23 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -1183,9 +1326,23 @@ public class ReactExoplayerView extends FrameLayout implements
                      }
                  }
                  
@@ -1177,7 +1191,15 @@ index e16ac96..11e04df 100644
                          .setLabel(label)
                          .setRoleFlags(C.ROLE_FLAG_SUBTITLE);
                  
-@@ -1586,7 +1736,17 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -1226,6 +1383,7 @@ public class ReactExoplayerView extends FrameLayout implements
+             }
+ 
+             updateResumePosition();
++            releaseAudioBoost();
+             player.release();
+             player.removeListener(this);
+             PictureInPictureUtil.applyAutoEnterEnabled(themedReactContext, pictureInPictureParamsBuilder, false);
+@@ -1586,7 +1744,17 @@ public class ReactExoplayerView extends FrameLayout implements
      }
  
      private ArrayList<VideoTrack> getVideoTrackInfo() {
@@ -1196,7 +1218,7 @@ index e16ac96..11e04df 100644
          if (trackSelector == null) {
              // Likely player is unmounting so no video tracks are available anymore
              return videoTracks;
-@@ -1612,6 +1772,72 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -1612,6 +1780,72 @@ public class ReactExoplayerView extends FrameLayout implements
          return videoTracks;
      }
  
@@ -1269,10 +1291,10 @@ index e16ac96..11e04df 100644
      private ArrayList<VideoTrack> getVideoTrackInfoFromManifest() {
          return this.getVideoTrackInfoFromManifest(0);
      }
-@@ -1890,6 +2116,13 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -1890,6 +2124,13 @@ public class ReactExoplayerView extends FrameLayout implements
          updateSubtitleButtonVisibility();
      }
- 
+     
 +    @Override
 +    public void onVideoSizeChanged(@NonNull androidx.media3.common.VideoSize videoSize) {
 +        DebugLog.d(TAG, "onVideoSizeChanged: " + videoSize.width + "x" + videoSize.height);
@@ -1283,7 +1305,19 @@ index e16ac96..11e04df 100644
      
      private boolean hasBuiltInTextTracks() {
          if (player == null || trackSelector == null) return false;
-@@ -1954,6 +2187,12 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -1947,6 +2188,11 @@ public class ReactExoplayerView extends FrameLayout implements
+ 
+         if (isPlaying) {
+             isSeeking = false;
++            // Safety net: on some devices the audio session id isn't finalized at the exact
++            // moment the player is built, so re-apply once playback actually starts.
++            if (audioBoostGainDb > 0f && loudnessEnhancer == null) {
++                applyAudioBoostGain();
++            }
+         }
+     }
+ 
+@@ -1954,6 +2200,12 @@ public class ReactExoplayerView extends FrameLayout implements
      public void onPlayerError(@NonNull PlaybackException e) {
          String errorString = "ExoPlaybackException: " + PlaybackException.getErrorCodeName(e.errorCode);
          String errorCode = "2" + e.errorCode;
@@ -1296,7 +1330,7 @@ index e16ac96..11e04df 100644
          switch(e.errorCode) {
              case PlaybackException.ERROR_CODE_DRM_DEVICE_REVOKED:
              case PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED:
-@@ -2031,6 +2270,9 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2031,6 +2283,9 @@ public class ReactExoplayerView extends FrameLayout implements
      }
  
      public void onCues(CueGroup cueGroup) {
@@ -1306,7 +1340,7 @@ index e16ac96..11e04df 100644
          if (!cueGroup.cues.isEmpty() && cueGroup.cues.get(0).text != null) {
              String subtitleText = cueGroup.cues.get(0).text.toString();
              eventEmitter.onTextTrackDataChanged.invoke(subtitleText);
-@@ -2147,6 +2389,12 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2147,6 +2402,12 @@ public class ReactExoplayerView extends FrameLayout implements
                      TrackGroupArray groups = info.getTrackGroups(textRendererIndex);
                      boolean trackFound = false;
                      
@@ -1319,7 +1353,7 @@ index e16ac96..11e04df 100644
                      for (int groupIndex = 0; groupIndex < groups.length; groupIndex++) {
                          TrackGroup group = groups.get(groupIndex);
                          for (int trackIndex = 0; trackIndex < group.length; trackIndex++) {
-@@ -2159,7 +2407,7 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2159,7 +2420,7 @@ public class ReactExoplayerView extends FrameLayout implements
                                  isMatch = true;
                              } else if ("index".equals(type)) {
                                  int targetIndex = ReactBridgeUtils.safeParseInt(value, -1);
@@ -1328,7 +1362,7 @@ index e16ac96..11e04df 100644
                                      isMatch = true;
                                  }
                              }
-@@ -2171,6 +2419,8 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2171,6 +2432,8 @@ public class ReactExoplayerView extends FrameLayout implements
                                  trackFound = true;
                                  break;
                              }
@@ -1337,7 +1371,7 @@ index e16ac96..11e04df 100644
                          }
                          if (trackFound) break;
                      }
-@@ -2197,6 +2447,101 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2197,6 +2460,101 @@ public class ReactExoplayerView extends FrameLayout implements
          }
      }
  
@@ -1438,11 +1472,11 @@ index e16ac96..11e04df 100644
 +
      public void setSelectedTrack(int trackType, String type, String value) {
          if (player == null || trackSelector == null) return;
- 
-@@ -2209,6 +2554,14 @@ public class ReactExoplayerView extends FrameLayout implements
+         
+@@ -2209,6 +2567,14 @@ public class ReactExoplayerView extends FrameLayout implements
              return;
          }
- 
+         
 +        // Video is resolved from the player's current tracks because the mapped info below
 +        // reports no video groups once playback is running, which silently disables the
 +        // renderer instead of switching quality. "disabled" keeps the shared handling.
@@ -1454,7 +1488,7 @@ index e16ac96..11e04df 100644
          MappingTrackSelector.MappedTrackInfo info = trackSelector.getCurrentMappedTrackInfo();
          if (info == null) {
              return;
-@@ -2317,6 +2670,15 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2317,6 +2683,15 @@ public class ReactExoplayerView extends FrameLayout implements
              groupIndex = getGroupIndexForDefaultLocale(groups);
          }
  
@@ -1470,7 +1504,7 @@ index e16ac96..11e04df 100644
          if (groupIndex == C.INDEX_UNSET && trackType == C.TRACK_TYPE_VIDEO && groups.length != 0) { // Video auto
              // Add all tracks as valid options for ABR to choose from
              TrackGroup group = groups.get(0);
-@@ -2359,7 +2721,7 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2359,7 +2734,7 @@ public class ReactExoplayerView extends FrameLayout implements
              DefaultTrackSelector.Parameters.Builder selectionParameters = trackSelector.getParameters()
                      .buildUpon()
                      .setExceedAudioConstraintsIfNecessary(true)
@@ -1479,7 +1513,7 @@ index e16ac96..11e04df 100644
                      .setExceedVideoConstraintsIfNecessary(true)
                      .setRendererDisabled(rendererIndex, false);
  
-@@ -2429,10 +2791,225 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2429,10 +2804,225 @@ public class ReactExoplayerView extends FrameLayout implements
          return groupIndex;
      }
  
@@ -1706,3 +1740,129 @@ index e16ac96..11e04df 100644
      }
  
      public void setSelectedAudioTrack(String type, String value) {
+@@ -2589,6 +3179,75 @@ public class ReactExoplayerView extends FrameLayout implements
+         }
+     }
+ 
++    /**
++     * Sets the requested audio boost gain in dB (0 = off). Backed by Android's
++     * {@link android.media.audiofx.LoudnessEnhancer}, which applies real post-decode gain
++     * (unlike ExoPlayer's volume, which is clamped to [0, 1] and can only attenuate).
++     */
++    public void setAudioBoostGain(float gainDb) {
++        audioBoostGainDb = gainDb;
++        applyAudioBoostGain();
++    }
++
++    private void applyAudioBoostGain() {
++        if (player == null) {
++            return;
++        }
++
++        int audioSessionId = player.getAudioSessionId();
++        if (audioSessionId == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) {
++            // Session id isn't ready yet (rare, but can happen immediately after Builder.build()
++            // on some devices) - onAudioSessionId below will re-run this once it changes.
++            return;
++        }
++
++        if (loudnessEnhancer != null && loudnessEnhancer.getId() != audioSessionId) {
++            // The player was torn down and rebuilt with a new session id; the old effect is
++            // no longer attached to anything, so release it and create a fresh one.
++            try {
++                loudnessEnhancer.release();
++            } catch (Exception e) {
++                DebugLog.w(TAG, "Error releasing stale LoudnessEnhancer: " + e.getMessage());
++            }
++            loudnessEnhancer = null;
++        }
++
++        if (audioBoostGainDb <= 0f) {
++            if (loudnessEnhancer != null) {
++                try {
++                    loudnessEnhancer.setEnabled(false);
++                } catch (Exception e) {
++                    DebugLog.w(TAG, "Error disabling LoudnessEnhancer: " + e.getMessage());
++                }
++            }
++            return;
++        }
++
++        try {
++            if (loudnessEnhancer == null) {
++                loudnessEnhancer = new android.media.audiofx.LoudnessEnhancer(audioSessionId);
++            }
++            // setTargetGain takes millibels; clamp to a sane range so a bad JS value can't
++            // drive the effect into heavy clipping/distortion.
++            float clampedDb = Math.max(0f, Math.min(audioBoostGainDb, 30f));
++            loudnessEnhancer.setTargetGain((int) (clampedDb * 100));
++            loudnessEnhancer.setEnabled(true);
++        } catch (Exception e) {
++            DebugLog.w(TAG, "Failed to apply audio boost: " + e.getMessage());
++        }
++    }
++
++    private void releaseAudioBoost() {
++        if (loudnessEnhancer != null) {
++            try {
++                loudnessEnhancer.release();
++            } catch (Exception e) {
++                DebugLog.w(TAG, "Error releasing LoudnessEnhancer: " + e.getMessage());
++            }
++            loudnessEnhancer = null;
++        }
++    }
++
+     public void setRateModifier(float newRate) {
+         if (newRate <= 0) {
+             DebugLog.w(TAG, "cannot set rate <= 0");
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerViewManager.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerViewManager.kt
+index b9e0656..8e4b8a5 100644
+--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerViewManager.kt
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ReactExoplayerViewManager.kt
+@@ -36,6 +36,7 @@ class ReactExoplayerViewManager(private val config: ReactExoplayerConfig) : View
+         private const val PROP_MUTED = "muted"
+         private const val PROP_AUDIO_OUTPUT = "audioOutput"
+         private const val PROP_VOLUME = "volume"
++        private const val PROP_AUDIO_BOOST_GAIN = "audioBoostGain"
+         private const val PROP_PREVENTS_DISPLAY_SLEEP_DURING_VIDEO_PLAYBACK =
+             "preventsDisplaySleepDuringVideoPlayback"
+         private const val PROP_PROGRESS_UPDATE_INTERVAL = "progressUpdateInterval"
+@@ -170,6 +171,11 @@ class ReactExoplayerViewManager(private val config: ReactExoplayerConfig) : View
+         videoView.setVolumeModifier(volume)
+     }
+ 
++    @ReactProp(name = PROP_AUDIO_BOOST_GAIN, defaultFloat = 0.0f)
++    fun setAudioBoostGain(videoView: ReactExoplayerView, gainDb: Float) {
++        videoView.setAudioBoostGain(gainDb)
++    }
++
+     @ReactProp(name = PROP_PROGRESS_UPDATE_INTERVAL, defaultFloat = 250.0f)
+     fun setProgressUpdateInterval(videoView: ReactExoplayerView, progressUpdateInterval: Float) {
+         videoView.setProgressUpdateInterval(progressUpdateInterval)
+diff --git a/node_modules/react-native-video/src/specs/VideoNativeComponent.ts b/node_modules/react-native-video/src/specs/VideoNativeComponent.ts
+index 3dcbe01..0bfbade 100644
+--- a/node_modules/react-native-video/src/specs/VideoNativeComponent.ts
++++ b/node_modules/react-native-video/src/specs/VideoNativeComponent.ts
+@@ -354,6 +354,7 @@ export interface VideoNativeProps extends ViewProps {
+   filter?: WithDefault<string, ''>;
+   filterEnabled?: boolean;
+   volume?: Float; // default 1.0
++  audioBoostGain?: Float; // android only, dB of post-decode gain via LoudnessEnhancer, default 0 (off)
+   playInBackground?: boolean;
+   preventsDisplaySleepDuringVideoPlayback?: boolean;
+   preferredForwardBufferDuration?: Float; //ios, 0
+diff --git a/node_modules/react-native-video/src/types/video.ts b/node_modules/react-native-video/src/types/video.ts
+index 0482944..b5bb3e0 100644
+--- a/node_modules/react-native-video/src/types/video.ts
++++ b/node_modules/react-native-video/src/types/video.ts
+@@ -379,6 +379,9 @@ export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
+   /** @deprecated Use viewType*/
+   useSecureView?: boolean; // Android
+   volume?: number;
++  /** Android only. Post-decode gain in dB applied via LoudnessEnhancer (0 = off). Unlike
++   * `volume` (clamped to [0, 1]), this can genuinely boost output above the source level. */
++  audioBoostGain?: number;
+   /** @deprecated use **localSourceEncryptionKeyScheme** key in **drm** props instead */
+   localSourceEncryptionKeyScheme?: string;
+   debug?: DebugConfig;
