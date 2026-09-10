@@ -209,6 +209,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                   scaleFocused={1.05}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={16}
+                  {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                   onPress={() => setSecondaryProvider(null)}
                   style={[
                     styles.secondaryChip,
