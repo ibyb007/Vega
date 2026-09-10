@@ -37,6 +37,8 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 }) => {
   const provider = useContentStore((state) => state.provider);
   const setProvider = useContentStore((state) => state.setProvider);
+  const secondaryProvider = useContentStore((state) => state.secondaryProvider);
+  const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders) || [];
 
   const handleSelectProvider = (item: Provider) => {
@@ -44,6 +46,18 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
     if (onNavigateHome) {
       onNavigateHome();
     }
+  };
+
+  // A source can only fill the bottom rows if it isn't already filling the
+  // top ones.
+  const secondaryChoices = installedProviders.filter(
+    (item: any) => item.value !== provider?.value,
+  );
+
+  const handleSelectSecondaryProvider = (item: Provider) => {
+    // Tapping the already-active 2nd source again turns it off, same as
+    // toggling a chip.
+    setSecondaryProvider(secondaryProvider?.value === item.value ? null : item);
   };
 
   return (
@@ -106,8 +120,9 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
       ) : (
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.gridContainer}
+          contentContainerStyle={styles.pageScrollContent}
         >
+          <View style={styles.gridContainer}>
           {installedProviders.map((item: any, index: number) => {
             const isSelected = provider?.value === item.value;
             const displayName = item.displayTitle || item.name || item.value || `Source ${index + 1}`;
@@ -178,6 +193,73 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               </TVFocusablePressable>
             );
           })}
+          </View>
+
+          {/* Secondary Source (fills the bottom rows on Home) */}
+          {secondaryChoices.length > 0 && (
+            <View style={styles.secondarySection}>
+              <Text style={styles.secondaryHeading}>2nd Source (optional)</Text>
+              <Text style={styles.secondarySubheading}>
+                Adds a second addon's catalog to the bottom of your Home Screen, below{' '}
+                {provider?.display_name || 'the primary source'}
+              </Text>
+
+              <View style={styles.chipRow}>
+                <TVFocusablePressable
+                  scaleFocused={1.05}
+                  focusedBorderColor="#8A5CF6"
+                  borderRadius={16}
+                  onPress={() => setSecondaryProvider(null)}
+                  style={[
+                    styles.secondaryChip,
+                    !secondaryProvider && styles.secondaryChipSelected,
+                  ]}
+                >
+                  {() => (
+                    <Text
+                      style={[
+                        styles.secondaryChipText,
+                        !secondaryProvider && styles.secondaryChipTextSelected,
+                      ]}
+                    >
+                      None
+                    </Text>
+                  )}
+                </TVFocusablePressable>
+
+                {secondaryChoices.map((item: any) => {
+                  const isSelected = secondaryProvider?.value === item.value;
+                  const displayName =
+                    item.displayTitle || item.name || item.display_name || item.value;
+                  return (
+                    <TVFocusablePressable
+                      key={`secondary-${item.value}`}
+                      scaleFocused={1.05}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={16}
+                      onPress={() => handleSelectSecondaryProvider(item)}
+                      style={[
+                        styles.secondaryChip,
+                        isSelected && styles.secondaryChipSelected,
+                      ]}
+                    >
+                      {() => (
+                        <Text
+                          style={[
+                            styles.secondaryChipText,
+                            isSelected && styles.secondaryChipTextSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {displayName}
+                        </Text>
+                      )}
+                    </TVFocusablePressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
         </ScrollView>
       )}
     </View>
@@ -223,11 +305,58 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  pageScrollContent: {
+    paddingBottom: 40,
+  },
   gridContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 20,
-    paddingBottom: 40,
+  },
+  secondarySection: {
+    marginTop: 36,
+    paddingTop: 24,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  secondaryHeading: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  secondarySubheading: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    marginTop: 4,
+    marginBottom: 16,
+    maxWidth: 640,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  secondaryChip: {
+    backgroundColor: '#16161E',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    maxWidth: 220,
+  },
+  secondaryChipSelected: {
+    backgroundColor: '#1E1B2E',
+    borderColor: '#8A5CF6',
+  },
+  secondaryChipText: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  secondaryChipTextSelected: {
+    color: '#8A5CF6',
+    fontWeight: '700',
   },
   providerCard: {
     width: 250,
