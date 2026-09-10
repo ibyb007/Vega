@@ -8,6 +8,16 @@ export interface ContinueWatchingItem {
   title: string;
   episodeTitle?: string;
   episode: EpisodeLink;
+  // Stable per-episode identity independent of which quality/season-variant
+  // link happened to be fetched during this particular play session (e.g.
+  // "S1E5"). Raw provider episode links can differ across quality variants,
+  // across separate fetches (some providers embed session tokens), and
+  // between screens (Discover vs the details screen resolve episodes via
+  // different calls) -- so matching resume position by raw link is
+  // unreliable. This key, derived from parsed season/episode numbers, is
+  // not. Undefined for movies (nothing to disambiguate -- a movie's entry
+  // is always the one and only thing to resume).
+  episodeKey?: string;
   type: string;
   poster?: string;
   background?: string;
