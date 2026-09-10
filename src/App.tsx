@@ -61,6 +61,12 @@ export default function App() {
   // Settings screen always lands focus on the Settings icon instead of
   // navigating away.
   const navRailRef = useRef<TVNavigationRailHandle | null>(null);
+  // Tracks whether the nav rail itself currently holds focus (any button),
+  // as opposed to focus being inside a tab's content. Read synchronously
+  // in the hardware Back handler below, so it's a ref rather than state --
+  // state would mean re-subscribing the BackHandler listener on every
+  // expand/collapse.
+  const navExpandedRef = useRef(false);
   const currentProvider = useContentStore((state) => state.provider);
 
   const handleRegisterRouteHandle = useCallback((route: TVRoute, handle: number | null) => {
@@ -172,6 +178,17 @@ export default function App() {
 
       if (selectedItem) {
         setSelectedItem(null);
+        return true;
+      }
+
+      // If focus is currently on the nav rail itself (expanded, any button
+      // focused), Back always exits the app -- irrespective of which
+      // button is selected -- rather than being interpreted as
+      // in-app navigation. This takes priority over the Settings-specific
+      // rule below, which only applies when focus is in that tab's
+      // content, not on the rail button itself.
+      if (navExpandedRef.current) {
+        BackHandler.exitApp();
         return true;
       }
 
@@ -338,6 +355,9 @@ export default function App() {
                       currentRoute={currentRoute}
                       onRouteChange={navigateTo}
                       onRegisterRouteHandle={handleRegisterRouteHandle}
+                      onExpandedChange={(expanded) => {
+                        navExpandedRef.current = expanded;
+                      }}
                       onRequestContentFocus={handleRequestContentFocus}
                       onGetEntryFocusHandle={handleGetEntryFocusHandle}
                     />
