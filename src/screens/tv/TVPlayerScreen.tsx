@@ -28,6 +28,15 @@ const KEYCODE_DPAD_UP = 19;
 const KEYCODE_DPAD_DOWN = 20;
 const KEYCODE_DPAD_LEFT = 21;
 const KEYCODE_DPAD_RIGHT = 22;
+
+// Post-decode gain (dB) applied via the native LoudnessEnhancer effect for each profile.
+// 'off' must stay at 0 so applyAudioBoostGain() on the native side disables the effect
+// entirely rather than attaching it with a zero target gain.
+const AUDIO_BOOST_GAIN_DB: Record<AudioBoostProfile, number> = {
+  off: 0,
+  dialogue: 6,
+  rich: 12,
+};
 const KEYCODE_DPAD_CENTER = 23;
 const KEYCODE_ENTER = 66;
 const KEYCODE_MEDIA_PLAY_PAUSE = 85;
@@ -459,10 +468,15 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       nextMode === 'rich'
         ? 'Audio Boost: Rich & Immersive (+12dB)'
         : nextMode === 'dialogue'
-        ? 'Audio Boost: Dialogue / Night Mode'
+        ? 'Audio Boost: Dialogue / Night Mode (+6dB)'
         : 'Audio Boost: Standard (Off)';
     ToastAndroid.show(label, ToastAndroid.SHORT);
   }, [cycleAudioBoostProfile, resetInactivityTimer]);
+
+  // Actual gain applied to the native LoudnessEnhancer effect (see the react-native-video
+  // patch). Cycling audioBoostProfile above only changes stored state + UI; this is what
+  // makes the boost audible.
+  const audioBoostGain = useMemo(() => AUDIO_BOOST_GAIN_DB[audioBoostProfile], [audioBoostProfile]);
 
   // Global D-pad / remote key listener via react-native-keyevent.
   //
@@ -709,6 +723,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
         textTracks={subtitles}
+        audioBoostGain={audioBoostGain}
         subtitleStyle={{
           backgroundColor: 'transparent',
           opacity: 0,
