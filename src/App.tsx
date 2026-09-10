@@ -94,21 +94,32 @@ export default function App() {
     return entryHandleGetterRef.current[route]?.() ?? null;
   }, []);
 
-  // Bumped to force a fresh mount of the Home screen when the user presses
-  // OK on the Home rail button while Home is already the active tab.
-  // Routing to the same route again is a no-op, so there's no directional
-  // focus search for the rail to hook into the way there is for Right --
-  // remounting is what already happens (and already works) when leaving
-  // this tab and coming back, since `hasTVPreferredFocus` re-resolves
-  // against `lastFocusedKey` on every mount. Reusing that exact path here
-  // is deliberate: it's proven, and useHomePageData's `initialData` cache
-  // plus the hero-selection cache keep the remount from being visible.
-  const [homeRemountNonce, setHomeRemountNonce] = useState(0);
+  // Per-route "hand focus back to whichever card was last focused" trigger,
+  // for when OK is pressed on a rail button whose tab is already active (a
+  // no-op route change, so there's nothing for a directional focus search
+  // to hook into the way there is for Right). Kept as a ref for the same
+  // reason as entryHandleGetterRef above. Only TVHomeScreen registers one
+  // today -- it force-remounts just the one poster that needs its
+  // `hasTVPreferredFocus` to re-fire. An earlier version of this remounted
+  // the *entire* screen instead (reusing the same mount-time focus logic,
+  // just at a much bigger scope), which technically worked but was
+  // visibly a full refresh and made the rail feel laggy right after, since
+  // it re-ran every hook on the screen including the catalog data fetch.
+  const entryReturnTriggerRef = useRef<Partial<Record<TVRoute, () => void>>>({});
+
+  const handleRegisterReturnFocusTrigger = useCallback(
+    (route: TVRoute) => (trigger: (() => void) | null) => {
+      if (trigger) {
+        entryReturnTriggerRef.current[route] = trigger;
+      } else {
+        delete entryReturnTriggerRef.current[route];
+      }
+    },
+    []
+  );
 
   const handleRequestContentFocus = useCallback((route: TVRoute) => {
-    if (route === 'home') {
-      setHomeRemountNonce((n) => n + 1);
-    }
+    entryReturnTriggerRef.current[route]?.();
   }, []);
 
   useEffect(() => {
@@ -252,11 +263,11 @@ export default function App() {
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
-                          key={`home-${homeRemountNonce}`}
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
                           navFocusTarget={navHandles.home ?? null}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('home')}
+                          onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('home')}
                         />
                       )}
 
