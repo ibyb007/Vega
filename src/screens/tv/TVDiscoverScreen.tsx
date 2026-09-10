@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 import useContentStore from '../../lib/zustand/contentStore';
+import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { providerManager } from '../../lib/services/ProviderManager';
 import { Post, Info, Link, EpisodeLink, Stream } from '../../lib/providers/types';
 import {
@@ -63,15 +64,29 @@ const CATALOG_TYPE_LABEL: Record<string, string> = {
   tv: 'TV',
 };
 
+const isQualityExcluded = (
+  target: string | undefined | null,
+  excludedList: string[],
+): boolean => {
+  if (!target || !excludedList || excludedList.length === 0) return false;
+  const text = target.toLowerCase().trim();
+
+  return excludedList.some((ex) => {
+    const exLower = ex.toLowerCase().trim();
+    if (!exLower) return false;
+
+    if (exLower === '4k' || exLower === '2160p' || exLower === '2160') {
+      return text.includes('4k') || text.includes('2160');
+    }
+    const cleanNum = exLower.replace('p', '');
+    return text.includes(exLower) || (cleanNum.length >= 3 && text.includes(cleanNum));
+  });
+};
+
 interface TVDiscoverScreenProps {
   onSelectItem: (item: Post) => void;
   onNavigateRoute?: (route: TVRoute) => void;
   onPlayStream?: (streamUrl: string, title?: string, extraMeta?: any) => void;
-  // Native node handle of the Discover nav rail button -- wired as
-  // `nextFocusLeft` on the leftmost focusable of each row so pressing Left
-  // from the edge of this screen's content returns to the rail instead of
-  // falling back to Android's default nearest-neighbor search (which used
-  // to land on Home regardless of which tab was open).
   navFocusTarget?: number | null;
 }
 
@@ -113,7 +128,6 @@ const normalizeSearchResult = (data: any, providerValue: string): Post[] => {
 };
 
 interface SavedDiscoverState {
-  // Page 1 Browse
   catalogs?: DiscoverCatalog[];
   selectedCatalog?: DiscoverCatalog | null;
   items?: CatalogMediaItem[];
@@ -121,7 +135,6 @@ interface SavedDiscoverState {
   hasMore?: boolean;
   activeHero?: TVHeroMedia | null;
 
-  // Page 2 Results
   screenMode: 'browse' | 'results';
   resultsTarget: CatalogMediaItem | null;
   matchedAddonPosts: Post[];
@@ -158,7 +171,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(savedDiscoverState?.activeHero ?? null);
   const heroRequestIdRef = useRef(0);
 
-  // Inspector States (Page 2)
   const [screenMode, setScreenMode] = useState<'browse' | 'results'>(
     savedDiscoverState?.screenMode || 'browse',
   );
@@ -171,10 +183,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   );
   const resolveAbortRef = useRef<AbortController | null>(null);
 
-  // In-Page Source Details & Quality/Stream Extraction -- mirrors the real
-  // provider data model (Info.linkList -> episodesLink | directLinks ->
-  // getStream), same as TVDetailsScreen, instead of methods that don't
-  // exist on ProviderManager.
   const [activeSourcePost, setActiveSourcePost] = useState<Post | null>(
     savedDiscoverState?.activeSourcePost ?? null,
   );
@@ -190,14 +198,9 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   );
   const [episodesLoading, setEpisodesLoading] = useState(false);
 
-  // Cinemeta enrichment for the in-page episode picker -- adds a still +
-  // synopsis per episode, same as TVDetailsScreen. Gated the same way
-  // (populateMeta opt-in + title match) so a bad imdbId guess can't paint
-  // the wrong show's stills.
   const [sourceCinemetaMeta, setSourceCinemetaMeta] = useState<CinemetaMeta | null>(null);
   const [extractingLink, setExtractingLink] = useState(false);
 
-  // Modals & keys
   const [manageVisible, setManageVisible] = useState(false);
   const [manifestInput, setManifestInput] = useState('');
   const [addingManifest, setAddingManifest] = useState(false);
@@ -207,6 +210,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const selectHoldStreakRef = useRef(0);
   const lastSelectKeyTimeRef = useRef(0);
   const [catalogToHide, setCatalogToHide] = useState<DiscoverCatalog | null>(null);
+
+  const excludedQualities = useMemo(
+    () => settingsStorage.getExcludedQualities() || [],
+    [],
+  );
 
   const hiddenKeySet = new Set(hiddenCatalogs.map((h) => h.key));
   const visibleCatalogs = catalogs.filter((c) => !hiddenKeySet.has(catalogKey(c)));
@@ -288,11 +296,9 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       setActiveHero(null);
       return;
     }
-    // If restoring Page 2 results mode with items already in place, don't re-fetch Page 1 items
     if (savedDiscoverState?.screenMode === 'results' && items.length > 0) {
       return;
     }
-    // If selected catalog matches cached state and items are already loaded, reuse them
     if (
       savedDiscoverState?.selectedCatalog &&
       catalogKey(selectedCatalog) === catalogKey(savedDiscoverState.selectedCatalog) &&
@@ -333,7 +339,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     };
   }, [selectedCatalog, focusHero]);
 
-  // Hardware D-pad hold to hide catalog
   useEffect(() => {
     const KEYCODE_DPAD_CENTER = 23;
     const KEYCODE_ENTER = 66;
@@ -379,7 +384,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     setLoadingMore(false);
   }, [selectedCatalog, loadingMore, hasMore, skip, items.length]);
 
-  // Clicking poster opens Page 2 (results view)
   const handleItemPress = useCallback(
     async (item: CatalogMediaItem) => {
       if (resolveAbortRef.current) {
@@ -412,7 +416,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         episodes: [],
       };
 
-      // Lazily resolve full backdrop for target if not cached
       if (!item.banner && selectedCatalog) {
         const metaId = item.imdb_id || item.id;
         if (metaId) {
@@ -461,13 +464,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     [installedProviders, selectedCatalog, catalogs, items, skip, hasMore, activeHero],
   );
 
-  // Fetch this source's real metadata -- `Info.linkList` is the actual
-  // provider data model (mirrors TVDetailsScreen): each `Link` is either a
-  // season pointer (`episodesLink`, needs a follow-up `getEpisodes` call)
-  // or a movie's directly playable sources (`directLinks`). There is no
-  // `getDetails`/flat-`{qualities,servers}` API on ProviderManager -- that
-  // was the bug that made every source fall straight through to a bare
-  // "Play Stream" button with nothing populated.
   const handleSelectSourceCard = useCallback(async (sourcePost: Post) => {
     setActiveSourcePost(sourcePost);
     setSourceInfo(null);
@@ -511,18 +507,21 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   }, []);
 
-  // Once metadata resolves (or the season/quality tab changes), fetch that
-  // link's episode list -- only series links carry `episodesLink`; movie
-  // links go straight to `directLinks` with no extra fetch needed.
   useEffect(() => {
-    const linkList = sourceInfo?.linkList || [];
-    const activeLink = linkList[activeLinkIndex];
+    const rawLinkList = sourceInfo?.linkList || [];
+    const linkList = rawLinkList.filter(
+      (l) =>
+        !isQualityExcluded(l?.quality, excludedQualities) &&
+        !isQualityExcluded(l?.title, excludedQualities),
+    );
+    const usableLinkList = linkList.length > 0 ? linkList : rawLinkList;
+    const activeLink = usableLinkList[activeLinkIndex] || usableLinkList[0];
+
     if (!activeSourcePost?.provider) {
       setEpisodes([]);
       return;
     }
 
-    // 1. If activeLink carries episodesLink, fetch episode list from provider
     if (activeLink?.episodesLink) {
       let isMounted = true;
       setEpisodesLoading(true);
@@ -530,9 +529,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         .getEpisodes({ url: activeLink.episodesLink, providerValue: activeSourcePost.provider })
         .then((eps) => {
           const sorted = sortEpisodesChronologically(eps || []);
+          const filtered = sorted.filter(
+            (ep: any) =>
+              !isQualityExcluded(ep?.quality, excludedQualities) &&
+              !isQualityExcluded(ep?.title, excludedQualities),
+          );
+          const finalEps = filtered.length > 0 ? filtered : sorted;
+
           if (isMounted) {
-            setEpisodes(sorted);
-            if (savedDiscoverState) savedDiscoverState.episodes = sorted;
+            setEpisodes(finalEps);
+            if (savedDiscoverState) savedDiscoverState.episodes = finalEps;
           }
         })
         .catch((err) => {
@@ -550,8 +556,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       };
     }
 
-    // 2. If no episodesLink, but this media is a series and activeLink has directLinks:
-    // Convert directLinks into EpisodeLink[] so the user sees episodes and Next Episode works.
     const isSeries =
       resultsTarget?.type === 'series' ||
       sourceInfo?.type === 'series' ||
@@ -570,15 +574,21 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         skip: d.skip,
       }));
       const sorted = sortEpisodesChronologically(directEps);
-      setEpisodes(sorted);
-      if (savedDiscoverState) savedDiscoverState.episodes = sorted;
+      const filtered = sorted.filter(
+        (ep: any) =>
+          !isQualityExcluded(ep?.quality, excludedQualities) &&
+          !isQualityExcluded(ep?.title, excludedQualities),
+      );
+      const finalEps = filtered.length > 0 ? filtered : sorted;
+
+      setEpisodes(finalEps);
+      if (savedDiscoverState) savedDiscoverState.episodes = finalEps;
       setEpisodesLoading(false);
       return;
     }
 
-    // 3. What if linkList itself contains the episodes? (each Link in linkList is an episode)
-    if (isSeries && linkList.length > 1 && !linkList.some((l) => Boolean(l.episodesLink))) {
-      const linkListEps: EpisodeLink[] = linkList
+    if (isSeries && usableLinkList.length > 1 && !usableLinkList.some((l) => Boolean(l.episodesLink))) {
+      const linkListEps: EpisodeLink[] = usableLinkList
         .map((l, i) => ({
           id: `${i + 1}`,
           title: l.title || `Episode ${i + 1}`,
@@ -590,8 +600,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
       if (linkListEps.length > 1) {
         const sorted = sortEpisodesChronologically(linkListEps);
-        setEpisodes(sorted);
-        if (savedDiscoverState) savedDiscoverState.episodes = sorted;
+        const filtered = sorted.filter(
+          (ep: any) =>
+            !isQualityExcluded(ep?.quality, excludedQualities) &&
+            !isQualityExcluded(ep?.title, excludedQualities),
+        );
+        const finalEps = filtered.length > 0 ? filtered : sorted;
+
+        setEpisodes(finalEps);
+        if (savedDiscoverState) savedDiscoverState.episodes = finalEps;
         setEpisodesLoading(false);
         return;
       }
@@ -599,23 +616,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
     setEpisodes([]);
     if (savedDiscoverState) savedDiscoverState.episodes = [];
-  }, [sourceInfo, activeLinkIndex, activeSourcePost, resultsTarget?.type, selectedCatalog?.type]);
+  }, [sourceInfo, activeLinkIndex, activeSourcePost, resultsTarget?.type, selectedCatalog?.type, excludedQualities]);
 
-  // Fetch Cinemeta's meta for this source once its real metadata is in --
-  // used only to enrich the episode picker with stills/synopses; the
-  // resultsTarget header title already comes from the (already-canonical)
-  // discover catalog, so it isn't re-formatted here.
-  //
-  // Unlike TVDetailsScreen (which only trusts an imdbId a provider has
-  // explicitly vouched for via `populateMeta`, since its `Post.id` is
-  // usually a scraped, unreliable guess), `resultsTarget` here always came
-  // from a genuine Stremio catalog fetch, which -- by protocol -- returns a
-  // real IMDB-style id for every movie/series entry. That id is already
-  // trustworthy on its own, so falling back to it (instead of gating
-  // strictly on `sourceInfo.imdbId`/`populateMeta`) is what fixes episodes
-  // never showing a synopsis when the addon source's own metadata doesn't
-  // carry an id -- `fetchMatchingCinemetaMeta`'s title-match check is still
-  // the actual safety net against a wrong match either way.
   useEffect(() => {
     let isMounted = true;
     setSourceCinemetaMeta(null);
@@ -639,6 +641,37 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     resultsTarget?.title,
   ]);
 
+  const getSavedResumePosition = useCallback(
+    (canonicalLink: string): number => {
+      try {
+        const cwState: any = useContinueWatchingStore.getState?.();
+        const cwItems = cwState?.items || [];
+        const cwMatch = cwItems.find(
+          (c: any) =>
+            c?.infoUrl === canonicalLink ||
+            c?.link === canonicalLink ||
+            c?.id === canonicalLink ||
+            c?.episodeId === canonicalLink,
+        );
+        if (cwMatch?.position) return cwMatch.position;
+
+        const csState: any = useContentStore.getState?.();
+        const history = csState?.watchHistory || [];
+        const hMatch = history.find(
+          (h: any) =>
+            h?.link === canonicalLink ||
+            h?.id === canonicalLink ||
+            h?.episodeId === canonicalLink,
+        );
+        if (hMatch?.currentTime) return hMatch.currentTime;
+      } catch (err) {
+        console.warn('[Discover] Failed to retrieve resume position:', err);
+      }
+      return 0;
+    },
+    [],
+  );
+
   const handleResolveAndPlay = useCallback(
     async (
       link: string,
@@ -646,6 +679,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       type: string,
       episodeIdx: number = 0,
       customEpisodes?: EpisodeLink[],
+      episodeKey?: string,
     ) => {
       const providerValue = activeSourcePost?.provider;
       if (!providerValue || !link) {
@@ -668,14 +702,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           return;
         }
 
-        // Filter out qualities excluded in Settings -- mirrors the same
-        // exclusion applied to the in-player stream list (useStream.ts) and
-        // to TVInfoScreen, so Discover's own resolve path doesn't leak an
-        // excluded quality back into the picker. Falls back to the
-        // unfiltered list if the exclusion would leave nothing playable.
-        const excludedQualities = settingsStorage.getExcludedQualities() || [];
         const filteredStreams = streams.filter(
-          (s) => !excludedQualities.includes((s as any)?.quality + 'p'),
+          (s) =>
+            !isQualityExcluded((s as any)?.quality, excludedQualities) &&
+            !isQualityExcluded((s as any)?.server, excludedQualities),
         );
         const usableStreams = filteredStreams.length > 0 ? filteredStreams : streams;
 
@@ -694,7 +724,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             ? episodes
             : undefined;
 
-        // Persist current Page 2 state so player exit immediately restores this view
         if (savedDiscoverState) {
           savedDiscoverState.screenMode = 'results';
           savedDiscoverState.resultsTarget = resultsTarget;
@@ -705,9 +734,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           savedDiscoverState.episodes = episodesToSend || episodes;
         }
 
+        const canonicalKey = episodeKey || link || activeSourcePost?.link;
+        const resumePos = getSavedResumePosition(canonicalKey);
+
         onPlayStream(best.link, title, {
           posterUrl: sourceInfo?.image || sourceInfo?.poster || activeSourcePost?.image || resultsTarget?.poster,
           itemLink: activeSourcePost?.link,
+          episodeId: canonicalKey,
+          startPosition: resumePos,
           providerValue,
           episodes: episodesToSend,
           currentEpisodeIndex: episodeIdx,
@@ -732,6 +766,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       resultsTarget,
       matchedAddonPosts,
       activeLinkIndex,
+      excludedQualities,
+      getSavedResumePosition,
     ],
   );
 
@@ -843,9 +879,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   /* ======================================================================= */
   if (screenMode === 'results') {
     const banner = resultsTarget?.banner || resultsTarget?.poster;
-    const linkList: Link[] = sourceInfo?.linkList || [];
-    const activeLink = linkList[activeLinkIndex];
-    const directItems = activeLink?.directLinks || [];
+    const rawLinkList: Link[] = sourceInfo?.linkList || [];
+    const linkList = rawLinkList.filter(
+      (l) =>
+        !isQualityExcluded(l?.quality, excludedQualities) &&
+        !isQualityExcluded(l?.title, excludedQualities),
+    );
+    const usableLinkList = linkList.length > 0 ? linkList : rawLinkList;
+    const activeLink = usableLinkList[activeLinkIndex] || usableLinkList[0];
+
+    const rawDirectItems = activeLink?.directLinks || [];
+    const directItems = rawDirectItems.filter(
+      (d) =>
+        !isQualityExcluded(d?.title, excludedQualities) &&
+        !isQualityExcluded((d as any)?.quality, excludedQualities),
+    );
+    const usableDirectItems = directItems.length > 0 ? directItems : rawDirectItems;
+
     const isSeries =
       Boolean(activeLink?.episodesLink) ||
       resultsTarget?.type === 'series' ||
@@ -853,21 +903,18 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       sourceInfo?.type === 'tv' ||
       selectedCatalog?.type === 'series' ||
       episodes.length > 0 ||
-      Boolean(directItems.length > 0 && directItems.some((d) => d.type === 'series')) ||
-      Boolean(directItems.length > 1 && resultsTarget?.type !== 'movie');
-    // Closes the race when episodes are being fetched asynchronously
+      Boolean(usableDirectItems.length > 0 && usableDirectItems.some((d) => d.type === 'series')) ||
+      Boolean(usableDirectItems.length > 1 && resultsTarget?.type !== 'movie');
+
     const isAwaitingEpisodes = isSeries && episodesLoading && episodes.length === 0;
 
     return (
       <View style={styles.resultsRoot}>
-        {/* Full-bleed 4K Backdrop Background */}
         <View style={styles.resultsBackdropLayer} pointerEvents="none">
           {banner ? (
             <Image source={{ uri: banner }} style={styles.resultsBackdropImage} resizeMode="cover" />
           ) : null}
           <LinearGradient
-            // Darkest stops capped at 0.5 (was 0.92 / 0.55) so the backdrop
-            // never gets darker than 50% behind the picker text.
             colors={['rgba(10, 10, 14, 0.5)', 'rgba(10, 10, 14, 0.5)', 'transparent']}
             locations={[0, 0.42, 0.85]}
             start={{ x: 0, y: 0 }}
@@ -875,20 +922,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             style={styles.resultsLeftGradient}
           />
           <LinearGradient
-            // Darkest stops capped at 0.5 (was 0.65 -> solid #0A0A0E).
             colors={['transparent', 'rgba(10, 10, 14, 0.5)', 'rgba(10, 10, 14, 0.5)']}
             locations={[0.2, 0.65, 1]}
             style={styles.resultsBottomGradient}
           />
         </View>
 
-        {/* Scrollable Viewport with explicitly declared dimensions */}
         <ScrollView
           style={styles.resultsScrollView}
           contentContainerStyle={styles.resultsScrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Back Button */}
           <TVFocusablePressable
             hasTVPreferredFocus={true}
             scaleFocused={1.05}
@@ -908,7 +952,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             )}
           </TVFocusablePressable>
 
-          {/* Clean Top Metadata: No Dark Box, Flush Transparent Placement */}
           <View style={styles.cleanHeaderContainer}>
             <Text style={styles.targetTitle}>{resultsTarget?.title}</Text>
             <View style={styles.metaRow}>
@@ -927,7 +970,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             </Text>
           </View>
 
-          {/* Section 1: Matching Addon Sources (Compact Cards) */}
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>Matching Addon Sources</Text>
             {resultsLoading ? (
@@ -979,7 +1021,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             )}
           </View>
 
-          {/* Section 2: Direct In-Page Stream Qualities & Episode Picker */}
           {activeSourcePost && (
             <View style={styles.sectionContainer}>
               <Text style={styles.sectionHeader}>
@@ -1003,15 +1044,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 </Text>
               ) : (
                 <View style={styles.pickerSection}>
-                  {/* Seasons / quality variants -- Info.linkList entries */}
-                  {linkList.length > 1 &&
+                  {usableLinkList.length > 1 &&
                     (!isSeries ||
-                      linkList.some((l) => Boolean(l.episodesLink)) ||
-                      parseSeasonNumber(linkList[0]?.title) !== null) && (
+                      usableLinkList.some((l) => Boolean(l.episodesLink)) ||
+                      parseSeasonNumber(usableLinkList[0]?.title) !== null) && (
                     <View style={styles.subBlock}>
                       <Text style={styles.subHeader}>Seasons &amp; Quality</Text>
                       <View style={styles.chipsRow}>
-                        {linkList.map((l, idx) => (
+                        {usableLinkList.map((l, idx) => (
                           <TVFocusablePressable
                             key={`link-${idx}`}
                             scaleFocused={1.06}
@@ -1036,7 +1076,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     </View>
                   )}
 
-                  {/* Series: episode list for the selected season */}
                   {isSeries ? (
                     episodesLoading ? (
                       <View style={styles.loadingRow}>
@@ -1048,12 +1087,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         <Text style={styles.subHeader}>Episodes</Text>
                         <View style={styles.episodesGrid}>
                           {episodes.map((ep, idx) => {
-                            // Prefer real season/episode numbers parsed from
-                            // the source's own labels (S01/s1/Season01/
-                            // Season 1 etc. on the quality chip, E12/
-                            // Episode 12/leading "12." etc. on the episode
-                            // title); fall back to positional order only
-                            // when a number genuinely can't be found.
                             const seasonNum = parseSeasonNumber(activeLink?.title) ?? activeLinkIndex + 1;
                             const episodeNum = parseEpisodeNumber(ep.title) ?? idx + 1;
                             const cinemetaEp = findCinemetaEpisode(
@@ -1073,17 +1106,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                 onPress={() =>
                                   handleResolveAndPlay(
                                     ep.link,
-                                    // Show title first, matching every other
-                                    // call site in this file -- this is what
-                                    // ends up as the Continue Watching
-                                    // entry's `title`. `TVPlayerScreen`
-                                    // derives the per-episode title itself
-                                    // from the `episodes`/`currentEpisodeIndex`
-                                    // passed below, same as TVDetailsScreen;
-                                    // passing `ep.title` here instead was
-                                    // what left Continue Watching showing
-                                    // only the episode label with no show
-                                    // name.
                                     sourceInfo?.title ||
                                       activeSourcePost?.title ||
                                       resultsTarget?.title ||
@@ -1092,6 +1114,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                     'series',
                                     idx,
                                     episodes,
+                                    ep.link || `ep-${idx + 1}`,
                                   )
                                 }
                                 style={styles.episodeCard}
@@ -1132,11 +1155,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     ) : (
                       <Text style={styles.emptySubtitle}>No episodes found for this season.</Text>
                     )
-                  ) : directItems.length > 0 ? (
+                  ) : usableDirectItems.length > 0 ? (
                     <View style={styles.subBlock}>
                       <Text style={styles.subHeader}>Play</Text>
                       <View style={styles.chipsRow}>
-                        {directItems.map((d, idx) => (
+                        {usableDirectItems.map((d, idx) => (
                           <TVFocusablePressable
                             key={`direct-${idx}`}
                             scaleFocused={1.06}
@@ -1149,8 +1172,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                 activeSourcePost?.title || resultsTarget?.title || d.title,
                                 d.type || (isSeries ? 'series' : 'movie'),
                                 idx,
-                                isSeries && directItems.length > 0
-                                  ? directItems.map((item, i) => ({
+                                isSeries && usableDirectItems.length > 0
+                                  ? usableDirectItems.map((item, i) => ({
                                       title: item.title || `Episode ${i + 1}`,
                                       link: item.link,
                                       image: item.image,
@@ -1158,6 +1181,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                       skip: item.skip,
                                     }))
                                   : undefined,
+                                activeSourcePost?.link,
                               )
                             }
                             style={styles.qualityChip}
@@ -1173,8 +1197,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       </View>
                     </View>
                   ) : (
-                    /* No linkList entries at all -- fall back to resolving
-                       the source's own link directly. */
                     <TVFocusablePressable
                       scaleFocused={1.05}
                       focusedBorderColor="#FFFFFF"
@@ -1182,7 +1204,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                       onPress={() =>
                         activeSourcePost &&
-                        handleResolveAndPlay(activeSourcePost.link, activeSourcePost.title, 'movie')
+                        handleResolveAndPlay(
+                          activeSourcePost.link,
+                          activeSourcePost.title,
+                          'movie',
+                          0,
+                          undefined,
+                          activeSourcePost.link,
+                        )
                       }
                       style={styles.directStreamBtn}
                     >
@@ -1203,19 +1232,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     );
   }
 
-
   /* ======================================================================= */
   /* SCREEN MODE: BROWSE (Category Pills, Posters Grid, Hero)                */
   /* ======================================================================= */
   return (
     <View style={styles.container}>
-      {/* Edge-to-edge Hero Header: no padding gap to the sidebar */}
       <View style={styles.heroWrapper}>
         <TVHeroMeta media={activeHero} />
       </View>
 
       <View style={styles.browseBodyWrapper}>
-        {/* Category Pills (0.5 opacity black) */}
         <View style={styles.catalogsBar}>
           <ScrollView
             horizontal
@@ -1268,7 +1294,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           </ScrollView>
         </View>
 
-        {/* Catalog Posters Grid */}
         {catalogsLoading ? (
           <View style={styles.centerLoading}>
             <ActivityIndicator size="large" color="#8A5CF6" />
@@ -1353,7 +1378,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         )}
       </View>
 
-      {/* D-Pad Hold Category Hide Confirmation Modal */}
       <Modal
         visible={Boolean(catalogToHide)}
         transparent
@@ -1397,7 +1421,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         </View>
       </Modal>
 
-      {/* Manage Catalogs Modal */}
       <Modal
         visible={manageVisible}
         transparent
@@ -1656,8 +1679,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-
-  /* Results / In-Page Detail Inspector Styles */
   resultsRoot: {
     flex: 1,
     backgroundColor: '#0A0A0E',
@@ -1666,10 +1687,6 @@ const styles = StyleSheet.create({
     height: SCREEN_HEIGHT,
   },
   resultsBackdropLayer: {
-    // Explicit pixel dimensions -- absoluteFillObject / all-edges-zero
-    // positioning silently collapses to 0x0 on this device/RN build under
-    // Fabric/Yoga (same issue we hit and fixed on TVHomeScreen's hero
-    // backdrop). Only explicit width/height renders reliably here.
     position: 'absolute',
     top: 0,
     left: 0,
@@ -1690,9 +1707,6 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
   resultsScrollView: {
-    // No explicit height here -- flex: 1 against the explicitly-sized
-    // resultsRoot is what actually renders on this device; adding a
-    // percentage height alongside flex: 1 is what collapsed this view.
     flex: 1,
     width: '100%',
     zIndex: 10,
@@ -2068,3 +2082,5 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+
+export default TVDiscoverScreen;
