@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, StyleSheet, findNodeHandle } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import Animated, {
@@ -38,6 +38,13 @@ interface TVNavigationRailProps {
   // which card that is can change many times while the user browses
   // without the rail re-rendering at all.
   onGetEntryFocusHandle?: (route: TVRoute) => number | null;
+  // Fires whenever the rail's expanded/collapsed state changes (i.e.
+  // whether any rail button currently holds focus). Lets the app-level
+  // hardware Back handler tell "focus is on the rail itself" apart from
+  // "focus is in a tab's content", since Back should behave differently
+  // (exit the app) in the former case regardless of which button is
+  // focused.
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
 const NAV_ITEMS: { id: TVRoute; label: string; icon: keyof typeof MaterialCommunityIcons.glyphMap }[] = [
@@ -54,13 +61,23 @@ const EXPANDED_WIDTH = 220;
 const ITEM_HEIGHT = 46;
 const ITEM_GAP = 6;
 
-export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
+// Imperative handle exposed via ref, so a screen-level concern (like the
+// hardware Back key while on a given tab's content) can move native TV
+// focus onto that tab's own rail button without going through a
+// declarative nextFocus* prop -- Back isn't a directional key, so there's
+// no focus-search edge for it to hook into the way Left/Right do.
+export interface TVNavigationRailHandle {
+  focusRoute: (route: TVRoute) => void;
+}
+
+export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationRailProps>(({
   currentRoute,
   onRouteChange,
   onRegisterRouteHandle,
   onRequestContentFocus,
   onGetEntryFocusHandle,
-}) => {
+  onExpandedChange,
+}, ref) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // How many rail items currently report themselves as focused. Normally
@@ -76,6 +93,28 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
   // Must point at the focusable Pressable itself (not an inner decorative
   // View) -- see the comment in TVFocusablePressable for why.
   const itemRefs = useRef<(View | null)[]>([]);
+
+  useImperativeHandle(ref, () => ({
+    focusRoute: (route: TVRoute) => {
+      const idx = NAV_ITEMS.findIndex((it) => it.id === route);
+      const node = itemRefs.current[idx] as any;
+      node?.focus?.();
+    },
+  }));
+
+  useEffect(() => {
+    onExpandedChange?.(isExpanded);
+  }, [isExpanded, onExpandedChange]);
+
+  // Guards against the parent holding a stale "expanded" reading if this
+  // component ever unmounts while still expanded (e.g. a screen transition
+  // that yanks the rail out from under a focused button).
+  useEffect(() => {
+    return () => {
+      onExpandedChange?.(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const activeIndex = NAV_ITEMS.findIndex((it) => it.id === currentRoute);
   const indicatorY = useSharedValue(
@@ -282,7 +321,7 @@ export const TVNavigationRail: React.FC<TVNavigationRailProps> = ({
       </View>
     </Animated.View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: {
