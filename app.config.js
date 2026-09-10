@@ -13,6 +13,7 @@ module.exports = () => {
   const plugins = [
     './plugins/with-android-tv.js',
     './plugins/withKeyEvent.js',
+    './plugins/with-audio-preamp.js',
     './plugins/with-custom-native-modules.js',
     './plugins/android-native-config.js',
     './plugins/with-saf-copy-module.js',
