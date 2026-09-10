@@ -626,6 +626,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                               title: item.title,
                               resumeHint: {
                                 episodeLink: item.episode?.link,
+                                episodeKey: item.episodeKey,
                                 position: item.position,
                               },
                             });
