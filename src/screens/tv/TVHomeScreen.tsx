@@ -108,6 +108,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onRegisterReturnFocusTrigger,
 }) => {
   const provider = useContentStore((state) => state.provider);
+  const secondaryProvider = useContentStore((state) => state.secondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const continueWatchingItems = useContinueWatchingStore((state) => state.items) || [];
   const removeItemFromHistory = useContinueWatchingStore((state) => state.removeItem);
@@ -139,10 +140,28 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
   );
+  // Secondary source is optional and must be a different addon than the
+  // primary one (the store already guards against them matching, but a
+  // stale persisted value from before an addon was uninstalled is also
+  // possible -- double check it's still actually installed).
+  const hasSecondaryProvider = Boolean(
+    secondaryProvider?.value &&
+      secondaryProvider.value !== provider?.value &&
+      installedProviders?.some((p) => p.value === secondaryProvider.value)
+  );
 
   const { data: homeData = [], isLoading } = useHomePageData({
     provider,
     enabled: hasProviders,
+  });
+
+  // `useHomePageData` needs a concrete provider object even when disabled
+  // (it reads `.value` for the query key before checking `enabled`), so
+  // fall back to the primary provider -- the query itself never actually
+  // runs unless `hasSecondaryProvider` is true.
+  const { data: secondaryHomeData = [], isLoading: isSecondaryLoading } = useHomePageData({
+    provider: secondaryProvider || provider,
+    enabled: hasSecondaryProvider,
   });
 
   const watchHistory = useMemo(() => {
@@ -150,6 +169,21 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       .filter((item) => Boolean(item.providerValue || item.infoUrl))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }, [continueWatchingItems]);
+
+  // Stamps every post in a set of rows with the addon it actually came
+  // from (only if a row/provider module hasn't already set one itself),
+  // so pressing a card later resolves metadata/streams against the right
+  // addon regardless of whether it landed in a primary or secondary row.
+  // Cloned rather than mutated in place since the underlying arrays are
+  // shared react-query cache data.
+  const tagRowsWithProvider = (rows: any[], providerValue?: string) =>
+    rows.map((row) => ({
+      ...row,
+      Posts: (row.Posts || []).map((post: any) => ({
+        ...post,
+        provider: post.provider || providerValue,
+      })),
+    }));
 
   const displayRows = useMemo(() => {
     const rows: any[] = [];
@@ -161,8 +195,35 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         isHistory: true,
       });
     }
-    return rows.concat(homeData.filter((r) => r.Posts && r.Posts.length > 0));
-  }, [watchHistory, homeData]);
+
+    const primaryRows = tagRowsWithProvider(
+      homeData.filter((r) => r.Posts && r.Posts.length > 0),
+      provider?.value,
+    );
+    rows.push(...primaryRows);
+
+    if (hasSecondaryProvider) {
+      const secondaryRows = tagRowsWithProvider(
+        secondaryHomeData.filter((r) => r.Posts && r.Posts.length > 0),
+        secondaryProvider!.value,
+      ).map((row) => ({
+        ...row,
+        // Distinguishes bottom rows sourced from the 2nd addon without
+        // disturbing the primary rows' plain titles.
+        sourceLabel: secondaryProvider!.display_name,
+      }));
+      rows.push(...secondaryRows);
+    }
+
+    return rows;
+  }, [
+    watchHistory,
+    homeData,
+    provider?.value,
+    hasSecondaryProvider,
+    secondaryHomeData,
+    secondaryProvider,
+  ]);
 
   const updateHeroWithBestMetadata = useCallback(
     (item: any, isHistory: boolean = false) => {
@@ -488,7 +549,14 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
             return (
               <View key={`${row.filter || row.title}-${rowIndex}`} style={styles.rowContainer}>
-                <Text style={styles.rowCategoryTitle}>{row.title}</Text>
+                <View style={styles.rowTitleWrap}>
+                  <Text style={styles.rowCategoryTitle}>{row.title}</Text>
+                  {row.sourceLabel ? (
+                    <Text style={styles.rowSourceLabel} numberOfLines={1}>
+                      {row.sourceLabel}
+                    </Text>
+                  ) : null}
+                </View>
 
                 <ScrollView
                   horizontal
@@ -755,12 +823,29 @@ const styles = StyleSheet.create({
   rowContainer: {
     height: ROW_HEIGHT,
   },
+  rowTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
   rowCategoryTitle: {
     color: '#FFFFFF',
     fontSize: 17,
     fontWeight: '800',
-    marginBottom: 6,
     letterSpacing: 0.2,
+  },
+  rowSourceLabel: {
+    color: '#8A5CF6',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    backgroundColor: 'rgba(138, 92, 246, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: 'hidden',
   },
   horizontalRowScroll: {
     paddingRight: 60,
