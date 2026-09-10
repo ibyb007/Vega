@@ -604,22 +604,39 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // used only to enrich the episode picker with stills/synopses; the
   // resultsTarget header title already comes from the (already-canonical)
   // discover catalog, so it isn't re-formatted here.
+  //
+  // Unlike TVDetailsScreen (which only trusts an imdbId a provider has
+  // explicitly vouched for via `populateMeta`, since its `Post.id` is
+  // usually a scraped, unreliable guess), `resultsTarget` here always came
+  // from a genuine Stremio catalog fetch, which -- by protocol -- returns a
+  // real IMDB-style id for every movie/series entry. That id is already
+  // trustworthy on its own, so falling back to it (instead of gating
+  // strictly on `sourceInfo.imdbId`/`populateMeta`) is what fixes episodes
+  // never showing a synopsis when the addon source's own metadata doesn't
+  // carry an id -- `fetchMatchingCinemetaMeta`'s title-match check is still
+  // the actual safety net against a wrong match either way.
   useEffect(() => {
     let isMounted = true;
     setSourceCinemetaMeta(null);
-    if (sourceInfo?.populateMeta === true && sourceInfo?.imdbId && sourceInfo?.type) {
-      fetchMatchingCinemetaMeta(
-        sourceInfo.imdbId,
-        sourceInfo.type,
-        sourceInfo.title || resultsTarget?.title,
-      ).then((meta) => {
+    const imdbId = sourceInfo?.imdbId || resultsTarget?.imdb_id || resultsTarget?.id;
+    const type = sourceInfo?.type || resultsTarget?.type;
+    if (imdbId && type) {
+      fetchMatchingCinemetaMeta(imdbId, type, sourceInfo?.title || resultsTarget?.title).then((meta) => {
         if (isMounted) setSourceCinemetaMeta(meta);
       });
     }
     return () => {
       isMounted = false;
     };
-  }, [sourceInfo?.imdbId, sourceInfo?.type, sourceInfo?.populateMeta, sourceInfo?.title, resultsTarget?.title]);
+  }, [
+    sourceInfo?.imdbId,
+    sourceInfo?.type,
+    sourceInfo?.title,
+    resultsTarget?.imdb_id,
+    resultsTarget?.id,
+    resultsTarget?.type,
+    resultsTarget?.title,
+  ]);
 
   const handleResolveAndPlay = useCallback(
     async (
@@ -864,6 +881,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={8}
+            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
             onPress={backToBrowse}
             style={styles.backBtn}
           >
@@ -920,6 +938,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       scaleFocused={1.06}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
+                      {...(idx === 0 && navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                       onPress={() => handleSelectSourceCard(post)}
                       style={[styles.sourceCard, isSelected && styles.sourceCardActive]}
                     >
@@ -985,6 +1004,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             scaleFocused={1.06}
                             focusedBorderColor="#8A5CF6"
                             borderRadius={8}
+                            {...(idx === 0 && navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                             onPress={() => {
                               setActiveLinkIndex(idx);
                               if (savedDiscoverState) savedDiscoverState.activeLinkIndex = idx;
@@ -1036,6 +1056,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                 scaleFocused={1.04}
                                 focusedBorderColor="#8A5CF6"
                                 borderRadius={8}
+                                {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                                 onPress={() =>
                                   handleResolveAndPlay(
                                     ep.link,
@@ -1108,6 +1129,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             scaleFocused={1.06}
                             focusedBorderColor="#FFFFFF"
                             borderRadius={8}
+                            {...(idx === 0 && navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                             onPress={() =>
                               handleResolveAndPlay(
                                 d.link,
@@ -1144,6 +1166,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       scaleFocused={1.05}
                       focusedBorderColor="#FFFFFF"
                       borderRadius={10}
+                      {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                       onPress={() =>
                         activeSourcePost &&
                         handleResolveAndPlay(activeSourcePost.link, activeSourcePost.title, 'movie')
@@ -1830,8 +1853,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   episodesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'column',
     gap: 10,
   },
   episodeCard: {
@@ -1841,8 +1863,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.08)',
     borderRadius: 8,
-    minWidth: 320,
-    maxWidth: 380,
+    width: '100%',
   },
   episodeInner: {
     flexDirection: 'row',
