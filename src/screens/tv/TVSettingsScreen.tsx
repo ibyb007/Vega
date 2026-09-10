@@ -50,15 +50,20 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
   const [dohEnabled, setDohEnabled] = useState(true);
   const [activeDohProvider, setActiveDohProvider] = useState('cloudflare');
   const [selectedPlayer, setSelectedPlayer] = useState<'exo' | 'vlc' | 'system'>('exo');
+  const [excludedQualities, setExcludedQualities] = useState<string[]>([]);
 
   useEffect(() => {
     try {
       const isDoH = settingsStorage?.isDoHActive ? settingsStorage.isDoHActive() : true;
       const provider = settingsStorage?.getDoHProvider ? settingsStorage.getDoHProvider() : 'cloudflare';
       const player = settingsStorage?.getDefaultPlayer ? settingsStorage.getDefaultPlayer() : 'exo';
+      const excluded = settingsStorage?.getExcludedQualities
+        ? settingsStorage.getExcludedQualities()
+        : [];
       setDohEnabled(isDoH);
       setActiveDohProvider(provider);
       setSelectedPlayer(player);
+      setExcludedQualities(excluded);
     } catch (e) {
       console.warn('[TVSettingsScreen] Init error:', e);
     }
@@ -100,6 +105,20 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
       settingsStorage.setDefaultPlayer(player);
     }
     ToastAndroid.show(`Default player set to ${player.toUpperCase()}`, ToastAndroid.SHORT);
+  };
+
+  const toggleExcludedQuality = (quality: string) => {
+    const next = excludedQualities.includes(quality)
+      ? excludedQualities.filter((q) => q !== quality)
+      : [...excludedQualities, quality];
+    setExcludedQualities(next);
+    if (settingsStorage?.setExcludedQualities) {
+      settingsStorage.setExcludedQualities(next);
+    }
+    ToastAndroid.show(
+      `${quality} ${next.includes(quality) ? 'excluded' : 'included'}`,
+      ToastAndroid.SHORT,
+    );
   };
 
   return (
@@ -257,6 +276,48 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
           </TVFocusablePressable>
         );
       })}
+
+      {/* Quality Section */}
+      <Text style={styles.sectionHeader}>Quality</Text>
+      <View style={styles.settingCard}>
+        <Text style={styles.settingTitle}>Excluded Qualities</Text>
+        <Text style={styles.settingSubtitle}>
+          Hide lower resolutions from stream results
+        </Text>
+        <View style={styles.chipRow}>
+          {['360p', '480p', '720p'].map((quality) => {
+            const selected = excludedQualities.includes(quality);
+            return (
+              <TVFocusablePressable
+                key={quality}
+                scaleFocused={1.05}
+                focusedBorderColor={primaryColor}
+                borderRadius={16}
+                {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+                onPress={() => toggleExcludedQuality(quality)}
+                style={[
+                  styles.qualityChip,
+                  selected && {
+                    borderColor: primaryColor,
+                    backgroundColor: 'rgba(138, 92, 246, 0.18)',
+                  },
+                ]}
+              >
+                {() => (
+                  <Text
+                    style={[
+                      styles.qualityChipText,
+                      selected && { color: primaryColor, fontWeight: '700' },
+                    ]}
+                  >
+                    {quality}
+                  </Text>
+                )}
+              </TVFocusablePressable>
+            );
+          })}
+        </View>
+      </View>
     </ScrollView>
   );
 };
@@ -383,5 +444,24 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 12,
+  },
+  qualityChip: {
+    backgroundColor: '#1C1C24',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  qualityChipText: {
+    color: '#E5E7EB',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
