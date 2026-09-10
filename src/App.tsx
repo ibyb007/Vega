@@ -33,6 +33,9 @@ export interface ActiveStreamPayload {
   title: string;
   posterUrl?: string;
   itemLink?: string;
+  // Stable per-episode identity ("S{season}E{episode}") -- see
+  // ContinueWatchingItem.episodeKey. Undefined for movies.
+  episodeId?: string;
   providerValue?: string;
   episodes?: any[];
   currentEpisodeIndex?: number;
@@ -246,6 +249,7 @@ export default function App() {
                     title={activeStream.title}
                     posterUrl={activeStream.posterUrl}
                     itemLink={activeStream.itemLink}
+                    episodeId={activeStream.episodeId}
                     providerValue={activeStream.providerValue || currentProvider?.value}
                     headers={activeStream.headers}
                     sourceType={activeStream.sourceType}
