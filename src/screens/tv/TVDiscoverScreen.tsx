@@ -136,7 +136,7 @@ interface SavedDiscoverState {
   activeHero?: TVHeroMedia | null;
 
   screenMode: 'browse' | 'results';
-  resultsTarget: CatalogMediaItem | null;
+  resultsTarget: (CatalogMediaItem & { logo?: string }) | null;
   matchedAddonPosts: Post[];
   activeSourcePost: Post | null;
   sourceInfo: Info | null;
@@ -174,7 +174,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const [screenMode, setScreenMode] = useState<'browse' | 'results'>(
     savedDiscoverState?.screenMode || 'browse',
   );
-  const [resultsTarget, setResultsTarget] = useState<CatalogMediaItem | null>(
+  const [resultsTarget, setResultsTarget] = useState<(CatalogMediaItem & { logo?: string }) | null>(
     savedDiscoverState?.resultsTarget ?? null,
   );
   const [resultsLoading, setResultsLoading] = useState(false);
@@ -416,19 +416,32 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         episodes: [],
       };
 
-      if (!item.banner && selectedCatalog) {
-        const metaId = item.imdb_id || item.id;
-        if (metaId) {
-          fetchItemMeta(selectedCatalog.baseEndpoint, item.type, metaId).then((meta) => {
-            if (meta?.background) {
+      // Fetch backdrop and logo if available
+      const metaId = item.imdb_id || item.id;
+      if (metaId) {
+        if (selectedCatalog) {
+          fetchItemMeta(selectedCatalog.baseEndpoint, item.type, metaId).then((meta: any) => {
+            if (meta?.background || meta?.logo) {
               setResultsTarget((prev) => {
-                const next = prev ? { ...prev, banner: meta.background } : prev;
+                const next = prev
+                  ? { ...prev, banner: meta.background || prev.banner, logo: meta.logo || (prev as any).logo }
+                  : prev;
                 if (savedDiscoverState) savedDiscoverState.resultsTarget = next;
                 return next;
               });
             }
           });
         }
+        // Cinemeta logo lookup fallback
+        fetchMatchingCinemetaMeta(metaId, item.type, item.title).then((cMeta: any) => {
+          if (cMeta?.logo) {
+            setResultsTarget((prev) => {
+              const next = prev ? { ...prev, logo: cMeta.logo } : prev;
+              if (savedDiscoverState) savedDiscoverState.resultsTarget = next;
+              return next;
+            });
+          }
+        });
       }
 
       const matches: Post[] = [];
@@ -641,37 +654,27 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     resultsTarget?.title,
   ]);
 
-  // Looks up a saved continue-watching position for this title.
-  // `itemLink` is the stable info-page link (the continue-watching row's
-  // identity). For a movie, that's enough -- there's only one thing to
-  // resume. For a series episode, `episodeKey` (the stable "S{n}E{n}"
-  // identity -- see ContinueWatchingItem.episodeKey) must also match, since
-  // otherwise picking a *different* episode of the same show would
-  // incorrectly inherit whatever position was saved for another one.
-  // `rawLink` is only used as a fallback match for entries saved before
-  // `episodeKey` existed.
   const getSavedResumePosition = useCallback(
-    (itemLink: string, episodeKey?: string, rawLink?: string): number => {
+    (canonicalLink: string): number => {
       try {
         const cwState: any = useContinueWatchingStore.getState?.();
         const cwItems = cwState?.items || [];
         const cwMatch = cwItems.find(
-          (c: any) => c?.infoUrl === itemLink || c?.id === itemLink,
+          (c: any) =>
+            c?.infoUrl === canonicalLink ||
+            c?.link === canonicalLink ||
+            c?.id === canonicalLink ||
+            c?.episodeId === canonicalLink,
         );
-        if (cwMatch?.position) {
-          const isMovie = !episodeKey;
-          const episodeMatches = episodeKey
-            ? cwMatch.episodeKey
-              ? cwMatch.episodeKey === episodeKey
-              : !!rawLink && cwMatch.episode?.link === rawLink
-            : false;
-          if (isMovie || episodeMatches) return cwMatch.position;
-        }
+        if (cwMatch?.position) return cwMatch.position;
 
         const csState: any = useContentStore.getState?.();
         const history = csState?.watchHistory || [];
         const hMatch = history.find(
-          (h: any) => h?.link === itemLink || h?.id === itemLink,
+          (h: any) =>
+            h?.link === canonicalLink ||
+            h?.id === canonicalLink ||
+            h?.episodeId === canonicalLink,
         );
         if (hMatch?.currentTime) return hMatch.currentTime;
       } catch (err) {
@@ -744,23 +747,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           savedDiscoverState.episodes = episodesToSend || episodes;
         }
 
-        // A stable per-episode key (season+episode number) disambiguates
-        // series episodes independent of which quality/source link was
-        // just resolved; movies have nothing to disambiguate, so there's
-        // no per-episode key for them -- the title's own info-page link is
-        // the whole identity.
-        const isSeries = type === 'series';
-        const stableEpisodeKey = isSeries ? episodeKey : undefined;
-        const resumePos = getSavedResumePosition(
-          activeSourcePost?.link || '',
-          stableEpisodeKey,
-          link,
-        );
+        const canonicalKey = episodeKey || link || activeSourcePost?.link;
+        const resumePos = getSavedResumePosition(canonicalKey);
 
         onPlayStream(best.link, title, {
           posterUrl: sourceInfo?.image || sourceInfo?.poster || activeSourcePost?.image || resultsTarget?.poster,
           itemLink: activeSourcePost?.link,
-          episodeId: stableEpisodeKey,
+          episodeId: canonicalKey,
           startPosition: resumePos,
           providerValue,
           episodes: episodesToSend,
@@ -927,22 +920,24 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       Boolean(usableDirectItems.length > 1 && resultsTarget?.type !== 'movie');
 
     const isAwaitingEpisodes = isSeries && episodesLoading && episodes.length === 0;
+    const logoUrl = resultsTarget?.logo || (sourceCinemetaMeta as any)?.logo;
 
     return (
       <View style={styles.resultsRoot}>
+        {/* Full-bleed Backdrop Layer with 0.4 Gradient Opacity */}
         <View style={styles.resultsBackdropLayer} pointerEvents="none">
           {banner ? (
             <Image source={{ uri: banner }} style={styles.resultsBackdropImage} resizeMode="cover" />
           ) : null}
           <LinearGradient
-            colors={['rgba(10, 10, 14, 0.5)', 'rgba(10, 10, 14, 0.5)', 'transparent']}
+            colors={['rgba(10, 10, 14, 0.4)', 'rgba(10, 10, 14, 0.4)', 'transparent']}
             locations={[0, 0.42, 0.85]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.resultsLeftGradient}
           />
           <LinearGradient
-            colors={['transparent', 'rgba(10, 10, 14, 0.5)', 'rgba(10, 10, 14, 0.5)']}
+            colors={['transparent', 'rgba(10, 10, 14, 0.4)', 'rgba(10, 10, 14, 0.4)']}
             locations={[0.2, 0.65, 1]}
             style={styles.resultsBottomGradient}
           />
@@ -972,8 +967,18 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             )}
           </TVFocusablePressable>
 
+          {/* Stremio Poster Style Header with ClearArt Logo Support */}
           <View style={styles.cleanHeaderContainer}>
-            <Text style={styles.targetTitle}>{resultsTarget?.title}</Text>
+            {logoUrl ? (
+              <Image
+                source={{ uri: logoUrl }}
+                style={styles.targetLogo}
+                resizeMode="contain"
+              />
+            ) : (
+              <Text style={styles.targetTitle}>{resultsTarget?.title}</Text>
+            )}
+
             <View style={styles.metaRow}>
               {resultsTarget?.rating ? (
                 <View style={styles.ratingBadge}>
@@ -1116,11 +1121,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             );
                             const episodeThumb = ep.image || cinemetaEp?.thumbnail;
                             const episodeOverview = ep.description || cinemetaEp?.overview;
-                            // Stable "S{season}E{episode}" identity -- not
-                            // the raw episode link, which can differ across
-                            // quality variants or separate fetches even for
-                            // the exact same episode.
-                            const episodeKey = `S${seasonNum}E${episodeNum}`;
                             return (
                               <TVFocusablePressable
                                 key={`ep-${ep.link || idx}`}
@@ -1139,7 +1139,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                     'series',
                                     idx,
                                     episodes,
-                                    episodeKey,
+                                    ep.link || `ep-${idx + 1}`,
                                   )
                                 }
                                 style={styles.episodeCard}
@@ -1766,6 +1766,12 @@ const styles = StyleSheet.create({
     maxWidth: 720,
     marginBottom: 20,
     backgroundColor: 'transparent',
+  },
+  targetLogo: {
+    width: 320,
+    height: 100,
+    marginBottom: 12,
+    alignSelf: 'flex-start',
   },
   targetTitle: {
     color: '#FFFFFF',
