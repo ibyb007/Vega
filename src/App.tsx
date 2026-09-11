@@ -49,7 +49,6 @@ export interface ActiveStreamPayload {
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<TVRoute>('home');
-  const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
   // Native node handle for each nav rail button, keyed by route. Populated
@@ -164,12 +163,7 @@ export default function App() {
 
   const navigateTo = useCallback((route: TVRoute) => {
     setSelectedItem(null);
-    setCurrentRoute((prev) => {
-      if (prev !== route) {
-        setRouteHistory((h) => [...h, route]);
-      }
-      return route;
-    });
+    setCurrentRoute(route);
   }, []);
 
   useEffect(() => {
@@ -187,57 +181,36 @@ export default function App() {
       // If focus is currently on the nav rail itself (expanded, any button
       // focused), Back always exits the app -- irrespective of which
       // button is selected -- rather than being interpreted as
-      // in-app navigation. This takes priority over the Settings-specific
-      // rule below, which only applies when focus is in that tab's
-      // content, not on the rail button itself.
+      // in-app navigation. This takes priority over the per-route rule
+      // below, which only applies when focus is in that tab's content,
+      // not on the rail button itself.
       if (navExpandedRef.current) {
         BackHandler.exitApp();
         return true;
       }
 
-      // Settings is a dead end for hardware Back: rather than popping to
-      // whatever route preceded it (which felt inconsistent depending on
-      // how the user got there), Back always just returns focus to the
-      // Settings rail button, the same way it would if the user had
-      // arrowed all the way to the left edge of the screen.
-      if (currentRoute === 'settings') {
-        navRailRef.current?.focusRoute('settings');
-        return true;
-      }
-
-      if (routeHistory.length > 1) {
-        const nextHistory = [...routeHistory];
-        nextHistory.pop();
-        const prevRoute = nextHistory[nextHistory.length - 1] || 'home';
-        setRouteHistory(nextHistory);
-        setCurrentRoute(prevRoute);
-        return true;
-      }
-
-      if (currentRoute !== 'home') {
-        setCurrentRoute('home');
-        setRouteHistory(['home']);
-        return true;
-      }
-
-      // We're on Home's content (not the rail -- that's caught above) with
-      // no history left to pop: this is Home's own dead end, same idea as
-      // the Settings case above. Previously this fell through to `return
-      // false`, handing the key to Android with no JS-side opinion on
-      // where focus should go -- which is exactly the gap that let focus
-      // land on a random rail button (whichever the default focus search
-      // happened to pick) instead of Home's own button. Deterministically
-      // focusing Home here, the same way Settings does, closes that gap:
-      // pressing Back while browsing Home's rows (whether right after
-      // returning from playback/details or from ordinary browsing) now
-      // always lands on the Home icon.
-      navRailRef.current?.focusRoute('home');
+      // Every main tab is a dead end for hardware Back: rather than
+      // popping to whatever route preceded it (which felt inconsistent
+      // depending on how the user got there, and could leave focus on
+      // the wrong rail button), Back always just returns focus to that
+      // tab's own rail button -- Search -> Search, Sources -> Sources,
+      // Addons -> Addons, Settings -> Settings, Discover -> Discover,
+      // Home -> Home -- the same way it would if the user had arrowed
+      // all the way to the left edge of the screen.
+      //
+      // Discover has its own internal BackHandler (see
+      // TVDiscoverScreen's `backToBrowse`) that intercepts Back while
+      // viewing results or a selected source, popping back to Discover's
+      // first/browse page instead of the event ever reaching here. So by
+      // the time this handler runs with `currentRoute === 'discover'`,
+      // we're guaranteed to already be on Discover's first page.
+      navRailRef.current?.focusRoute(currentRoute);
       return true;
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => sub.remove();
-  }, [activeStream, selectedItem, routeHistory, currentRoute]);
+  }, [activeStream, selectedItem, currentRoute]);
 
   return (
     <SafeAreaProvider style={styles.rootContainer}>
