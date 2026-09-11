@@ -9,7 +9,6 @@ import {
   Modal,
   TextInput,
   Dimensions,
-  BackHandler,
   ToastAndroid,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
@@ -88,7 +87,7 @@ interface TVDiscoverScreenProps {
   onNavigateRoute?: (route: TVRoute) => void;
   onPlayStream?: (streamUrl: string, title?: string, extraMeta?: any) => void;
   discoverFocusTarget?: number | null;
-  onFocusDiscoverNav?: () => void;
+  onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
 }
 
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
@@ -152,7 +151,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onNavigateRoute,
   onPlayStream,
   discoverFocusTarget,
-  onFocusDiscoverNav,
+  onRegisterBackHandler,
 }) => {
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
@@ -808,7 +807,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   }, [activeSourcePost, handleBackToSources]);
 
-  // Hardware Back Key: Return from Page 2 to Page 1, or jump directly to side rail Discover button from Page 1
+  // Hardware Back Key: only handle this screen's own back-stack (closing the
+  // manage/hide-catalog dialogs, or dropping from Page 2 results back to Page
+  // 1 browse). If none of that applies, report "not handled" so App.tsx moves
+  // focus to the Discover button on the rail.
   useEffect(() => {
     const handleBack = () => {
       if (manageVisible) {
@@ -823,21 +825,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         backToBrowse();
         return true;
       }
-      if (onFocusDiscoverNav) {
-        onFocusDiscoverNav();
-        return true;
-      }
-      if (discoverFocusTarget) {
-        const { TextInput: RNTextInput } = require('react-native');
-        RNTextInput.State?.focusTextInput?.(discoverFocusTarget);
-        return true;
-      }
       return false;
     };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
-    return () => sub.remove();
-  }, [screenMode, manageVisible, catalogToHide, backToBrowse, onFocusDiscoverNav, discoverFocusTarget]);
+    onRegisterBackHandler?.(handleBack);
+    return () => onRegisterBackHandler?.(null);
+  }, [screenMode, manageVisible, catalogToHide, backToBrowse, onRegisterBackHandler]);
 
   useEffect(() => {
     return () => {
