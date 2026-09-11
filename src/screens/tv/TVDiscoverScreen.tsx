@@ -808,9 +808,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   }, [activeSourcePost, handleBackToSources]);
 
-  // Handle hardware remote BACK press
+  // Hardware Back Key: Return from Page 2 to Page 1, or jump directly to side rail Discover button from Page 1
   useEffect(() => {
     const handleBack = () => {
+      if (manageVisible) {
+        setManageVisible(false);
+        return true;
+      }
+      if (catalogToHide) {
+        setCatalogToHide(null);
+        return true;
+      }
       if (screenMode === 'results') {
         backToBrowse();
         return true;
@@ -819,12 +827,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         onFocusDiscoverNav();
         return true;
       }
+      if (discoverFocusTarget) {
+        const { TextInput: RNTextInput } = require('react-native');
+        RNTextInput.State?.focusTextInput?.(discoverFocusTarget);
+        return true;
+      }
       return false;
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
     return () => sub.remove();
-  }, [screenMode, backToBrowse, onFocusDiscoverNav]);
+  }, [screenMode, manageVisible, catalogToHide, backToBrowse, onFocusDiscoverNav, discoverFocusTarget]);
 
   useEffect(() => {
     return () => {
@@ -1309,6 +1322,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={20}
+                  {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                   onFocus={() => {
                     focusedPillRef.current = cat;
                   }}
@@ -1350,6 +1364,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={10}
+              {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
               onPress={() => setManageVisible(true)}
               style={styles.emptyAddBtn}
             >
