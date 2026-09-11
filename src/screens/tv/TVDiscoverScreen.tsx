@@ -87,7 +87,8 @@ interface TVDiscoverScreenProps {
   onSelectItem: (item: Post) => void;
   onNavigateRoute?: (route: TVRoute) => void;
   onPlayStream?: (streamUrl: string, title?: string, extraMeta?: any) => void;
-  navFocusTarget?: number | null;
+  discoverFocusTarget?: number | null;
+  onFocusDiscoverNav?: () => void;
 }
 
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
@@ -150,7 +151,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onSelectItem,
   onNavigateRoute,
   onPlayStream,
-  navFocusTarget,
+  discoverFocusTarget,
+  onFocusDiscoverNav,
 }) => {
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
@@ -416,7 +418,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         episodes: [],
       };
 
-      // Fetch backdrop and logo if available
       const metaId = item.imdb_id || item.id;
       if (metaId) {
         if (selectedCatalog) {
@@ -432,7 +433,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             }
           });
         }
-        // Cinemeta logo lookup fallback
         fetchMatchingCinemetaMeta(metaId, item.type, item.title).then((cMeta: any) => {
           if (cMeta?.logo) {
             setResultsTarget((prev) => {
@@ -808,14 +808,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   }, [activeSourcePost, handleBackToSources]);
 
+  // Handle hardware remote BACK press
   useEffect(() => {
-    if (screenMode !== 'results') return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      backToBrowse();
-      return true;
-    });
+    const handleBack = () => {
+      if (screenMode === 'results') {
+        backToBrowse();
+        return true;
+      }
+      if (onFocusDiscoverNav) {
+        onFocusDiscoverNav();
+        return true;
+      }
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
     return () => sub.remove();
-  }, [screenMode, backToBrowse]);
+  }, [screenMode, backToBrowse, onFocusDiscoverNav]);
 
   useEffect(() => {
     return () => {
@@ -924,7 +933,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
     return (
       <View style={styles.resultsRoot}>
-        {/* Full-bleed Backdrop Layer with 0.4 Gradient Opacity */}
         <View style={styles.resultsBackdropLayer} pointerEvents="none">
           {banner ? (
             <Image source={{ uri: banner }} style={styles.resultsBackdropImage} resizeMode="cover" />
@@ -947,13 +955,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           style={styles.resultsScrollView}
           contentContainerStyle={styles.resultsScrollContent}
           showsVerticalScrollIndicator={false}
+          scrollEventThrottle={16}
+          removeClippedSubviews={true}
         >
           <TVFocusablePressable
             hasTVPreferredFocus={true}
-            scaleFocused={1.05}
+            scaleFocused={1.04}
             focusedBorderColor="#8A5CF6"
             borderRadius={8}
-            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+            {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
             onPress={backToBrowse}
             style={styles.backBtn}
           >
@@ -967,7 +977,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             )}
           </TVFocusablePressable>
 
-          {/* Stremio Poster Style Header with ClearArt Logo Support */}
           <View style={styles.cleanHeaderContainer}>
             {logoUrl ? (
               <Image
@@ -1009,16 +1018,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.sourcesRow}
+                scrollEventThrottle={16}
               >
                 {matchedAddonPosts.map((post, idx) => {
                   const isSelected = activeSourcePost?.link === post.link;
                   return (
                     <TVFocusablePressable
                       key={`${post.link}-${idx}`}
-                      scaleFocused={1.06}
+                      scaleFocused={1.04}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
-                      {...(idx === 0 && navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+                      {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                       onPress={() => handleSelectSourceCard(post)}
                       style={[styles.sourceCard, isSelected && styles.sourceCardActive]}
                     >
@@ -1079,10 +1089,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         {usableLinkList.map((l, idx) => (
                           <TVFocusablePressable
                             key={`link-${idx}`}
-                            scaleFocused={1.06}
+                            scaleFocused={1.04}
                             focusedBorderColor="#8A5CF6"
                             borderRadius={8}
-                            {...(idx === 0 && navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+                            {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                             onPress={() => {
                               setActiveLinkIndex(idx);
                               if (savedDiscoverState) savedDiscoverState.activeLinkIndex = idx;
@@ -1124,10 +1134,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             return (
                               <TVFocusablePressable
                                 key={`ep-${ep.link || idx}`}
-                                scaleFocused={1.04}
+                                scaleFocused={1.02}
                                 focusedBorderColor="#8A5CF6"
                                 borderRadius={8}
-                                {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+                                {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                                 onPress={() =>
                                   handleResolveAndPlay(
                                     ep.link,
@@ -1187,10 +1197,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         {usableDirectItems.map((d, idx) => (
                           <TVFocusablePressable
                             key={`direct-${idx}`}
-                            scaleFocused={1.06}
+                            scaleFocused={1.04}
                             focusedBorderColor="#FFFFFF"
                             borderRadius={8}
-                            {...(idx === 0 && navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+                            {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                             onPress={() =>
                               handleResolveAndPlay(
                                 d.link,
@@ -1223,10 +1233,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     </View>
                   ) : (
                     <TVFocusablePressable
-                      scaleFocused={1.05}
+                      scaleFocused={1.04}
                       focusedBorderColor="#FFFFFF"
                       borderRadius={10}
-                      {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+                      {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                       onPress={() =>
                         activeSourcePost &&
                         handleResolveAndPlay(
@@ -1272,12 +1282,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.catalogsScroll}
+            scrollEventThrottle={16}
           >
             <TVFocusablePressable
-              scaleFocused={1.05}
+              scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
-              {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+              {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
               onPress={() => setManageVisible(true)}
               style={styles.manageBtn}
             >
@@ -1295,7 +1306,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 <TVFocusablePressable
                   key={catalogKey(cat)}
                   hasTVPreferredFocus={idx === 0}
-                  scaleFocused={1.05}
+                  scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={20}
                   onFocus={() => {
@@ -1336,7 +1347,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             </Text>
             <TVFocusablePressable
               hasTVPreferredFocus
-              scaleFocused={1.05}
+              scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={10}
               onPress={() => setManageVisible(true)}
@@ -1350,15 +1361,20 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             <ActivityIndicator size="large" color="#8A5CF6" />
           </View>
         ) : (
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.gridContainer}>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.gridContainer}
+            scrollEventThrottle={16}
+            removeClippedSubviews={true}
+          >
             {items.map((item, index) => (
               <TVFocusablePressable
                 key={`${item.id}-${index}`}
-                scaleFocused={1.08}
+                scaleFocused={1.05}
                 focusedBorderColor="#FFFFFF"
                 borderRadius={8}
-                {...(index % GRID_COLUMNS === 0 && navFocusTarget
-                  ? { nextFocusLeft: navFocusTarget }
+                {...(index % GRID_COLUMNS === 0 && discoverFocusTarget
+                  ? { nextFocusLeft: discoverFocusTarget }
                   : {})}
                 onFocus={() => selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint)}
                 onPress={() => handleItemPress(item)}
@@ -1381,7 +1397,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
             {hasMore && items.length > 0 && (
               <TVFocusablePressable
-                scaleFocused={1.05}
+                scaleFocused={1.04}
                 focusedBorderColor="#FFFFFF"
                 borderRadius={8}
                 onPress={handleLoadMore}
@@ -1419,7 +1435,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             <View style={styles.modalActions}>
               <TVFocusablePressable
                 hasTVPreferredFocus
-                scaleFocused={1.05}
+                scaleFocused={1.04}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
                 onPress={() => setCatalogToHide(null)}
@@ -1428,7 +1444,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
               </TVFocusablePressable>
               <TVFocusablePressable
-                scaleFocused={1.05}
+                scaleFocused={1.04}
                 focusedBorderColor="#FFFFFF"
                 borderRadius={8}
                 onPress={() => {
@@ -1472,7 +1488,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 returnKeyType="done"
               />
               <TVFocusablePressable
-                scaleFocused={1.05}
+                scaleFocused={1.04}
                 focusedBorderColor="#FFFFFF"
                 borderRadius={8}
                 onPress={handleAddManifest}
@@ -1501,7 +1517,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       </Text>
                     </View>
                     <TVFocusablePressable
-                      scaleFocused={1.1}
+                      scaleFocused={1.06}
                       focusedBorderColor="#EF4444"
                       borderRadius={8}
                       onPress={() => handleRemoveManifest(m.url)}
@@ -1527,7 +1543,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           </Text>
                         </View>
                         <TVFocusablePressable
-                          scaleFocused={1.1}
+                          scaleFocused={1.06}
                           focusedBorderColor="#8A5CF6"
                           borderRadius={8}
                           onPress={() => handleRestoreCatalog(h.key)}
@@ -1543,7 +1559,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             </ScrollView>
 
             <TVFocusablePressable
-              scaleFocused={1.05}
+              scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={8}
               onPress={() => setManageVisible(false)}
@@ -1889,7 +1905,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   qualityChip: {
-    backgroundColor: '#16161E',
+    backgroundColor: 'rgba(22, 22, 30, 0.4)',
     paddingHorizontal: 14,
     paddingVertical: 9,
     borderRadius: 8,
@@ -1897,7 +1913,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   qualityChipActive: {
-    backgroundColor: 'rgba(138, 92, 246, 0.2)',
+    backgroundColor: 'rgba(138, 92, 246, 0.25)',
     borderColor: '#8A5CF6',
   },
   chipInner: {
@@ -1915,7 +1931,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   episodeCard: {
-    backgroundColor: '#16161E',
+    backgroundColor: 'rgba(22, 22, 30, 0.4)',
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1.5,
