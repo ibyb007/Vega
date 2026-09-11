@@ -97,30 +97,8 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
   useImperativeHandle(ref, () => ({
     focusRoute: (route: TVRoute) => {
       const idx = NAV_ITEMS.findIndex((it) => it.id === route);
-      if (idx === -1) return;
-
-      // This is called synchronously from the hardware Back key handler
-      // (BackHandler's 'hardwareBackPress' listener) -- i.e. from *inside*
-      // Android's dispatch of that very key event. Calling node.focus()
-      // in that same tick is unreliable on Android TV/Fire TV: the native
-      // focus engine is still mid-key-event and can silently ignore an
-      // imperative focus request that arrives before it's settled. A
-      // single requestAnimationFrame defer isn't always enough either --
-      // how long the native side takes to settle varies by device. So
-      // this fires the same focus() call at several increasing delays
-      // (next frame, then a couple of short timeouts). Calling .focus()
-      // again on a node that's already focused is a harmless no-op, so
-      // stacking attempts like this is safe -- it just means whichever
-      // attempt is the first to land after native focus has settled is
-      // the one that actually takes effect.
-      const attemptFocus = () => {
-        (itemRefs.current[idx] as any)?.focus?.();
-      };
-
-      attemptFocus();
-      requestAnimationFrame(attemptFocus);
-      setTimeout(attemptFocus, 50);
-      setTimeout(attemptFocus, 150);
+      const node = itemRefs.current[idx] as any;
+      node?.focus?.();
     },
   }));
 
