@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, memo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Image,
   ActivityIndicator,
   ToastAndroid,
+  BackHandler,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
@@ -101,15 +102,85 @@ const AddSourceModal = memo(({
   );
 });
 
+interface ProviderRowItemProps {
+  item: ProviderExtension;
+  isInstalled: boolean;
+  isInstalling: boolean;
+  navFocusTarget?: number | null;
+  onToggleInstall: (item: ProviderExtension) => void;
+}
+
+// Memoized item row preventing unnecessary re-renders of 50+ items during scroll/state changes
+const ProviderRowItem = memo(({
+  item,
+  isInstalled,
+  isInstalling,
+  navFocusTarget,
+  onToggleInstall,
+}: ProviderRowItemProps) => {
+  return (
+    <View style={styles.providerRow}>
+      <View style={styles.providerLeft}>
+        <View style={styles.providerIconWrapper}>
+          {item.icon ? (
+            <Image source={{ uri: item.icon }} style={styles.providerLogo} resizeMode="contain" />
+          ) : (
+            <MaterialCommunityIcons name="cloud-outline" size={28} color="#8A5CF6" />
+          )}
+        </View>
+        <View style={styles.providerInfo}>
+          <View style={styles.titleLine}>
+            <Text style={styles.providerName}>{item.display_name}</Text>
+            <Text style={styles.versionBadge}>v{item.version}</Text>
+          </View>
+          <Text style={styles.providerMeta}>
+            {item.type || 'Global'} • {item.source?.author || 'Vega-Org'}
+          </Text>
+        </View>
+      </View>
+
+      <TVFocusablePressable
+        scaleFocused={1.04}
+        focusedBorderColor="#FFFFFF"
+        borderRadius={10}
+        {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+        onPress={() => onToggleInstall(item)}
+        style={[
+          styles.actionBtn,
+          isInstalled ? styles.uninstallBtn : styles.installBtn,
+        ]}
+      >
+        {() => (
+          <View style={styles.btnContent}>
+            {isInstalling ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <>
+                <MaterialCommunityIcons
+                  name={isInstalled ? 'trash-can-outline' : 'download'}
+                  size={18}
+                  color="#FFFFFF"
+                />
+                <Text style={styles.actionBtnText}>
+                  {isInstalled ? 'Uninstall' : 'Install'}
+                </Text>
+              </>
+            )}
+          </View>
+        )}
+      </TVFocusablePressable>
+    </View>
+  );
+});
+
 interface ExtensionsScreenProps {
   navigation?: any;
   route?: any;
-  // Native node handle of the Addons nav rail button -- wired as
-  // `nextFocusLeft` on the leftmost focusable of each row.
   navFocusTarget?: number | null;
+  onFocusNav?: () => void;
 }
 
-export default function Extensions({ navigation, navFocusTarget }: ExtensionsScreenProps) {
+export default function Extensions({ navigation, navFocusTarget, onFocusNav }: ExtensionsScreenProps) {
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
@@ -123,10 +194,29 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isAddingSource, setIsAddingSource] = useState(false);
 
-  // Re-reads installed providers from real persisted storage (MMKV via
-  // extensionStorage) so the list is always in sync with what
-  // ProviderManager can actually find, instead of drifting from an
-  // in-memory-only list.
+  // Hardware Back: Focus the Addons button on the navigation rail
+  useEffect(() => {
+    const handleBack = () => {
+      if (isModalVisible) {
+        setIsModalVisible(false);
+        return true;
+      }
+      if (onFocusNav) {
+        onFocusNav();
+        return true;
+      }
+      if (navFocusTarget) {
+        const { TextInput: RNTextInput } = require('react-native');
+        RNTextInput.State?.focusTextInput?.(navFocusTarget);
+        return true;
+      }
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
+    return () => sub.remove();
+  }, [isModalVisible, onFocusNav, navFocusTarget]);
+
   const syncInstalledProviders = useCallback(() => {
     setInstalledProviders(extensionStorage.getInstalledProviders());
   }, [setInstalledProviders]);
@@ -155,8 +245,6 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
     if (source) {
       loadManifest(source);
     }
-    // Storage is the source of truth for installed providers on mount too,
-    // in case something changed while this screen was unmounted.
     syncInstalledProviders();
   }, [loadManifest, syncInstalledProviders]);
 
@@ -187,8 +275,8 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
     }
   };
 
-  const handleToggleInstall = async (item: ProviderExtension) => {
-    const isInstalled = installedProviders.some((p) => p.value === item.value);
+  const handleToggleInstall = useCallback(async (item: ProviderExtension) => {
+    const isInstalled = useContentStore.getState().installedProviders.some((p) => p.value === item.value);
     setInstallingMap((prev) => ({ ...prev, [item.value]: true }));
 
     try {
@@ -196,7 +284,8 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
         extensionManager.uninstallProvider(item.value, item.source?.author);
         syncInstalledProviders();
 
-        if (activeProvider?.value === item.value) {
+        const currentActive = useContentStore.getState().provider;
+        if (currentActive?.value === item.value) {
           const remaining = extensionStorage.getInstalledProviders();
           setProvider(remaining[0] ?? {
             value: '',
@@ -213,14 +302,11 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
         }
         ToastAndroid.show(`Uninstalled ${item.display_name}`, ToastAndroid.SHORT);
       } else {
-        // installProvider downloads catalog/posts/meta/stream modules from
-        // `${source.url}/dist/${value}/*.js` and writes the install record
-        // to extensionStorage — this is what ProviderManager reads from
-        // when it later builds the home screen catalog.
         await extensionManager.installProvider({ ...item, source: item.source || activeSource! });
         syncInstalledProviders();
 
-        if (!activeProvider?.value) {
+        const currentActive = useContentStore.getState().provider;
+        if (!currentActive?.value) {
           setProvider(item);
         }
 
@@ -231,7 +317,13 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
     } finally {
       setInstallingMap((prev) => ({ ...prev, [item.value]: false }));
     }
-  };
+  }, [activeSource, setProvider, syncInstalledProviders]);
+
+  // Fast O(1) set lookup rather than repeated O(N) array scans over 50+ items
+  const installedSet = useMemo(
+    () => new Set(installedProviders.map((p) => p.value)),
+    [installedProviders],
+  );
 
   return (
     <View style={styles.container}>
@@ -266,6 +358,7 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
+            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
             onPress={() => setIsModalVisible(true)}
             style={[styles.addSourceBtn, { backgroundColor: primaryColor }]}
           >
@@ -305,65 +398,19 @@ export default function Extensions({ navigation, navFocusTarget }: ExtensionsScr
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContainer}
+          removeClippedSubviews={true}
+          scrollEventThrottle={16}
         >
-          {availableProviders.map((item, index) => {
-            const isInstalled = installedProviders.some((p) => p.value === item.value);
-            const isInstalling = Boolean(installingMap[item.value]);
-
-            return (
-              <View key={`${item.value}-${index}`} style={styles.providerRow}>
-                <View style={styles.providerLeft}>
-                  <View style={styles.providerIconWrapper}>
-                    {item.icon ? (
-                      <Image source={{ uri: item.icon }} style={styles.providerLogo} resizeMode="contain" />
-                    ) : (
-                      <MaterialCommunityIcons name="cloud-outline" size={28} color="#8A5CF6" />
-                    )}
-                  </View>
-                  <View style={styles.providerInfo}>
-                    <View style={styles.titleLine}>
-                      <Text style={styles.providerName}>{item.display_name}</Text>
-                      <Text style={styles.versionBadge}>v{item.version}</Text>
-                    </View>
-                    <Text style={styles.providerMeta}>
-                      {item.type || 'Global'} • {item.source?.author || 'Vega-Org'}
-                    </Text>
-                  </View>
-                </View>
-
-                <TVFocusablePressable
-                  scaleFocused={1.05}
-                  focusedBorderColor="#FFFFFF"
-                  borderRadius={10}
-                  {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
-                  onPress={() => handleToggleInstall(item)}
-                  style={[
-                    styles.actionBtn,
-                    isInstalled ? styles.uninstallBtn : styles.installBtn,
-                  ]}
-                >
-                  {() => (
-                    <View style={styles.btnContent}>
-                      {isInstalling ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
-                      ) : (
-                        <>
-                          <MaterialCommunityIcons
-                            name={isInstalled ? 'trash-can-outline' : 'download'}
-                            size={18}
-                            color="#FFFFFF"
-                          />
-                          <Text style={styles.actionBtnText}>
-                            {isInstalled ? 'Uninstall' : 'Install'}
-                          </Text>
-                        </>
-                      )}
-                    </View>
-                  )}
-                </TVFocusablePressable>
-              </View>
-            );
-          })}
+          {availableProviders.map((item) => (
+            <ProviderRowItem
+              key={item.value}
+              item={item}
+              isInstalled={installedSet.has(item.value)}
+              isInstalling={Boolean(installingMap[item.value])}
+              navFocusTarget={navFocusTarget}
+              onToggleInstall={handleToggleInstall}
+            />
+          ))}
         </ScrollView>
       )}
 
@@ -409,6 +456,7 @@ const styles = StyleSheet.create({
   iconBtn: {
     backgroundColor: '#16161E',
     padding: 12,
+    borderRadius: 10,
   },
   addSourceBtn: {
     paddingVertical: 12,
