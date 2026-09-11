@@ -16,18 +16,12 @@ import { useEpisodes, useStreamData } from '../../lib/hooks/useEpisodes';
 import { settingsStorage } from '../../lib/storage';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
-import {
-  fetchMatchingCinemetaMeta,
-  CinemetaMeta,
-} from '../../lib/services/cinemetaService';
 
 export interface TVInfoItem {
   link: string;
   provider?: string;
   image?: string;
   title: string;
-  imdbId?: string;
-  type?: string;
 }
 
 export interface TVStreamSelection {
@@ -81,34 +75,11 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
 
   const [seasonIndex, setSeasonIndex] = useState(0);
   const [resolvingLink, setResolvingLink] = useState<string | null>(null);
-  const [cinemetaMeta, setCinemetaMeta] = useState<CinemetaMeta | null>(null);
 
   const excludedQualities = useMemo(
     () => settingsStorage.getExcludedQualities() || [],
     [],
   );
-
-  // Fetch Cinemeta metadata for landscape logo and fanart
-  useEffect(() => {
-    let isMounted = true;
-    const targetImdbId = info?.imdbId || item.imdbId;
-    const targetType = info?.type || item.type || 'movie';
-    const targetTitle = info?.title || item.title;
-
-    if (targetImdbId || targetTitle) {
-      fetchMatchingCinemetaMeta(targetImdbId, targetType, targetTitle)
-        .then((meta) => {
-          if (isMounted && meta) {
-            setCinemetaMeta(meta);
-          }
-        })
-        .catch(() => {});
-    }
-
-    return () => {
-      isMounted = false;
-    };
-  }, [info?.imdbId, info?.type, info?.title, item.imdbId, item.type, item.title]);
 
   // Filter season/quality tabs against excluded settings
   const rawLinkList = info?.linkList || [];
@@ -151,6 +122,7 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
   const getSavedResumePosition = useCallback(
     (canonicalLink: string): number => {
       try {
+        // 1. Check continueWatchingStore
         const cwState: any = useContinueWatchingStore.getState?.();
         const cwItems = cwState?.items || [];
         const cwMatch = cwItems.find(
@@ -162,6 +134,7 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
         );
         if (cwMatch?.position) return cwMatch.position;
 
+        // 2. Check contentStore watchHistory
         const csState: any = useContentStore.getState?.();
         const history = csState?.watchHistory || [];
         const hMatch = history.find(
@@ -192,6 +165,7 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
           return;
         }
 
+        // Filter out qualities excluded in Settings
         const filteredStreams = streams.filter(
           (s) =>
             !isQualityExcluded(s?.quality, excludedQualities) &&
@@ -206,6 +180,7 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
           headers: s.headers,
         }));
 
+        // Canonical ID: Use episode link for series, item link for movies
         const canonicalKey = episodeKey || link || item.link;
         const resumePos = getSavedResumePosition(canonicalKey);
 
@@ -240,8 +215,7 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
 
   const title = info?.title || item.title;
   const posterImage = info?.poster || info?.image || item.image;
-  const backgroundImage = cinemetaMeta?.background || info?.image || posterImage;
-  const logoUrl = cinemetaMeta?.logo || (info as any)?.logo;
+  const backgroundImage = info?.image || posterImage;
 
   if (isLoading && !info) {
     return (
@@ -289,6 +263,7 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
     );
   }
 
+  // Filter directLinks (movies/direct streams) against excluded qualities
   const rawDirectItems = activeLink?.directLinks || [];
   const directItems = rawDirectItems.filter(
     (d: any) =>
@@ -334,45 +309,20 @@ export const TVInfoScreen: React.FC<TVInfoScreenProps> = ({
         </TVFocusablePressable>
 
         <View style={styles.heroContent}>
-          {/* Stremio Poster Logo with Fallback to Text Title */}
-          {logoUrl ? (
-            <Image
-              source={{ uri: logoUrl }}
-              style={styles.titleLogo}
-              resizeMode="contain"
-            />
-          ) : (
-            <Text numberOfLines={2} style={styles.title}>
-              {title}
-            </Text>
-          )}
-
-          <View style={styles.badgesRow}>
-            {info?.rating || cinemetaMeta?.imdbRating ? (
-              <View style={styles.ratingBadge}>
-                <Text style={styles.ratingText}>
-                  ★ {info?.rating || cinemetaMeta?.imdbRating}
+          <Text numberOfLines={2} style={styles.title}>
+            {title}
+          </Text>
+          {!!info?.tags?.length && (
+            <View style={styles.tagsRow}>
+              {info.tags.slice(0, 4).map((t, i) => (
+                <Text key={`${t}-${i}`} style={styles.tag}>
+                  {t}
                 </Text>
-              </View>
-            ) : null}
-            {info?.year || cinemetaMeta?.year ? (
-              <Text style={styles.metaBadge}>
-                {info?.year || cinemetaMeta?.year}
-              </Text>
-            ) : null}
-            {!!info?.tags?.length && (
-              <View style={styles.tagsRow}>
-                {info.tags.slice(0, 4).map((t, i) => (
-                  <Text key={`${t}-${i}`} style={styles.tag}>
-                    {t}
-                  </Text>
-                ))}
-              </View>
-            )}
-          </View>
-
+              ))}
+            </View>
+          )}
           <Text numberOfLines={3} style={styles.synopsis}>
-            {info?.synopsis || cinemetaMeta?.description || 'No synopsis available'}
+            {info?.synopsis || 'No synopsis available'}
           </Text>
         </View>
       </View>
@@ -602,12 +552,6 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     maxWidth: 780,
   },
-  titleLogo: {
-    width: 280,
-    height: 80,
-    marginBottom: 8,
-    alignSelf: 'flex-start',
-  },
   title: {
     color: '#FFFFFF',
     fontSize: 32,
@@ -615,36 +559,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     marginBottom: 8,
   },
-  badgesRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 10,
-  },
-  ratingBadge: {
-    backgroundColor: '#F59E0B',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  ratingText: {
-    color: '#000000',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  metaBadge: {
-    color: '#D1D5DB',
-    fontSize: 12,
-    fontWeight: '600',
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
   tagsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+    marginBottom: 10,
   },
   tag: {
     color: '#D1D5DB',
