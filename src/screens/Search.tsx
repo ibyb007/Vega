@@ -7,7 +7,6 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
-  BackHandler,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
@@ -28,14 +27,14 @@ interface SearchResultGroup {
 interface TVSearchProps {
   onSelectItem: (item: Post) => void;
   navFocusTarget?: number | null;
-  onFocusNav?: () => void;
+  onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
 }
 
 const getProviderDisplayName = (p: Provider | any): string => {
   return p?.display_name || p?.displayTitle || p?.name || p?.value || 'Provider';
 };
 
-export default function TVSearch({ onSelectItem, navFocusTarget, onFocusNav }: TVSearchProps) {
+export default function TVSearch({ onSelectItem, navFocusTarget, onRegisterBackHandler }: TVSearchProps) {
   const [query, setQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<SearchResultGroup[]>([]);
@@ -54,24 +53,12 @@ export default function TVSearch({ onSelectItem, navFocusTarget, onFocusNav }: T
   const searchInputRef = useRef<TextInput>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Hardware Back: Focus the Search button on the navigation rail
+  // No local back-stack on this screen — Back is handled centrally by
+  // App.tsx, which moves focus to the Search button on the rail.
   useEffect(() => {
-    const handleBack = () => {
-      if (onFocusNav) {
-        onFocusNav();
-        return true;
-      }
-      if (navFocusTarget) {
-        const { TextInput: RNTextInput } = require('react-native');
-        RNTextInput.State?.focusTextInput?.(navFocusTarget);
-        return true;
-      }
-      return false;
-    };
-
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
-    return () => sub.remove();
-  }, [onFocusNav, navFocusTarget]);
+    onRegisterBackHandler?.(() => false);
+    return () => onRegisterBackHandler?.(null);
+  }, [onRegisterBackHandler]);
 
   const getPersistedProviders = useCallback((): Provider[] => {
     try {
