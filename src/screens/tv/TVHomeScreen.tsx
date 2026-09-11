@@ -10,7 +10,6 @@ import {
   ToastAndroid,
   useWindowDimensions,
   findNodeHandle,
-  BackHandler,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -69,7 +68,7 @@ interface TVHomeScreenProps {
   onResumeItem?: (item: any) => void;
   onNavigateRoute?: (route: TVRoute) => void;
   navFocusTarget?: number | null;
-  onFocusHomeNav?: () => void;
+  onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
 }
@@ -79,7 +78,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onResumeItem,
   onNavigateRoute,
   navFocusTarget,
-  onFocusHomeNav,
+  onRegisterBackHandler,
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
 }) => {
@@ -119,7 +118,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     enabled: hasSecondaryProvider,
   });
 
-  // Handle hardware remote BACK press: Always redirects focus to the Home button on the navigation rail
+  // Hardware remote BACK: only handle this screen's own back-stack (the
+  // remove/confirm dialog). If there's nothing local to close, report
+  // "not handled" so App.tsx moves focus to the Home button on the rail.
   useEffect(() => {
     const handleBack = () => {
       if (itemToDelete) {
@@ -127,21 +128,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         setConfirmingRemoveAll(false);
         return true;
       }
-      if (onFocusHomeNav) {
-        onFocusHomeNav();
-        return true;
-      }
-      if (navFocusTarget) {
-        const { TextInput } = require('react-native');
-        TextInput.State?.focusTextInput?.(navFocusTarget);
-        return true;
-      }
       return false;
     };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
-    return () => sub.remove();
-  }, [itemToDelete, onFocusHomeNav, navFocusTarget]);
+    onRegisterBackHandler?.(handleBack);
+    return () => onRegisterBackHandler?.(null);
+  }, [itemToDelete, onRegisterBackHandler]);
 
   const watchHistory = useMemo(() => {
     return [...continueWatchingItems]
