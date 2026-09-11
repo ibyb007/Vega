@@ -524,39 +524,13 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   }
 
   if (isLoading && displayRows.length === 0) {
-    // Unlike the `!hasProviders` branch above (whose fallback ships its own
-    // hasTVPreferredFocus button), this loading state has never had any
-    // focusable descendant -- it's just a spinner and some text. That's a
-    // real problem whenever this screen is reached by *selecting something
-    // focused elsewhere* (e.g. picking a provider on TVSourceSelectScreen,
-    // which navigates straight here on press): the node that was focused a
-    // moment ago gets unmounted along with that screen, and with nothing
-    // focusable anywhere in this one to catch the handoff, Android's focus
-    // engine falls back to whatever else is on screen -- which is always
-    // the nav rail, since it's the one thing that never unmounts. The rail
-    // then expands (any focus lands there) over what looks like a blank
-    // screen, even though the user never touched the rail.
-    // Wrapping the spinner in a focusable (but inert -- no onPress, no
-    // visible focus styling) claims focus deterministically for the
-    // duration of the load, exactly the way TVNoProviderFallback's button
-    // already does for its own branch. Once real content arrives, the
-    // first poster's own hasTVPreferredFocus takes over from here.
     return (
-      <TVFocusablePressable
-        hasTVPreferredFocus={true}
-        scaleFocused={1}
-        focusedBorderColor="transparent"
-        style={styles.centerLoading}
-      >
-        {() => (
-          <>
-            <ActivityIndicator size="large" color="#8A5CF6" />
-            <Text style={styles.loadingText}>
-              Loading {provider?.displayTitle || provider?.name} catalog...
-            </Text>
-          </>
-        )}
-      </TVFocusablePressable>
+      <View style={styles.centerLoading}>
+        <ActivityIndicator size="large" color="#8A5CF6" />
+        <Text style={styles.loadingText}>
+          Loading {provider?.displayTitle || provider?.name} catalog...
+        </Text>
+      </View>
     );
   }
 
