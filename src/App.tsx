@@ -140,36 +140,15 @@ export default function App() {
         return true;
       }
 
-      // If nav rail itself is focused/expanded, Back exits the app
+      // If nav rail itself holds focus, Back exits the app
       if (navExpandedRef.current) {
         BackHandler.exitApp();
         return true;
       }
 
-      // Settings screen: Back returns focus to Settings button on the rail
-      if (currentRoute === 'settings') {
-        navRailRef.current?.focusRoute('settings');
-        return true;
-      }
-
-      // Discover screen: Back returns focus to Discover button on the rail
-      if (currentRoute === 'discover') {
-        navRailRef.current?.focusRoute('discover');
-        return true;
-      }
-
-      // Home screen: Back returns focus to Home button on the rail
-      if (currentRoute === 'home') {
-        navRailRef.current?.focusRoute('home');
-        return true;
-      }
-
-      if (routeHistory.length > 1) {
-        const nextHistory = [...routeHistory];
-        nextHistory.pop();
-        const prevRoute = nextHistory[nextHistory.length - 1] || 'home';
-        setRouteHistory(nextHistory);
-        setCurrentRoute(prevRoute);
+      // If in any top-level tab content, Back moves focus to that tab's rail button
+      if (navRailRef.current) {
+        navRailRef.current.focusRoute(currentRoute);
         return true;
       }
 
@@ -178,7 +157,7 @@ export default function App() {
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => sub.remove();
-  }, [activeStream, selectedItem, routeHistory, currentRoute]);
+  }, [activeStream, selectedItem, currentRoute]);
 
   return (
     <SafeAreaProvider style={styles.rootContainer}>
@@ -264,6 +243,7 @@ export default function App() {
                         <TVSearch
                           onSelectItem={(item) => setSelectedItem(item)}
                           navFocusTarget={navHandles.search ?? null}
+                          onFocusNav={() => navRailRef.current?.focusRoute('search')}
                         />
                       )}
 
