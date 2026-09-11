@@ -7,6 +7,7 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
@@ -26,18 +27,15 @@ interface SearchResultGroup {
 
 interface TVSearchProps {
   onSelectItem: (item: Post) => void;
-  // Native node handle of the Search nav rail button -- wired as
-  // `nextFocusLeft` on the leftmost focusable of each row so pressing Left
-  // from the edge of this screen's content returns to the rail instead of
-  // falling back to Android's default nearest-neighbor search.
   navFocusTarget?: number | null;
+  onFocusNav?: () => void;
 }
 
 const getProviderDisplayName = (p: Provider | any): string => {
   return p?.display_name || p?.displayTitle || p?.name || p?.value || 'Provider';
 };
 
-export default function TVSearch({ onSelectItem, navFocusTarget }: TVSearchProps) {
+export default function TVSearch({ onSelectItem, navFocusTarget, onFocusNav }: TVSearchProps) {
   const [query, setQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<SearchResultGroup[]>([]);
@@ -55,6 +53,25 @@ export default function TVSearch({ onSelectItem, navFocusTarget }: TVSearchProps
 
   const searchInputRef = useRef<TextInput>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Hardware Back: Focus the Search button on the navigation rail
+  useEffect(() => {
+    const handleBack = () => {
+      if (onFocusNav) {
+        onFocusNav();
+        return true;
+      }
+      if (navFocusTarget) {
+        const { TextInput: RNTextInput } = require('react-native');
+        RNTextInput.State?.focusTextInput?.(navFocusTarget);
+        return true;
+      }
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
+    return () => sub.remove();
+  }, [onFocusNav, navFocusTarget]);
 
   const getPersistedProviders = useCallback((): Provider[] => {
     try {
@@ -262,34 +279,45 @@ export default function TVSearch({ onSelectItem, navFocusTarget }: TVSearchProps
         </View>
 
         <View style={styles.header}>
-          <View style={styles.searchBarWrapper}>
-            <MaterialCommunityIcons name="magnify" size={24} color="#8A5CF6" />
-            <TextInput
-              ref={searchInputRef}
-              value={query}
-              onChangeText={setQuery}
-              onSubmitEditing={() => executeMultiProviderSearch(query)}
-              placeholder="Search movies, TV shows, anime across all addons..."
-              placeholderTextColor="#6B7280"
-              style={styles.input}
-              returnKeyType="search"
-            />
-            {query.length > 0 && (
-              <TVFocusablePressable
-                scaleFocused={1.1}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={() => {
-                  setQuery('');
-                  setResults([]);
-                  setActiveHero(null);
-                }}
-                style={styles.clearBtn}
-              >
-                {() => <MaterialCommunityIcons name="close" size={20} color="#9CA3AF" />}
-              </TVFocusablePressable>
+          <TVFocusablePressable
+            scaleFocused={1.02}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={14}
+            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+            onPress={() => searchInputRef.current?.focus()}
+            style={styles.searchBarWrapper}
+          >
+            {() => (
+              <View style={styles.searchBarInner}>
+                <MaterialCommunityIcons name="magnify" size={24} color="#8A5CF6" />
+                <TextInput
+                  ref={searchInputRef}
+                  value={query}
+                  onChangeText={setQuery}
+                  onSubmitEditing={() => executeMultiProviderSearch(query)}
+                  placeholder="Search movies, TV shows, anime across all addons..."
+                  placeholderTextColor="#6B7280"
+                  style={styles.input}
+                  returnKeyType="search"
+                />
+                {query.length > 0 && (
+                  <TVFocusablePressable
+                    scaleFocused={1.1}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={8}
+                    onPress={() => {
+                      setQuery('');
+                      setResults([]);
+                      setActiveHero(null);
+                    }}
+                    style={styles.clearBtn}
+                  >
+                    {() => <MaterialCommunityIcons name="close" size={20} color="#9CA3AF" />}
+                  </TVFocusablePressable>
+                )}
+              </View>
             )}
-          </View>
+          </TVFocusablePressable>
 
           <TVFocusablePressable
             hasTVPreferredFocus={true}
@@ -541,13 +569,16 @@ const styles = StyleSheet.create({
   },
   searchBarWrapper: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: '#16161E',
     borderRadius: 14,
-    paddingHorizontal: 16,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  searchBarInner: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
   },
   input: {
     flex: 1,
