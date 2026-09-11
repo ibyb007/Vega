@@ -220,7 +220,19 @@ export default function App() {
         return true;
       }
 
-      return false;
+      // We're on Home's content (not the rail -- that's caught above) with
+      // no history left to pop: this is Home's own dead end, same idea as
+      // the Settings case above. Previously this fell through to `return
+      // false`, handing the key to Android with no JS-side opinion on
+      // where focus should go -- which is exactly the gap that let focus
+      // land on a random rail button (whichever the default focus search
+      // happened to pick) instead of Home's own button. Deterministically
+      // focusing Home here, the same way Settings does, closes that gap:
+      // pressing Back while browsing Home's rows (whether right after
+      // returning from playback/details or from ordinary browsing) now
+      // always lands on the Home icon.
+      navRailRef.current?.focusRoute('home');
+      return true;
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
