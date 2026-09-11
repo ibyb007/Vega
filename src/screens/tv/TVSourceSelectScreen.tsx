@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, Dimensions } from 'react-native';
+import React, { useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, Image, Dimensions, BackHandler } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
@@ -10,10 +10,7 @@ const CONTAINER_PADDING_LEFT = 96;
 const CONTAINER_PADDING_RIGHT = 48;
 const CARD_WIDTH = 250;
 const GRID_GAP = 20;
-// Cards wrap based on available width (flexWrap), so -- unlike a fixed
-// numColumns grid -- the number of cards per row has to be derived the same
-// way the layout itself derives it, or "leftmost column" detection below
-// would drift out of sync with what's actually on screen.
+
 const GRID_COLUMNS = Math.max(
   1,
   Math.floor(
@@ -25,21 +22,40 @@ const GRID_COLUMNS = Math.max(
 interface TVSourceSelectScreenProps {
   onNavigateHome?: () => void;
   onNavigateAddons?: () => void;
-  // Native node handle of the Sources nav rail button -- wired as
-  // `nextFocusLeft` on the leftmost focusable of each row.
   navFocusTarget?: number | null;
+  onFocusNav?: () => void;
 }
 
 export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   onNavigateHome,
   onNavigateAddons,
   navFocusTarget,
+  onFocusNav,
 }) => {
   const provider = useContentStore((state) => state.provider);
   const setProvider = useContentStore((state) => state.setProvider);
   const secondaryProvider = useContentStore((state) => state.secondaryProvider);
   const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders) || [];
+
+  // Hardware Back: Focus the Sources button on the navigation rail
+  useEffect(() => {
+    const handleBack = () => {
+      if (onFocusNav) {
+        onFocusNav();
+        return true;
+      }
+      if (navFocusTarget) {
+        const { TextInput } = require('react-native');
+        TextInput.State?.focusTextInput?.(navFocusTarget);
+        return true;
+      }
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
+    return () => sub.remove();
+  }, [onFocusNav, navFocusTarget]);
 
   const handleSelectProvider = (item: Provider) => {
     setProvider(item);
@@ -48,15 +64,11 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
     }
   };
 
-  // A source can only fill the bottom rows if it isn't already filling the
-  // top ones.
   const secondaryChoices = installedProviders.filter(
     (item: any) => item.value !== provider?.value,
   );
 
   const handleSelectSecondaryProvider = (item: Provider) => {
-    // Tapping the already-active 2nd source again turns it off, same as
-    // toggling a chip.
     setSecondaryProvider(secondaryProvider?.value === item.value ? null : item);
   };
 
@@ -123,76 +135,76 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
           contentContainerStyle={styles.pageScrollContent}
         >
           <View style={styles.gridContainer}>
-          {installedProviders.map((item: any, index: number) => {
-            const isSelected = provider?.value === item.value;
-            const displayName = item.displayTitle || item.name || item.value || `Source ${index + 1}`;
-            const version = item.version ? `v${item.version}` : 'v1.0.0';
-            const author = item.author || 'global';
+            {installedProviders.map((item: any, index: number) => {
+              const isSelected = provider?.value === item.value;
+              const displayName = item.displayTitle || item.name || item.value || `Source ${index + 1}`;
+              const version = item.version ? `v${item.version}` : 'v1.0.0';
+              const author = item.author || 'global';
 
-            return (
-              <TVFocusablePressable
-                key={`${item.value}-${index}`}
-                hasTVPreferredFocus={isSelected || index === 0}
-                scaleFocused={1.04}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={16}
-                {...(index % GRID_COLUMNS === 0 && navFocusTarget
-                  ? { nextFocusLeft: navFocusTarget }
-                  : {})}
-                onPress={() => handleSelectProvider(item)}
-                style={[
-                  styles.providerCard,
-                  isSelected && styles.providerCardSelected,
-                ]}
-              >
-                {({ focused }) => (
-                  <View style={styles.cardContent}>
-                    <View style={styles.cardTop}>
-                      <View
-                        style={[
-                          styles.iconCircle,
-                          isSelected && styles.iconCircleSelected,
-                        ]}
-                      >
-                        {item.icon ? (
-                          <Image
-                            source={{ uri: item.icon }}
-                            style={styles.providerIconImage}
-                            resizeMode="contain"
-                          />
-                        ) : (
-                          <MaterialCommunityIcons
-                            name="server"
-                            size={28}
-                            color={isSelected || focused ? '#8A5CF6' : '#9CA3AF'}
-                          />
-                        )}
-                      </View>
-                      {isSelected ? (
-                        <View style={styles.activePill}>
-                          <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" />
-                          <Text style={styles.activePillText}>Active</Text>
+              return (
+                <TVFocusablePressable
+                  key={`${item.value}-${index}`}
+                  hasTVPreferredFocus={isSelected || index === 0}
+                  scaleFocused={1.04}
+                  focusedBorderColor="#8A5CF6"
+                  borderRadius={16}
+                  {...(index % GRID_COLUMNS === 0 && navFocusTarget
+                    ? { nextFocusLeft: navFocusTarget }
+                    : {})}
+                  onPress={() => handleSelectProvider(item)}
+                  style={[
+                    styles.providerCard,
+                    isSelected && styles.providerCardSelected,
+                  ]}
+                >
+                  {({ focused }) => (
+                    <View style={styles.cardContent}>
+                      <View style={styles.cardTop}>
+                        <View
+                          style={[
+                            styles.iconCircle,
+                            isSelected && styles.iconCircleSelected,
+                          ]}
+                        >
+                          {item.icon ? (
+                            <Image
+                              source={{ uri: item.icon }}
+                              style={styles.providerIconImage}
+                              resizeMode="contain"
+                            />
+                          ) : (
+                            <MaterialCommunityIcons
+                              name="server"
+                              size={28}
+                              color={isSelected || focused ? '#8A5CF6' : '#9CA3AF'}
+                            />
+                          )}
                         </View>
-                      ) : null}
-                    </View>
+                        {isSelected ? (
+                          <View style={styles.activePill}>
+                            <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" />
+                            <Text style={styles.activePillText}>Active</Text>
+                          </View>
+                        ) : null}
+                      </View>
 
-                    <View style={styles.cardMiddle}>
-                      <Text numberOfLines={1} style={styles.providerTitle}>
-                        {displayName}
-                      </Text>
-                      <Text numberOfLines={1} style={styles.providerDetails}>
-                        {version} • {author}
+                      <View style={styles.cardMiddle}>
+                        <Text numberOfLines={1} style={styles.providerTitle}>
+                          {displayName}
+                        </Text>
+                        <Text numberOfLines={1} style={styles.providerDetails}>
+                          {version} • {author}
+                        </Text>
+                      </View>
+
+                      <Text style={[styles.actionHint, isSelected && styles.actionHintActive]}>
+                        {isSelected ? 'Loaded on Home Screen' : 'Press OK to Switch'}
                       </Text>
                     </View>
-
-                    <Text style={[styles.actionHint, isSelected && styles.actionHintActive]}>
-                      {isSelected ? 'Loaded on Home Screen' : 'Press OK to Switch'}
-                    </Text>
-                  </View>
-                )}
-              </TVFocusablePressable>
-            );
-          })}
+                  )}
+                </TVFocusablePressable>
+              );
+            })}
           </View>
 
           {/* Secondary Source (fills the bottom rows on Home) */}
@@ -462,3 +474,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+
+export default TVSourceSelectScreen;
