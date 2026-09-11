@@ -9,7 +9,6 @@ import {
   Image,
   ActivityIndicator,
   ToastAndroid,
-  BackHandler,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
@@ -177,10 +176,10 @@ interface ExtensionsScreenProps {
   navigation?: any;
   route?: any;
   navFocusTarget?: number | null;
-  onFocusNav?: () => void;
+  onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
 }
 
-export default function Extensions({ navigation, navFocusTarget, onFocusNav }: ExtensionsScreenProps) {
+export default function Extensions({ navigation, navFocusTarget, onRegisterBackHandler }: ExtensionsScreenProps) {
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
@@ -194,28 +193,21 @@ export default function Extensions({ navigation, navFocusTarget, onFocusNav }: E
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isAddingSource, setIsAddingSource] = useState(false);
 
-  // Hardware Back: Focus the Addons button on the navigation rail
+  // Hardware Back: only handle this screen's own back-stack (the add-source
+  // modal). If it's not open, report "not handled" so App.tsx moves focus to
+  // the Addons button on the rail.
   useEffect(() => {
     const handleBack = () => {
       if (isModalVisible) {
         setIsModalVisible(false);
         return true;
       }
-      if (onFocusNav) {
-        onFocusNav();
-        return true;
-      }
-      if (navFocusTarget) {
-        const { TextInput: RNTextInput } = require('react-native');
-        RNTextInput.State?.focusTextInput?.(navFocusTarget);
-        return true;
-      }
       return false;
     };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
-    return () => sub.remove();
-  }, [isModalVisible, onFocusNav, navFocusTarget]);
+    onRegisterBackHandler?.(handleBack);
+    return () => onRegisterBackHandler?.(null);
+  }, [isModalVisible, onRegisterBackHandler]);
 
   const syncInstalledProviders = useCallback(() => {
     setInstalledProviders(extensionStorage.getInstalledProviders());
