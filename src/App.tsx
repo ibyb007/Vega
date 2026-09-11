@@ -53,6 +53,7 @@ export default function App() {
   const [navHandles, setNavHandles] = useState<Partial<Record<TVRoute, number>>>({});
   const navRailRef = useRef<TVNavigationRailHandle | null>(null);
   const navExpandedRef = useRef(false);
+  const screenBackHandlersRef = useRef<Partial<Record<TVRoute, () => boolean>>>({});
   const currentProvider = useContentStore((state) => state.provider);
 
   const handleRegisterRouteHandle = useCallback((route: TVRoute, handle: number | null) => {
@@ -102,6 +103,21 @@ export default function App() {
     entryReturnTriggerRef.current[route]?.();
   }, []);
 
+  // Each screen registers its own "did I consume this back press?" handler here
+  // instead of subscribing its own BackHandler listener. This guarantees a single
+  // hardwareBackPress subscription for the whole app, so the exit-on-expanded-navbar
+  // check below always runs first, deterministically, regardless of mount order.
+  const handleRegisterBackHandler = useCallback(
+    (route: TVRoute) => (handler: (() => boolean) | null) => {
+      if (handler) {
+        screenBackHandlersRef.current[route] = handler;
+      } else {
+        delete screenBackHandlersRef.current[route];
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     BootSplash.hide({ fade: false }).catch(() => {});
     syncDohSettings().catch((e) => console.warn('[DoH] Startup error:', e));
@@ -140,13 +156,22 @@ export default function App() {
         return true;
       }
 
-      // If nav rail itself holds focus, Back exits the app
+      // If nav rail itself holds focus, Back always exits the app — this runs
+      // before any screen-level handling so an expanded/focused rail can't be
+      // intercepted by whatever screen happens to still be mounted underneath it.
       if (navExpandedRef.current) {
         BackHandler.exitApp();
         return true;
       }
 
-      // If in any top-level tab content, Back moves focus to that tab's rail button
+      // Let the current screen handle its own internal back-stack (closing a
+      // modal, dropping from a results view to a browse view, etc.) first.
+      const screenHandler = screenBackHandlersRef.current[currentRoute];
+      if (screenHandler && screenHandler()) {
+        return true;
+      }
+
+      // Otherwise, Back moves focus to that tab's rail button.
       if (navRailRef.current) {
         navRailRef.current.focusRoute(currentRoute);
         return true;
@@ -233,7 +258,7 @@ export default function App() {
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
                           navFocusTarget={navHandles.home ?? null}
-                          onFocusHomeNav={() => navRailRef.current?.focusRoute('home')}
+                          onRegisterBackHandler={handleRegisterBackHandler('home')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('home')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('home')}
                         />
@@ -243,7 +268,7 @@ export default function App() {
                         <TVSearch
                           onSelectItem={(item) => setSelectedItem(item)}
                           navFocusTarget={navHandles.search ?? null}
-                          onFocusNav={() => navRailRef.current?.focusRoute('search')}
+                          onRegisterBackHandler={handleRegisterBackHandler('search')}
                         />
                       )}
 
@@ -260,7 +285,7 @@ export default function App() {
                             })
                           }
                           discoverFocusTarget={navHandles.discover ?? null}
-                          onFocusDiscoverNav={() => navRailRef.current?.focusRoute('discover')}
+                          onRegisterBackHandler={handleRegisterBackHandler('discover')}
                         />
                       )}
 
@@ -280,6 +305,7 @@ export default function App() {
                           } as any}
                           route={{} as any}
                           navFocusTarget={navHandles.addons ?? null}
+                          onRegisterBackHandler={handleRegisterBackHandler('addons')}
                         />
                       )}
 
