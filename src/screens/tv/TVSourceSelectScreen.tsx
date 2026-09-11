@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, Dimensions, BackHandler } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet, ScrollView, Image, Dimensions } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
@@ -23,14 +23,12 @@ interface TVSourceSelectScreenProps {
   onNavigateHome?: () => void;
   onNavigateAddons?: () => void;
   navFocusTarget?: number | null;
-  onFocusNav?: () => void;
 }
 
 export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   onNavigateHome,
   onNavigateAddons,
   navFocusTarget,
-  onFocusNav,
 }) => {
   const provider = useContentStore((state) => state.provider);
   const setProvider = useContentStore((state) => state.setProvider);
@@ -38,24 +36,8 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders) || [];
 
-  // Hardware Back: Focus the Sources button on the navigation rail
-  useEffect(() => {
-    const handleBack = () => {
-      if (onFocusNav) {
-        onFocusNav();
-        return true;
-      }
-      if (navFocusTarget) {
-        const { TextInput } = require('react-native');
-        TextInput.State?.focusTextInput?.(navFocusTarget);
-        return true;
-      }
-      return false;
-    };
-
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
-    return () => sub.remove();
-  }, [onFocusNav, navFocusTarget]);
+  // No local back-stack on this screen — Back is handled centrally by
+  // App.tsx, which moves focus to the Sources button on the rail.
 
   const handleSelectProvider = (item: Provider) => {
     setProvider(item);
