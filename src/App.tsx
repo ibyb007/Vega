@@ -33,8 +33,6 @@ export interface ActiveStreamPayload {
   title: string;
   posterUrl?: string;
   itemLink?: string;
-  // Stable per-episode identity ("S{season}E{episode}") -- see
-  // ContinueWatchingItem.episodeKey. Undefined for movies.
   episodeId?: string;
   providerValue?: string;
   episodes?: any[];
@@ -52,23 +50,8 @@ export default function App() {
   const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
-  // Native node handle for each nav rail button, keyed by route. Populated
-  // once by TVNavigationRail on mount (see onRegisterRouteHandle below).
-  // Screens use `navHandles[currentRoute]` as the `nextFocusLeft` target for
-  // their leftmost/first-column focusables, so pressing Left from the edge
-  // of *any* tab's content returns to *that* tab's own rail button instead
-  // of always jumping to Home.
   const [navHandles, setNavHandles] = useState<Partial<Record<TVRoute, number>>>({});
-  // Lets the hardware Back handler below imperatively move focus onto a
-  // rail button (see TVNavigationRailHandle) -- used so Back on the
-  // Settings screen always lands focus on the Settings icon instead of
-  // navigating away.
   const navRailRef = useRef<TVNavigationRailHandle | null>(null);
-  // Tracks whether the nav rail itself currently holds focus (any button),
-  // as opposed to focus being inside a tab's content. Read synchronously
-  // in the hardware Back handler below, so it's a ref rather than state --
-  // state would mean re-subscribing the BackHandler listener on every
-  // expand/collapse.
   const navExpandedRef = useRef(false);
   const currentProvider = useContentStore((state) => state.provider);
 
@@ -85,12 +68,6 @@ export default function App() {
     });
   }, []);
 
-  // Per-route getter for "the native node handle of whichever card this
-  // screen's content last had focus on" -- only TVHomeScreen registers one
-  // today. Kept as a ref rather than state: it's read once, synchronously,
-  // right when a rail button receives focus, and re-registering on every
-  // poster focus change (which is how often the answer can change) would
-  // be wasteful churn for something nothing ever renders off of.
   const entryHandleGetterRef = useRef<Partial<Record<TVRoute, () => number | null>>>({});
 
   const handleRegisterEntryHandleGetter = useCallback(
@@ -108,17 +85,6 @@ export default function App() {
     return entryHandleGetterRef.current[route]?.() ?? null;
   }, []);
 
-  // Per-route "hand focus back to whichever card was last focused" trigger,
-  // for when OK is pressed on a rail button whose tab is already active (a
-  // no-op route change, so there's nothing for a directional focus search
-  // to hook into the way there is for Right). Kept as a ref for the same
-  // reason as entryHandleGetterRef above. Only TVHomeScreen registers one
-  // today -- it force-remounts just the one poster that needs its
-  // `hasTVPreferredFocus` to re-fire. An earlier version of this remounted
-  // the *entire* screen instead (reusing the same mount-time focus logic,
-  // just at a much bigger scope), which technically worked but was
-  // visibly a full refresh and made the rail feel laggy right after, since
-  // it re-ran every hook on the screen including the catalog data fetch.
   const entryReturnTriggerRef = useRef<Partial<Record<TVRoute, () => void>>>({});
 
   const handleRegisterReturnFocusTrigger = useCallback(
@@ -152,16 +118,6 @@ export default function App() {
     };
   }, []);
 
-  // Continue Watching poster presses now route through `TVDetailsScreen`
-  // (via `onSelectItem` + a `resumeHint` on the item, wired in
-  // `TVHomeScreen`) instead of being resolved and launched directly from
-  // here. Providers' resolved stream links -- and sometimes even their
-  // info-page links -- are often short-lived, so silently replaying an old
-  // one straight from continue-watching tended to fail with a "provider
-  // link invalid" error; going through the normal picker re-fetches
-  // everything fresh, and `TVDetailsScreen` handles seeking back to the
-  // saved position when the episode picked matches the one being resumed.
-
   const navigateTo = useCallback((route: TVRoute) => {
     setSelectedItem(null);
     setCurrentRoute((prev) => {
@@ -184,24 +140,27 @@ export default function App() {
         return true;
       }
 
-      // If focus is currently on the nav rail itself (expanded, any button
-      // focused), Back always exits the app -- irrespective of which
-      // button is selected -- rather than being interpreted as
-      // in-app navigation. This takes priority over the Settings-specific
-      // rule below, which only applies when focus is in that tab's
-      // content, not on the rail button itself.
+      // If nav rail itself is focused/expanded, Back exits the app
       if (navExpandedRef.current) {
         BackHandler.exitApp();
         return true;
       }
 
-      // Settings is a dead end for hardware Back: rather than popping to
-      // whatever route preceded it (which felt inconsistent depending on
-      // how the user got there), Back always just returns focus to the
-      // Settings rail button, the same way it would if the user had
-      // arrowed all the way to the left edge of the screen.
+      // Settings screen: Back returns focus to Settings button on the rail
       if (currentRoute === 'settings') {
         navRailRef.current?.focusRoute('settings');
+        return true;
+      }
+
+      // Discover screen: Back returns focus to Discover button on the rail
+      if (currentRoute === 'discover') {
+        navRailRef.current?.focusRoute('discover');
+        return true;
+      }
+
+      // Home screen: Back returns focus to Home button on the rail
+      if (currentRoute === 'home') {
+        navRailRef.current?.focusRoute('home');
         return true;
       }
 
@@ -211,12 +170,6 @@ export default function App() {
         const prevRoute = nextHistory[nextHistory.length - 1] || 'home';
         setRouteHistory(nextHistory);
         setCurrentRoute(prevRoute);
-        return true;
-      }
-
-      if (currentRoute !== 'home') {
-        setCurrentRoute('home');
-        setRouteHistory(['home']);
         return true;
       }
 
@@ -234,7 +187,6 @@ export default function App() {
           <GlobalErrorBoundary>
             <QueryClientProvider client={queryClient}>
               <View style={styles.rootContainer}>
-                {/* Translucent status bar eliminates the 1.6cm top black letterbox bar */}
                 <StatusBar
                   hidden={true}
                   translucent={true}
@@ -302,6 +254,7 @@ export default function App() {
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
                           navFocusTarget={navHandles.home ?? null}
+                          onFocusHomeNav={() => navRailRef.current?.focusRoute('home')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('home')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('home')}
                         />
@@ -326,7 +279,8 @@ export default function App() {
                               ...extraMeta,
                             })
                           }
-                          navFocusTarget={navHandles.discover ?? null}
+                          discoverFocusTarget={navHandles.discover ?? null}
+                          onFocusDiscoverNav={() => navRailRef.current?.focusRoute('discover')}
                         />
                       )}
 
@@ -396,6 +350,5 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     backgroundColor: '#0A0A0E',
-    // Removed paddingLeft: 68 so TVHomeScreen can manage its padding cleanly
   },
 });
