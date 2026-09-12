@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Image,
   ActivityIndicator,
   ToastAndroid,
+  findNodeHandle,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
@@ -192,6 +193,8 @@ export default function Extensions({ navigation, navFocusTarget, onRegisterBackH
   const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isAddingSource, setIsAddingSource] = useState(false);
+  const refreshBtnRef = useRef<View | null>(null);
+  const [refreshBtnHandle, setRefreshBtnHandle] = useState<number | null>(null);
 
   // Hardware Back: only handle this screen's own back-stack (the add-source
   // modal). If it's not open, report "not handled" so App.tsx moves focus to
@@ -208,6 +211,14 @@ export default function Extensions({ navigation, navFocusTarget, onRegisterBackH
     onRegisterBackHandler?.(handleBack);
     return () => onRegisterBackHandler?.(null);
   }, [isModalVisible, onRegisterBackHandler]);
+
+  // Resolve the Refresh button's native handle once, so Add Source's
+  // nextFocusLeft can target it directly (Add Source -> Refresh -> rail),
+  // instead of both buttons jumping straight past each other to the rail.
+  useEffect(() => {
+    const handle = refreshBtnRef.current ? findNodeHandle(refreshBtnRef.current) : null;
+    setRefreshBtnHandle(handle);
+  }, []);
 
   const syncInstalledProviders = useCallback(() => {
     setInstalledProviders(extensionStorage.getInstalledProviders());
@@ -329,6 +340,9 @@ export default function Extensions({ navigation, navFocusTarget, onRegisterBackH
 
         <View style={styles.headerActions}>
           <TVFocusablePressable
+            ref={(el) => {
+              refreshBtnRef.current = el;
+            }}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={10}
@@ -350,7 +364,11 @@ export default function Extensions({ navigation, navFocusTarget, onRegisterBackH
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
-            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
+            {...(refreshBtnHandle
+              ? { nextFocusLeft: refreshBtnHandle }
+              : navFocusTarget
+              ? { nextFocusLeft: navFocusTarget }
+              : {})}
             onPress={() => setIsModalVisible(true)}
             style={[styles.addSourceBtn, { backgroundColor: primaryColor }]}
           >
