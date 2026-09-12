@@ -79,18 +79,10 @@ class NavIconView(context: Context) : View(context) {
     }
 
     private fun drawHome(c: Canvas, w: Float, h: Float) {
-        val path = Path()
-        path.moveTo(w * 0.5f, h * 0.08f)
-        path.lineTo(w * 0.92f, h * 0.42f)
-        path.lineTo(w * 0.5f, h * 0.08f)
-        path.moveTo(w * 0.08f, h * 0.42f)
-        path.lineTo(w * 0.5f, h * 0.08f)
-        c.drawPath(path, strokePaint)
-
         val roof = Path()
-        roof.moveTo(w * 0.16f, h * 0.46f)
-        roof.lineTo(w * 0.5f, h * 0.14f)
-        roof.lineTo(w * 0.84f, h * 0.46f)
+        roof.moveTo(w * 0.12f, h * 0.48f)
+        roof.lineTo(w * 0.5f, h * 0.1f)
+        roof.lineTo(w * 0.88f, h * 0.48f)
         c.drawPath(roof, strokePaint)
 
         val body = RectF(w * 0.22f, h * 0.46f, w * 0.78f, h * 0.9f)
@@ -163,17 +155,35 @@ class NavIconView(context: Context) : View(context) {
         c.restore()
     }
 
+    // Deliberately ignores the strokePaint/fillPaint colors set via
+    // setColor() -- the brand mark is always a solid accent-purple badge
+    // with a white play glyph, regardless of what color a focus/active
+    // state would otherwise tint a nav icon.
     private fun drawLogo(c: Canvas, w: Float, h: Float) {
         val cx = w * 0.5f
         val cy = h * 0.5f
-        val r = w * 0.46f
-        c.drawCircle(cx, cy, r, strokePaint)
+        val r = w * 0.5f
+
+        val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = LOGO_ACCENT
+        }
+        c.drawCircle(cx, cy, r, badgePaint)
+
+        val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.WHITE
+        }
         val play = Path()
-        val pr = r * 0.5f
-        play.moveTo(cx - pr * 0.5f, cy - pr * 0.8f)
-        play.lineTo(cx - pr * 0.5f, cy + pr * 0.8f)
-        play.lineTo(cx + pr * 0.9f, cy)
+        val pr = r * 0.52f
+        play.moveTo(cx - pr * 0.55f, cy - pr * 0.85f)
+        play.lineTo(cx - pr * 0.55f, cy + pr * 0.85f)
+        play.lineTo(cx + pr * 0.95f, cy)
         play.close()
-        c.drawPath(play, fillPaint)
+        c.drawPath(play, glyphPaint)
+    }
+
+    companion object {
+        private val LOGO_ACCENT = Color.parseColor("#8A5CF6")
     }
 }
