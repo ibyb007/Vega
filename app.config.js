@@ -14,6 +14,11 @@ module.exports = () => {
     './plugins/with-android-tv.js',
     './plugins/withKeyEvent.js',
     './plugins/with-custom-native-modules.js',
+    // Must come after withKeyEvent.js (merges into the dispatchKeyEvent
+    // override it installs) and after with-custom-native-modules.js (relies
+    // on that plugin's generic native-src/*.kt -> android/ copy step to have
+    // placed NavRailManager/TVNavRailView/NavIconView/NavRailModule.kt).
+    './plugins/with-native-nav-rail.js',
     './plugins/android-native-config.js',
     './plugins/with-saf-copy-module.js',
     './plugins/with-uri-permission-module.js',
