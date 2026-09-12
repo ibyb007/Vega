@@ -106,7 +106,6 @@ interface ProviderRowItemProps {
   item: ProviderExtension;
   isInstalled: boolean;
   isInstalling: boolean;
-  navFocusTarget?: number | null;
   onToggleInstall: (item: ProviderExtension) => void;
 }
 
@@ -115,7 +114,6 @@ const ProviderRowItem = memo(({
   item,
   isInstalled,
   isInstalling,
-  navFocusTarget,
   onToggleInstall,
 }: ProviderRowItemProps) => {
   return (
@@ -143,7 +141,6 @@ const ProviderRowItem = memo(({
         scaleFocused={1.04}
         focusedBorderColor="#FFFFFF"
         borderRadius={10}
-        {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
         onPress={() => onToggleInstall(item)}
         style={[
           styles.actionBtn,
@@ -176,11 +173,10 @@ const ProviderRowItem = memo(({
 interface ExtensionsScreenProps {
   navigation?: any;
   route?: any;
-  navFocusTarget?: number | null;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
 }
 
-export default function Extensions({ navigation, navFocusTarget, onRegisterBackHandler }: ExtensionsScreenProps) {
+export default function Extensions({ navigation, onRegisterBackHandler }: ExtensionsScreenProps) {
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
@@ -346,7 +342,6 @@ export default function Extensions({ navigation, navFocusTarget, onRegisterBackH
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={10}
-            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
             onPress={() => loadManifest(activeSource, true)}
             style={styles.iconBtn}
           >
@@ -364,11 +359,7 @@ export default function Extensions({ navigation, navFocusTarget, onRegisterBackH
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
-            {...(refreshBtnHandle
-              ? { nextFocusLeft: refreshBtnHandle }
-              : navFocusTarget
-              ? { nextFocusLeft: navFocusTarget }
-              : {})}
+            {...(refreshBtnHandle ? { nextFocusLeft: refreshBtnHandle } : {})}
             onPress={() => setIsModalVisible(true)}
             style={[styles.addSourceBtn, { backgroundColor: primaryColor }]}
           >
@@ -417,7 +408,6 @@ export default function Extensions({ navigation, navFocusTarget, onRegisterBackH
               item={item}
               isInstalled={installedSet.has(item.value)}
               isInstalling={Boolean(installingMap[item.value])}
-              navFocusTarget={navFocusTarget}
               onToggleInstall={handleToggleInstall}
             />
           ))}
