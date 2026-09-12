@@ -22,13 +22,11 @@ const GRID_COLUMNS = Math.max(
 interface TVSourceSelectScreenProps {
   onNavigateHome?: () => void;
   onNavigateAddons?: () => void;
-  navFocusTarget?: number | null;
 }
 
 export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   onNavigateHome,
   onNavigateAddons,
-  navFocusTarget,
 }) => {
   const provider = useContentStore((state) => state.provider);
   const setProvider = useContentStore((state) => state.setProvider);
@@ -70,7 +68,6 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
-            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
             onPress={onNavigateAddons}
             style={styles.manageBtn}
           >
@@ -98,7 +95,6 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               scaleFocused={1.06}
               focusedBorderColor="#FFFFFF"
               borderRadius={12}
-              {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
               onPress={onNavigateAddons}
               style={styles.installNowBtn}
             >
@@ -130,9 +126,6 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={16}
-                  {...(index % GRID_COLUMNS === 0 && navFocusTarget
-                    ? { nextFocusLeft: navFocusTarget }
-                    : {})}
                   onPress={() => handleSelectProvider(item)}
                   style={[
                     styles.providerCard,
@@ -203,7 +196,6 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                   scaleFocused={1.05}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={16}
-                  {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                   onPress={() => setSecondaryProvider(null)}
                   style={[
                     styles.secondaryChip,
