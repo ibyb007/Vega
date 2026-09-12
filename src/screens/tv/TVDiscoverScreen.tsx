@@ -175,6 +175,19 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const [screenMode, setScreenMode] = useState<'browse' | 'results'>(
     savedDiscoverState?.screenMode || 'browse',
   );
+  // When entering results mode, the "Back to Discover/Sources" button below
+  // claims focus via hasTVPreferredFocus on mount. If the poster grid it
+  // replaced happened to be spatially near the nav rail, Android's OS-level
+  // focus-loss fallback can transiently grab the rail in the split second
+  // between the old grid unmounting and this button attaching. This nonce
+  // forces one corrective re-mount of that button shortly after, so any
+  // stray focus grab snaps back here almost immediately instead of lingering.
+  const [resultsFocusNonce, setResultsFocusNonce] = useState(0);
+  useEffect(() => {
+    if (screenMode !== 'results') return;
+    const t = setTimeout(() => setResultsFocusNonce((n) => n + 1), 16);
+    return () => clearTimeout(t);
+  }, [screenMode]);
   const [resultsTarget, setResultsTarget] = useState<(CatalogMediaItem & { logo?: string }) | null>(
     savedDiscoverState?.resultsTarget ?? null,
   );
@@ -965,6 +978,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           removeClippedSubviews={true}
         >
           <TVFocusablePressable
+            key={`results-back-btn-${resultsFocusNonce}`}
             hasTVPreferredFocus={true}
             scaleFocused={1.04}
             focusedBorderColor="#8A5CF6"
