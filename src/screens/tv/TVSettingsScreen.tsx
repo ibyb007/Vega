@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Switch, ToastAndroid } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { settingsStorage } from '../../lib/storage';
 import { syncDohSettings, DOH_PROVIDERS } from '../../lib/services/dohService';
 import useThemeStore from '../../lib/zustand/themeStore';
@@ -45,6 +46,16 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
   const [activeDohProvider, setActiveDohProvider] = useState('cloudflare');
   const [selectedPlayer, setSelectedPlayer] = useState<'exo' | 'vlc' | 'system'>('exo');
   const [excludedQualities, setExcludedQualities] = useState<string[]>([]);
+
+  // Every row on this screen is a full-width, single-column item, so every
+  // one of them sits at the screen's left edge -- unlike Home/Discover's
+  // horizontal rows, there's no single "first card" here. Registering on
+  // mount (rather than only on focus) is enough since this screen's rows
+  // are static, not virtualized, so there's no reordering/remounting to
+  // race against.
+  const registerLeft = (el: View | null) => {
+    if (el) registerRailLeftEdge('settings', el);
+  };
 
   useEffect(() => {
     try {
@@ -130,6 +141,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
         return (
           <TVFocusablePressable
             key={p.id}
+            ref={registerLeft}
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
@@ -167,6 +179,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
       <Text style={styles.sectionHeader}>Network & DNS over HTTPS (DoH)</Text>
       
       <TVFocusablePressable
+        ref={registerLeft}
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
@@ -202,6 +215,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
             return (
               <TVFocusablePressable
                 key={item.id}
+                ref={registerLeft}
                 scaleFocused={1.02}
                 focusedBorderColor={primaryColor}
                 borderRadius={10}
@@ -241,6 +255,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
         return (
           <TVFocusablePressable
             key={p.id}
+            ref={registerLeft}
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
@@ -275,11 +290,12 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
           Hide lower resolutions from stream results
         </Text>
         <View style={styles.chipRow}>
-          {['360p', '480p', '720p'].map((quality) => {
+          {['360p', '480p', '720p'].map((quality, qIndex) => {
             const selected = excludedQualities.includes(quality);
             return (
               <TVFocusablePressable
                 key={quality}
+                ref={qIndex === 0 ? registerLeft : undefined}
                 scaleFocused={1.05}
                 focusedBorderColor={primaryColor}
                 borderRadius={16}
@@ -317,7 +333,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0A0E',
   },
   content: {
-    paddingLeft: 88,
+    // Trimmed from 88 -- see TVDiscoverScreen.tsx's CONTAINER_PADDING_LEFT
+    // comment for why.
+    paddingLeft: 20,
     paddingRight: 48,
     paddingTop: 32,
     paddingBottom: 60,
