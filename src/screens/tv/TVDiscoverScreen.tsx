@@ -10,6 +10,7 @@ import {
   TextInput,
   Dimensions,
   ToastAndroid,
+  findNodeHandle,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
@@ -18,6 +19,7 @@ import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
+import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { providerManager } from '../../lib/services/ProviderManager';
@@ -221,6 +223,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const focusedPillRef = useRef<DiscoverCatalog | null>(null);
   const selectHoldStreakRef = useRef(0);
   const lastSelectKeyTimeRef = useRef(0);
+
+  // Left-edge refs for the native nav rail's Left-key/entry-focus link (see
+  // registerRailLeftEdge.ts). manageBtnRef is the catalogsBar's fixed first
+  // pill; gridItemRefs holds every card so the current row's leftmost one
+  // (index % GRID_COLUMNS === 0) can be looked up on focus; sourcesRowFirstRef
+  // is the "results" mode's matched-addon-sources row first card.
+  const manageBtnRef = useRef<View | null>(null);
+  const gridItemRefs = useRef<Record<number, View | null>>({});
+  const sourcesRowFirstRef = useRef<View | null>(null);
   const [catalogToHide, setCatalogToHide] = useState<DiscoverCatalog | null>(null);
 
   const excludedQualities = useMemo(
@@ -1039,12 +1050,19 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               >
                 {matchedAddonPosts.map((post, idx) => {
                   const isSelected = activeSourcePost?.link === post.link;
+                  const isFirst = idx === 0;
                   return (
                     <TVFocusablePressable
                       key={`${post.link}-${idx}`}
+                      ref={isFirst ? sourcesRowFirstRef : undefined}
                       scaleFocused={1.04}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
+                      onFocus={
+                        isFirst
+                          ? () => registerRailLeftEdge('discover', sourcesRowFirstRef.current)
+                          : undefined
+                      }
                       onPress={() => handleSelectSourceCard(post)}
                       style={[styles.sourceCard, isSelected && styles.sourceCardActive]}
                     >
@@ -1297,9 +1315,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             scrollEventThrottle={16}
           >
             <TVFocusablePressable
+              ref={manageBtnRef}
               scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
+              // Fixed first item in this horizontal chip bar -- the true
+              // left edge of the whole screen -- so Left from here should
+              // always reach the Discover rail button.
+              onFocus={() => registerRailLeftEdge('discover', manageBtnRef.current)}
               onPress={() => setManageVisible(true)}
               style={styles.manageBtn}
             >
@@ -1378,30 +1401,42 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             scrollEventThrottle={16}
             removeClippedSubviews={true}
           >
-            {items.map((item, index) => (
-              <TVFocusablePressable
-                key={`${item.id}-${index}`}
-                scaleFocused={1.05}
-                focusedBorderColor="#FFFFFF"
-                borderRadius={8}
-                onFocus={() => selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint)}
-                onPress={() => handleItemPress(item)}
-                style={[styles.card, { width: CARD_WIDTH, height: CARD_HEIGHT }]}
-              >
-                {({ focused }) => (
-                  <View style={styles.cardInner}>
-                    <Image
-                      source={{
-                        uri: item.poster || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                      }}
-                      style={styles.cardPoster}
-                      resizeMode="cover"
-                    />
-                    {focused && <View style={styles.focusBorderGlow} />}
-                  </View>
-                )}
-              </TVFocusablePressable>
-            ))}
+            {items.map((item, index) => {
+              const isLeftEdge = index % GRID_COLUMNS === 0;
+              return (
+                <TVFocusablePressable
+                  key={`${item.id}-${index}`}
+                  ref={isLeftEdge ? (el) => { gridItemRefs.current[index] = el; } : undefined}
+                  scaleFocused={1.05}
+                  focusedBorderColor="#FFFFFF"
+                  borderRadius={8}
+                  onFocus={() => {
+                    selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint);
+                    // First column of this grid row -- Left from here should
+                    // always reach the Discover rail button, whichever row
+                    // the user has scrolled to.
+                    if (isLeftEdge) {
+                      registerRailLeftEdge('discover', gridItemRefs.current[index]);
+                    }
+                  }}
+                  onPress={() => handleItemPress(item)}
+                  style={[styles.card, { width: CARD_WIDTH, height: CARD_HEIGHT }]}
+                >
+                  {({ focused }) => (
+                    <View style={styles.cardInner}>
+                      <Image
+                        source={{
+                          uri: item.poster || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+                        }}
+                        style={styles.cardPoster}
+                        resizeMode="cover"
+                      />
+                      {focused && <View style={styles.focusBorderGlow} />}
+                    </View>
+                  )}
+                </TVFocusablePressable>
+              );
+            })}
 
             {hasMore && items.length > 0 && (
               <TVFocusablePressable
