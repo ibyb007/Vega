@@ -55,11 +55,19 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
   const focusDepthRef = useRef(0);
   const itemRefs = useRef<(View | null)[]>([]);
 
+  // Programmatic focus request for a rail button (used by App.tsx's Back
+  // handling). Plain react-native does not actually wire up ref.focus() for
+  // arbitrary Views on Android -- it's only implemented for TextInput -- so
+  // calling node.focus() here is a silent no-op. The reliable way to force
+  // real Android TV focus onto an already-mounted item is the same trick
+  // already used elsewhere in this app (e.g. TVHomeScreen's `refocusRef`):
+  // bump a nonce that changes that item's `key`, forcing React to remount it
+  // with `hasTVPreferredFocus`, which Android *does* honor on mount.
+  const [focusRequest, setFocusRequest] = useState<{ route: TVRoute; nonce: number } | null>(null);
+
   useImperativeHandle(ref, () => ({
     focusRoute: (route: TVRoute) => {
-      const idx = NAV_ITEMS.findIndex((it) => it.id === route);
-      const node = itemRefs.current[idx] as any;
-      node?.focus?.();
+      setFocusRequest((prev) => ({ route, nonce: (prev?.route === route ? prev.nonce : 0) + 1 }));
     },
   }));
 
@@ -78,6 +86,11 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
     (activeIndex !== -1 ? activeIndex : 1) * (ITEM_HEIGHT + ITEM_GAP)
   );
 
+  // Re-registers every rail item's native node handle. Re-runs whenever a
+  // focusRoute() call remounts an item (see focusRequest above), so that
+  // other screens' `nextFocusLeft={navFocusTarget}` always points at the
+  // currently-live native view instead of a stale handle from a view that's
+  // since been unmounted and replaced.
   useEffect(() => {
     NAV_ITEMS.forEach((item, index) => {
       const node = itemRefs.current[index];
@@ -86,7 +99,7 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
       if (item.id === 'home') onRegisterHomeHandle?.(handle);
       if (item.id === 'discover') onRegisterDiscoverHandle?.(handle);
     });
-  }, [onRegisterRouteHandle, onRegisterHomeHandle, onRegisterDiscoverHandle]);
+  }, [onRegisterRouteHandle, onRegisterHomeHandle, onRegisterDiscoverHandle, focusRequest]);
 
   useEffect(() => {
     const idx = NAV_ITEMS.findIndex((it) => it.id === currentRoute);
@@ -193,13 +206,15 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
 
         {NAV_ITEMS.map((item, index) => {
           const isActive = currentRoute === item.id;
+          const isPendingFocus = focusRequest?.route === item.id;
 
           return (
             <TVFocusablePressable
-              key={item.id}
+              key={isPendingFocus ? `${item.id}-focus-${focusRequest!.nonce}` : item.id}
               ref={(el) => {
                 itemRefs.current[index] = el;
               }}
+              hasTVPreferredFocus={isPendingFocus}
               scaleFocused={1}
               focusedBorderColor="transparent"
               borderRadius={10}
@@ -245,11 +260,7 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
 
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    zIndex: 9999,
+    height: '100%',
     paddingVertical: 20,
     paddingHorizontal: 8,
     borderRightWidth: 1,
