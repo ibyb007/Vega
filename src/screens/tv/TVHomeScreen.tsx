@@ -67,7 +67,6 @@ interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
   onResumeItem?: (item: any) => void;
   onNavigateRoute?: (route: TVRoute) => void;
-  navFocusTarget?: number | null;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
@@ -77,7 +76,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onSelectItem,
   onResumeItem,
   onNavigateRoute,
-  navFocusTarget,
   onRegisterBackHandler,
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
@@ -502,9 +500,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         focusedBorderColor="#FFFFFF"
                         borderRadius={8}
                         delayLongPress={350}
-                        {...(isFirstInRow && navFocusTarget
-                          ? { nextFocusLeft: navFocusTarget }
-                          : { trapFocusLeft: !isFirstInRow })}
                         onFocus={() => handleCardFocus(rowIndex, item, itemKey, isHistoryRow)}
                         onPress={() => {
                           lastFocusedKey = itemKey;
