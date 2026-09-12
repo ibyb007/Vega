@@ -34,15 +34,9 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
   },
 ];
 
-interface TVSettingsScreenProps {
-  // Native node handle of the Settings nav rail button -- wired as
-  // `nextFocusLeft` on every row here since this screen is a single
-  // full-width column, so every item is already the "leftmost" (and only)
-  // focusable in its row.
-  navFocusTarget?: number | null;
-}
+interface TVSettingsScreenProps {}
 
-export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarget }) => {
+export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const audioBoostProfile = useSettingsStore((state) => state.audioBoostProfile);
   const setAudioBoostProfile = useSettingsStore((state) => state.setAudioBoostProfile);
@@ -139,7 +133,6 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
-            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
             onPress={() => handleSelectAudioProfile(p.id)}
             style={[
               styles.optionCard,
@@ -177,7 +170,6 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
-        {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
         onPress={toggleDoH}
         style={styles.settingCard}
       >
@@ -213,7 +205,6 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
                 scaleFocused={1.02}
                 focusedBorderColor={primaryColor}
                 borderRadius={10}
-                {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                 onPress={() => handleSelectDohProvider(item.id)}
                 style={[
                   styles.optionCard,
@@ -253,7 +244,6 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
-            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
             onPress={() => handleSelectPlayer(p.id as any)}
             style={[
               styles.optionCard,
@@ -293,7 +283,6 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({ navFocusTarg
                 scaleFocused={1.05}
                 focusedBorderColor={primaryColor}
                 borderRadius={16}
-                {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
                 onPress={() => toggleExcludedQuality(quality)}
                 style={[
                   styles.qualityChip,
