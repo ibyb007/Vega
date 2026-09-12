@@ -124,9 +124,13 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         // landed one item above the actually-active route.
         menuContainer = FrameLayout(context)
         val menuLp = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
-            topMargin = dp(66)
-            leftMargin = dp(8)
-            rightMargin = dp(8)
+            // Matches the old JS layout exactly: container padding-top (20) +
+            // header height (36) + header's marginBottom (26) = 82. This was
+            // previously hardcoded to 66, which sat every row 16dp higher
+            // than the old builds.
+            topMargin = dp(82)
+            leftMargin = dp(6)
+            rightMargin = dp(6)
         }
         addView(menuContainer, menuLp)
 
@@ -166,7 +170,9 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         row.isFocusable = true
         row.isFocusableInTouchMode = false
         row.isClickable = true
-        row.setPadding(dp(12), 0, dp(12), 0)
+        // Tightened from dp(12) so the trimmed EXPANDED_WIDTH_DP still leaves
+        // enough room for the longest labels without ellipsizing.
+        row.setPadding(dp(8), 0, dp(8), 0)
 
         val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP))
         lp.topMargin = if (index == 0) 0 else dp(ITEM_GAP_DP)
@@ -184,7 +190,9 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         val label = TextView(context).apply {
             text = item.label
             setTextColor(INACTIVE_LABEL)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            // Trimmed from 14sp to help the label fit the narrower expanded
+            // width without ellipsizing.
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             visibility = View.GONE
@@ -194,12 +202,12 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
-        labelLp.marginStart = dp(14)
+        labelLp.marginStart = dp(10)
         row.addView(label, labelLp)
         row.labelView = label
 
         row.setOnFocusChangeListener { _, hasFocus ->
-            if (hasFocus) onRowFocused(item, index) else onRowBlurred()
+            if (hasFocus) onRowFocused(item, index) else onRowBlurred(item, index)
         }
         row.setOnClickListener { onRowSelected(item) }
 
@@ -220,11 +228,30 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         removeCallbacks(collapseRunnable)
         setExpanded(true)
         animateIndicatorTo(index)
+        // Old JS brightened a row whenever it was EITHER focused or active
+        // (`color: focused || isActive ? white : dim`), so browsing with the
+        // D-pad lit up whatever you were currently on, not just the active
+        // tab. This was missing here -- every row you passed over while
+        // browsing stayed at its dim, inactive color the whole time.
+        setRowHighlighted(rows[index], highlighted = true)
     }
 
-    private fun onRowBlurred() {
+    private fun onRowBlurred(item: NavItem, index: Int) {
         focusDepth = maxOf(0, focusDepth - 1)
         scheduleCollapse()
+        // Revert to bright only if this row is still the active route;
+        // otherwise back to the dim inactive color.
+        setRowHighlighted(rows[index], highlighted = item.id == activeRoute)
+    }
+
+    private fun setRowHighlighted(row: NavItemRow, highlighted: Boolean) {
+        val isActive = row.item.id == activeRoute
+        row.iconView.setColor(if (highlighted) ACTIVE_COLOR else INACTIVE_ICON)
+        row.labelView.setTextColor(if (highlighted) ACTIVE_COLOR else INACTIVE_LABEL)
+        row.labelView.setTypeface(
+            row.labelView.typeface,
+            if (isActive) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
+        )
     }
 
     private fun onRowSelected(item: NavItem) {
@@ -311,8 +338,9 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         if (idx >= 0) animateIndicatorTo(idx)
         rows.forEach { row ->
             val isActive = row.item.id == route
-            row.iconView.setColor(if (isActive) ACTIVE_COLOR else INACTIVE_ICON)
-            row.labelView.setTextColor(if (isActive) ACTIVE_COLOR else INACTIVE_LABEL)
+            val highlighted = isActive || row.isFocused
+            row.iconView.setColor(if (highlighted) ACTIVE_COLOR else INACTIVE_ICON)
+            row.labelView.setTextColor(if (highlighted) ACTIVE_COLOR else INACTIVE_LABEL)
             row.labelView.setTypeface(row.labelView.typeface, if (isActive) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
             // Only the active row's Right D-pad press should leave the rail --
             // mirrors the old JS rail only ever wiring nextFocusRight for
@@ -364,7 +392,12 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
     companion object {
         const val COLLAPSED_WIDTH_DP = 72
-        const val EXPANDED_WIDTH_DP = 220
+        // Trimmed ~40% from the original 220dp per request. At this width the
+        // longest labels ("Discover"/"Settings", 8 chars) need the tighter
+        // padding/font below to avoid ellipsizing -- this is a best estimate
+        // from the numbers, not something verified on an actual TV screen, so
+        // nudge it up a bit if either label still truncates on-device.
+        const val EXPANDED_WIDTH_DP = 132
         const val ITEM_HEIGHT_DP = 46
         const val ITEM_GAP_DP = 6
         const val COLLAPSE_DELAY_MS = 110L
