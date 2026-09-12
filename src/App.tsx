@@ -252,6 +252,18 @@ export default function App() {
                   />
                 ) : (
                   <View style={styles.layout}>
+                    <TVNavigationRail
+                      ref={navRailRef}
+                      currentRoute={currentRoute}
+                      onRouteChange={navigateTo}
+                      onRegisterRouteHandle={handleRegisterRouteHandle}
+                      onExpandedChange={(expanded) => {
+                        navExpandedRef.current = expanded;
+                      }}
+                      onRequestContentFocus={handleRequestContentFocus}
+                      onGetEntryFocusHandle={handleGetEntryFocusHandle}
+                    />
+
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
@@ -313,18 +325,6 @@ export default function App() {
                         <TVSettingsScreen navFocusTarget={navHandles.settings ?? null} />
                       )}
                     </View>
-
-                    <TVNavigationRail
-                      ref={navRailRef}
-                      currentRoute={currentRoute}
-                      onRouteChange={navigateTo}
-                      onRegisterRouteHandle={handleRegisterRouteHandle}
-                      onExpandedChange={(expanded) => {
-                        navExpandedRef.current = expanded;
-                      }}
-                      onRequestContentFocus={handleRequestContentFocus}
-                      onGetEntryFocusHandle={handleGetEntryFocusHandle}
-                    />
                   </View>
                 )}
 
@@ -348,7 +348,7 @@ const styles = StyleSheet.create({
   },
   layout: {
     flex: 1,
-    position: 'relative',
+    flexDirection: 'row',
     width: '100%',
     height: '100%',
   },
