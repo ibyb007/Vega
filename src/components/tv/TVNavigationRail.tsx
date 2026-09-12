@@ -20,6 +20,14 @@ interface TVNavigationRailProps {
   onRequestContentFocus?: (route: TVRoute) => void;
   onGetEntryFocusHandle?: (route: TVRoute) => number | null;
   onExpandedChange?: (expanded: boolean) => void;
+  // Set to true by App.tsx just before it triggers a full-screen navigation
+  // away from this rail (e.g. starting playback), in the same synchronous
+  // event handler that will unmount this whole component a moment later.
+  // Android's focus engine can transiently (and briefly) hand this rail
+  // focus during that unmount as a last-resort fallback; when this flag is
+  // set we skip the expand/highlight animation entirely so that stray grab
+  // doesn't produce a visible flash right before the screen swap completes.
+  suppressFocusEffectsRef?: React.MutableRefObject<boolean>;
 }
 
 const NAV_ITEMS: { id: TVRoute; label: string; icon: keyof typeof MaterialCommunityIcons.glyphMap }[] = [
@@ -31,7 +39,7 @@ const NAV_ITEMS: { id: TVRoute; label: string; icon: keyof typeof MaterialCommun
   { id: 'settings', label: 'Settings', icon: 'cog-outline' },
 ];
 
-const COLLAPSED_WIDTH = 72;
+export const COLLAPSED_WIDTH = 72;
 const EXPANDED_WIDTH = 220;
 const ITEM_HEIGHT = 46;
 const ITEM_GAP = 6;
@@ -49,6 +57,7 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
   onRequestContentFocus,
   onGetEntryFocusHandle,
   onExpandedChange,
+  suppressFocusEffectsRef,
 }, ref) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const blurTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -121,6 +130,12 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
   }, []);
 
   const handleItemFocus = (index: number) => {
+    if (suppressFocusEffectsRef?.current) {
+      // Mid-navigation-away (see prop doc above) -- ignore this transient
+      // focus grab entirely so it doesn't animate/expand right before the
+      // whole rail unmounts.
+      return;
+    }
     focusDepthRef.current += 1;
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
@@ -260,7 +275,11 @@ export const TVNavigationRail = forwardRef<TVNavigationRailHandle, TVNavigationR
 
 const styles = StyleSheet.create({
   container: {
-    height: '100%',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 9999,
     paddingVertical: 20,
     paddingHorizontal: 8,
     borderRightWidth: 1,
