@@ -86,7 +86,6 @@ interface TVDiscoverScreenProps {
   onSelectItem: (item: Post) => void;
   onNavigateRoute?: (route: TVRoute) => void;
   onPlayStream?: (streamUrl: string, title?: string, extraMeta?: any) => void;
-  discoverFocusTarget?: number | null;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
 }
 
@@ -150,7 +149,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onSelectItem,
   onNavigateRoute,
   onPlayStream,
-  discoverFocusTarget,
   onRegisterBackHandler,
 }) => {
   const installedProviders = useContentStore((state) => state.installedProviders);
@@ -983,7 +981,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             scaleFocused={1.04}
             focusedBorderColor="#8A5CF6"
             borderRadius={8}
-            {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
             onPress={backToBrowse}
             style={styles.backBtn}
           >
@@ -1048,7 +1045,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       scaleFocused={1.04}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
-                      {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                       onPress={() => handleSelectSourceCard(post)}
                       style={[styles.sourceCard, isSelected && styles.sourceCardActive]}
                     >
@@ -1112,7 +1108,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             scaleFocused={1.04}
                             focusedBorderColor="#8A5CF6"
                             borderRadius={8}
-                            {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                             onPress={() => {
                               setActiveLinkIndex(idx);
                               if (savedDiscoverState) savedDiscoverState.activeLinkIndex = idx;
@@ -1157,7 +1152,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                 scaleFocused={1.02}
                                 focusedBorderColor="#8A5CF6"
                                 borderRadius={8}
-                                {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                                 onPress={() =>
                                   handleResolveAndPlay(
                                     ep.link,
@@ -1220,7 +1214,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             scaleFocused={1.04}
                             focusedBorderColor="#FFFFFF"
                             borderRadius={8}
-                            {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                             onPress={() =>
                               handleResolveAndPlay(
                                 d.link,
@@ -1256,7 +1249,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       scaleFocused={1.04}
                       focusedBorderColor="#FFFFFF"
                       borderRadius={10}
-                      {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                       onPress={() =>
                         activeSourcePost &&
                         handleResolveAndPlay(
@@ -1308,7 +1300,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
-              {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
               onPress={() => setManageVisible(true)}
               style={styles.manageBtn}
             >
@@ -1329,7 +1320,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={20}
-                  {...(idx === 0 && discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
                   onFocus={() => {
                     focusedPillRef.current = cat;
                   }}
@@ -1371,7 +1361,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={10}
-              {...(discoverFocusTarget ? { nextFocusLeft: discoverFocusTarget } : {})}
               onPress={() => setManageVisible(true)}
               style={styles.emptyAddBtn}
             >
@@ -1395,9 +1384,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 scaleFocused={1.05}
                 focusedBorderColor="#FFFFFF"
                 borderRadius={8}
-                {...(index % GRID_COLUMNS === 0 && discoverFocusTarget
-                  ? { nextFocusLeft: discoverFocusTarget }
-                  : {})}
                 onFocus={() => selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint)}
                 onPress={() => handleItemPress(item)}
                 style={[styles.card, { width: CARD_WIDTH, height: CARD_HEIGHT }]}
