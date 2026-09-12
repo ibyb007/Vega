@@ -48,7 +48,10 @@ import {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-const CONTAINER_PADDING_LEFT = 88;
+// Trimmed from 88 -- the shared viewport wrapper in App.tsx already reserves
+// the rail's collapsed width (72dp), so this only needs to be a small
+// breathing margin on top of that, not a near-duplicate of the rail's width.
+const CONTAINER_PADDING_LEFT = 20;
 const CONTAINER_PADDING_RIGHT = 40;
 const GRID_GAP = 14;
 const GRID_COLUMNS = 6;
@@ -1054,7 +1057,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   return (
                     <TVFocusablePressable
                       key={`${post.link}-${idx}`}
-                      ref={isFirst ? sourcesRowFirstRef : undefined}
+                      ref={
+                        isFirst
+                          ? (el) => {
+                              sourcesRowFirstRef.current = el;
+                              // Eager, not just on focus -- see the ref-time
+                              // comment in TVHomeScreen.tsx for why relying
+                              // on onFocus alone leaves a race window.
+                              if (el) registerRailLeftEdge('discover', el);
+                            }
+                          : undefined
+                      }
                       scaleFocused={1.04}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
@@ -1315,7 +1328,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             scrollEventThrottle={16}
           >
             <TVFocusablePressable
-              ref={manageBtnRef}
+              ref={(el) => {
+                manageBtnRef.current = el;
+                // Eager registration -- this is a fixed, always-mounted
+                // button (not a virtualized list item), so it's safe and
+                // correct to register the instant it mounts rather than
+                // waiting for it to actually receive focus first.
+                if (el) registerRailLeftEdge('discover', el);
+              }}
               scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
@@ -1406,7 +1426,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               return (
                 <TVFocusablePressable
                   key={`${item.id}-${index}`}
-                  ref={isLeftEdge ? (el) => { gridItemRefs.current[index] = el; } : undefined}
+                  ref={
+                    isLeftEdge
+                      ? (el) => {
+                          gridItemRefs.current[index] = el;
+                          if (el) registerRailLeftEdge('discover', el);
+                        }
+                      : undefined
+                  }
                   scaleFocused={1.05}
                   focusedBorderColor="#FFFFFF"
                   borderRadius={8}
