@@ -26,7 +26,6 @@ interface SearchResultGroup {
 
 interface TVSearchProps {
   onSelectItem: (item: Post) => void;
-  navFocusTarget?: number | null;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
 }
 
@@ -34,7 +33,7 @@ const getProviderDisplayName = (p: Provider | any): string => {
   return p?.display_name || p?.displayTitle || p?.name || p?.value || 'Provider';
 };
 
-export default function TVSearch({ onSelectItem, navFocusTarget, onRegisterBackHandler }: TVSearchProps) {
+export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSearchProps) {
   const [query, setQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<SearchResultGroup[]>([]);
@@ -270,7 +269,6 @@ export default function TVSearch({ onSelectItem, navFocusTarget, onRegisterBackH
             scaleFocused={1.02}
             focusedBorderColor="#8A5CF6"
             borderRadius={14}
-            {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
             onPress={() => searchInputRef.current?.focus()}
             style={styles.searchBarWrapper}
           >
@@ -340,8 +338,7 @@ export default function TVSearch({ onSelectItem, navFocusTarget, onRegisterBackH
                 scaleFocused={1.06}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={20}
-                {...(navFocusTarget ? { nextFocusLeft: navFocusTarget } : {})}
-                onPress={() => setActiveTab('all')}
+                    onPress={() => setActiveTab('all')}
                 style={[styles.tabItem, activeTab === 'all' && styles.tabItemActive]}
               >
                 {() => (
@@ -431,9 +428,6 @@ export default function TVSearch({ onSelectItem, navFocusTarget, onRegisterBackH
                           scaleFocused={1.08}
                           focusedBorderColor="#8A5CF6"
                           borderRadius={10}
-                          {...(pIndex === 0 && navFocusTarget
-                            ? { nextFocusLeft: navFocusTarget }
-                            : {})}
                           onFocus={() =>
                             setActiveHero({
                               title: item.title,
