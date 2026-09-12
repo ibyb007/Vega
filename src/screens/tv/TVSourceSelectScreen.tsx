@@ -2,11 +2,13 @@ import React from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, Dimensions } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import useContentStore from '../../lib/zustand/contentStore';
 import { Provider } from '../../lib/providers/types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CONTAINER_PADDING_LEFT = 96;
+// Trimmed from 96 -- see TVDiscoverScreen.tsx's identical constant for why.
+const CONTAINER_PADDING_LEFT = 20;
 const CONTAINER_PADDING_RIGHT = 48;
 const CARD_WIDTH = 250;
 const GRID_GAP = 20;
@@ -65,6 +67,12 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
         {onNavigateAddons && (
           <TVFocusablePressable
+            ref={(el) => {
+              // The header title beside this button isn't focusable, so
+              // Left from here has nothing else to land on within the
+              // screen -- it should always reach the Sources rail button.
+              if (el) registerRailLeftEdge('sources', el);
+            }}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
@@ -91,6 +99,9 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
           </Text>
           {onNavigateAddons && (
             <TVFocusablePressable
+              ref={(el) => {
+                if (el) registerRailLeftEdge('sources', el);
+              }}
               hasTVPreferredFocus={true}
               scaleFocused={1.06}
               focusedBorderColor="#FFFFFF"
@@ -122,6 +133,13 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               return (
                 <TVFocusablePressable
                   key={`${item.value}-${index}`}
+                  ref={
+                    index % GRID_COLUMNS === 0
+                      ? (el) => {
+                          if (el) registerRailLeftEdge('sources', el);
+                        }
+                      : undefined
+                  }
                   hasTVPreferredFocus={isSelected || index === 0}
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
@@ -193,6 +211,11 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
               <View style={styles.chipRow}>
                 <TVFocusablePressable
+                  ref={(el) => {
+                    // Fixed first chip in this row -- another left-edge row
+                    // on this screen, below the main provider grid.
+                    if (el) registerRailLeftEdge('sources', el);
+                  }}
                   scaleFocused={1.05}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={16}
