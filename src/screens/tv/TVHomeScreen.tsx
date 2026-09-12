@@ -495,6 +495,20 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         key={refocusRef.current.key === itemKey ? `${itemKey}-r${refocusRef.current.nonce}` : itemKey}
                         ref={(el) => {
                           itemRefsRef.current[itemKey] = el;
+                          // Register as soon as this row mounts, not just on
+                          // focus -- registerRailLeftEdge's bridge call to the
+                          // native rail is async (posts to the UI thread), so
+                          // relying on onFocus alone leaves a real window
+                          // where the user can press Left before that write
+                          // lands, and Left falls through to Android's raw
+                          // geometric search instead (landing on whichever
+                          // rail row happens to be nearest, not necessarily
+                          // Home). Registering here too means the link is
+                          // already in place well before the item could ever
+                          // receive focus.
+                          if (isFirstInRow && el) {
+                            registerRailLeftEdge('home', el);
+                          }
                         }}
                         hasTVPreferredFocus={shouldFocus}
                         scaleFocused={1.05}
@@ -712,7 +726,11 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   slidingRowsContainer: {
-    paddingLeft: 84,
+    // Trimmed from 84 -- the shared viewport wrapper in App.tsx already
+    // reserves the rail's collapsed width (72dp) via paddingLeft, so this
+    // only needs to be a small breathing margin on top of that, not a
+    // near-duplicate of the rail's own width.
+    paddingLeft: 20,
     paddingTop: 0,
   },
   rowContainer: {
