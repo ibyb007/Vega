@@ -11,6 +11,7 @@ import {
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { TVFocusablePressable } from '../components/tv/TVFocusablePressable';
+import { registerRailLeftEdge } from '../lib/tv/registerRailLeftEdge';
 import useContentStore from '../lib/zustand/contentStore';
 import { providerManager } from '../lib/services/ProviderManager';
 import { extensionStorage } from '../lib/storage';
@@ -266,6 +267,11 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
 
         <View style={styles.header}>
           <TVFocusablePressable
+            ref={(el) => {
+              // Fixed, always-mounted -- the true left edge of the whole
+              // screen -- so it's safe to register the instant it mounts.
+              if (el) registerRailLeftEdge('search', el);
+            }}
             scaleFocused={1.02}
             focusedBorderColor="#8A5CF6"
             borderRadius={14}
@@ -335,6 +341,11 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
               contentContainerStyle={styles.tabScroll}
             >
               <TVFocusablePressable
+                ref={(el) => {
+                  // Fixed first tab in this horizontal bar -- another of the
+                  // screen's left-edge rows once results are showing.
+                  if (el) registerRailLeftEdge('search', el);
+                }}
                 scaleFocused={1.06}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={20}
@@ -425,6 +436,18 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
                       {group.posts.map((item: any, pIndex) => (
                         <TVFocusablePressable
                           key={`${item.link}-${pIndex}`}
+                          ref={
+                            pIndex === 0
+                              ? (el) => {
+                                  // First poster of this provider's row sits
+                                  // at the screen's left edge -- register
+                                  // eagerly on mount (race-free) since these
+                                  // rows can re-render/reorder as results
+                                  // stream in.
+                                  if (el) registerRailLeftEdge('search', el);
+                                }
+                              : undefined
+                          }
                           scaleFocused={1.08}
                           focusedBorderColor="#8A5CF6"
                           borderRadius={10}
@@ -495,7 +518,9 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   scrollContent: {
-    paddingLeft: 96,
+    // Trimmed from 96 -- see TVDiscoverScreen.tsx's CONTAINER_PADDING_LEFT
+    // comment for why.
+    paddingLeft: 20,
     paddingRight: 48,
     paddingTop: 36,
     paddingBottom: 60,
