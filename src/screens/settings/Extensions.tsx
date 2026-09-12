@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import useContentStore from '../../lib/zustand/contentStore';
 import useThemeStore from '../../lib/zustand/themeStore';
 import {
@@ -138,6 +139,12 @@ const ProviderRowItem = memo(({
       </View>
 
       <TVFocusablePressable
+        ref={(el) => {
+          // This button is the only focusable element in the row -- there's
+          // nothing else to its left -- so Left from it should always reach
+          // the Addons rail button, for every row, not just the first.
+          if (el) registerRailLeftEdge('addons', el);
+        }}
         scaleFocused={1.04}
         focusedBorderColor="#FFFFFF"
         borderRadius={10}
@@ -338,6 +345,7 @@ export default function Extensions({ navigation, onRegisterBackHandler }: Extens
           <TVFocusablePressable
             ref={(el) => {
               refreshBtnRef.current = el;
+              if (el) registerRailLeftEdge('addons', el);
             }}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
@@ -428,7 +436,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0A0A0E',
-    paddingLeft: 96,
+    // Trimmed from 96 -- see TVDiscoverScreen.tsx's CONTAINER_PADDING_LEFT
+    // comment for why.
+    paddingLeft: 20,
     paddingRight: 48,
     paddingTop: 36,
   },
