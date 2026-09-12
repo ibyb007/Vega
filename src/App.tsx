@@ -279,7 +279,6 @@ export default function App() {
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
-                          navFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('home')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('home')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('home')}
@@ -289,7 +288,6 @@ export default function App() {
                       {currentRoute === 'search' && (
                         <TVSearch
                           onSelectItem={(item) => setSelectedItem(item)}
-                          navFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('search')}
                         />
                       )}
@@ -306,7 +304,6 @@ export default function App() {
                               ...extraMeta,
                             });
                           }}
-                          discoverFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('discover')}
                         />
                       )}
@@ -315,7 +312,6 @@ export default function App() {
                         <TVSourceSelectScreen
                           onNavigateHome={() => navigateTo('home')}
                           onNavigateAddons={() => navigateTo('addons')}
-                          navFocusTarget={null}
                         />
                       )}
 
@@ -326,12 +322,11 @@ export default function App() {
                             goBack: () => navigateTo('home'),
                           } as any}
                           route={{} as any}
-                          navFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('addons')}
                         />
                       )}
 
-                      {currentRoute === 'settings' && <TVSettingsScreen navFocusTarget={null} />}
+                      {currentRoute === 'settings' && <TVSettingsScreen />}
                     </View>
                   </View>
                 )}
