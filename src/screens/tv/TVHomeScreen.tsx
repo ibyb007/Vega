@@ -29,6 +29,7 @@ import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { getCachedMetadata, getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { providerManager } from '../../lib/services/ProviderManager';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
+import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 
 const ROW_HEIGHT = 235;
 const imdbMetaCache = new Map<string, any>();
@@ -500,7 +501,16 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                         focusedBorderColor="#FFFFFF"
                         borderRadius={8}
                         delayLongPress={350}
-                        onFocus={() => handleCardFocus(rowIndex, item, itemKey, isHistoryRow)}
+                        onFocus={() => {
+                          handleCardFocus(rowIndex, item, itemKey, isHistoryRow);
+                          // Only the first card of a row sits at the screen's
+                          // left edge -- re-register it every time it's
+                          // focused so Left always reaches the Home rail
+                          // button, from whichever row the user is on.
+                          if (isFirstInRow) {
+                            registerRailLeftEdge('home', itemRefsRef.current[itemKey]);
+                          }
+                        }}
                         onPress={() => {
                           lastFocusedKey = itemKey;
                           lastFocusedRowIndex = rowIndex;
