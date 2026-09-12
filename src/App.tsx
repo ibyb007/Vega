@@ -16,7 +16,7 @@ import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks } from './lib/providers/types';
 
 // TV Components & Screens
-import { TVNavigationRail, TVNavigationRailHandle, TVRoute } from './components/tv/TVNavigationRail';
+import { TVNavigationRail, TVNavigationRailHandle, TVRoute, COLLAPSED_WIDTH } from './components/tv/TVNavigationRail';
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
@@ -53,6 +53,10 @@ export default function App() {
   const [navHandles, setNavHandles] = useState<Partial<Record<TVRoute, number>>>({});
   const navRailRef = useRef<TVNavigationRailHandle | null>(null);
   const navExpandedRef = useRef(false);
+  // See TVNavigationRail's suppressFocusEffectsRef doc: set true right before
+  // a full-screen navigation (e.g. starting playback) unmounts the rail, so
+  // any transient stray focus grab during that unmount doesn't visibly flash.
+  const suppressRailFocusRef = useRef(false);
   const screenBackHandlersRef = useRef<Partial<Record<TVRoute, () => boolean>>>({});
   const currentProvider = useContentStore((state) => state.provider);
 
@@ -233,7 +237,10 @@ export default function App() {
                           : null
                       );
                     }}
-                    onClose={() => setActiveStream(null)}
+                    onClose={() => {
+                      suppressRailFocusRef.current = false;
+                      setActiveStream(null);
+                    }}
                   />
                 ) : selectedItem ? (
                   <TVDetailsScreen
@@ -252,18 +259,6 @@ export default function App() {
                   />
                 ) : (
                   <View style={styles.layout}>
-                    <TVNavigationRail
-                      ref={navRailRef}
-                      currentRoute={currentRoute}
-                      onRouteChange={navigateTo}
-                      onRegisterRouteHandle={handleRegisterRouteHandle}
-                      onExpandedChange={(expanded) => {
-                        navExpandedRef.current = expanded;
-                      }}
-                      onRequestContentFocus={handleRequestContentFocus}
-                      onGetEntryFocusHandle={handleGetEntryFocusHandle}
-                    />
-
                     <View style={styles.viewport}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
@@ -288,14 +283,15 @@ export default function App() {
                         <TVDiscoverScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
-                          onPlayStream={(streamUrl, title, extraMeta) =>
+                          onPlayStream={(streamUrl, title, extraMeta) => {
+                            suppressRailFocusRef.current = true;
                             setActiveStream({
                               url: streamUrl,
                               title: title || extraMeta?.itemLink || 'Unknown',
                               providerValue: extraMeta?.providerValue || currentProvider?.value,
                               ...extraMeta,
-                            })
-                          }
+                            });
+                          }}
                           discoverFocusTarget={navHandles.discover ?? null}
                           onRegisterBackHandler={handleRegisterBackHandler('discover')}
                         />
@@ -325,6 +321,19 @@ export default function App() {
                         <TVSettingsScreen navFocusTarget={navHandles.settings ?? null} />
                       )}
                     </View>
+
+                    <TVNavigationRail
+                      ref={navRailRef}
+                      currentRoute={currentRoute}
+                      onRouteChange={navigateTo}
+                      onRegisterRouteHandle={handleRegisterRouteHandle}
+                      onExpandedChange={(expanded) => {
+                        navExpandedRef.current = expanded;
+                      }}
+                      onRequestContentFocus={handleRequestContentFocus}
+                      onGetEntryFocusHandle={handleGetEntryFocusHandle}
+                      suppressFocusEffectsRef={suppressRailFocusRef}
+                    />
                   </View>
                 )}
 
@@ -348,7 +357,7 @@ const styles = StyleSheet.create({
   },
   layout: {
     flex: 1,
-    flexDirection: 'row',
+    position: 'relative',
     width: '100%',
     height: '100%',
   },
@@ -356,5 +365,13 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     backgroundColor: '#0A0A0E',
+    // Static reserve equal to the rail's *collapsed* width, so content never
+    // sits underneath the rail (which is absolutely positioned/overlaid) at
+    // rest. When the rail expands on focus it overlays on top of this
+    // padding rather than pushing content, so browsing doesn't reflow -- and
+    // since expansion only happens while focus is already on the rail, that
+    // brief overlap can't cause the wrong-nearest-neighbor focus jump that
+    // full overlap at rest was causing.
+    paddingLeft: COLLAPSED_WIDTH,
   },
 });
