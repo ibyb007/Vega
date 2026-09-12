@@ -14,9 +14,9 @@ import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
 import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks } from './lib/providers/types';
+import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH, TVRoute } from './lib/native/NavRail';
 
 // TV Components & Screens
-import { TVNavigationRail, TVNavigationRailHandle, TVRoute, COLLAPSED_WIDTH } from './components/tv/TVNavigationRail';
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
 import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
@@ -50,29 +50,27 @@ export default function App() {
   const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
-  const [navHandles, setNavHandles] = useState<Partial<Record<TVRoute, number>>>({});
-  const navRailRef = useRef<TVNavigationRailHandle | null>(null);
+  // Mirrors the old navExpandedRef -- kept as a JS-side fallback for the
+  // "rail focused -> Back exits app" rule. In normal operation
+  // MainActivity's native dispatchKeyEvent (see NavRailManager.shouldExitOnBack)
+  // already intercepts this before JS ever sees the key event; this stays
+  // as a defensive second layer in case the native module isn't linked
+  // (e.g. mid-migration, or a non-Android build).
   const navExpandedRef = useRef(false);
-  // See TVNavigationRail's suppressFocusEffectsRef doc: set true right before
-  // a full-screen navigation (e.g. starting playback) unmounts the rail, so
-  // any transient stray focus grab during that unmount doesn't visibly flash.
-  const suppressRailFocusRef = useRef(false);
+  // See TVNavRailView's suppress-on-unmount concern from the old JS rail:
+  // no longer needed here, since the native rail is hidden via
+  // NavRail.setVisible(false) rather than unmounted/remounted, so there's
+  // no stray-focus-grab-during-teardown window to guard against.
   const screenBackHandlersRef = useRef<Partial<Record<TVRoute, () => boolean>>>({});
   const currentProvider = useContentStore((state) => state.provider);
 
-  const handleRegisterRouteHandle = useCallback((route: TVRoute, handle: number | null) => {
-    setNavHandles((prev) => {
-      if (handle == null) {
-        if (!(route in prev)) return prev;
-        const next = { ...prev };
-        delete next[route];
-        return next;
-      }
-      if (prev[route] === handle) return prev;
-      return { ...prev, [route]: handle };
-    });
-  }, []);
-
+  // ---- content entry-focus plumbing (unchanged from before) --------------
+  // Screens still register "where should focus land if the rail sends you
+  // here" the same way they always did. The only thing that changed is who
+  // *consumes* that registration: it used to be the JS rail on focus; now
+  // it's pushed straight to the native rail via NavRail.registerRouteHandleTag
+  // whenever the active route changes (see effect below), so the native
+  // TVNavRailView can wire a real nextFocusRightId.
   const entryHandleGetterRef = useRef<Partial<Record<TVRoute, () => number | null>>>({});
 
   const handleRegisterEntryHandleGetter = useCallback(
@@ -85,10 +83,6 @@ export default function App() {
     },
     []
   );
-
-  const handleGetEntryFocusHandle = useCallback((route: TVRoute) => {
-    return entryHandleGetterRef.current[route]?.() ?? null;
-  }, []);
 
   const entryReturnTriggerRef = useRef<Partial<Record<TVRoute, () => void>>>({});
 
@@ -107,10 +101,8 @@ export default function App() {
     entryReturnTriggerRef.current[route]?.();
   }, []);
 
-  // Each screen registers its own "did I consume this back press?" handler here
-  // instead of subscribing its own BackHandler listener. This guarantees a single
-  // hardwareBackPress subscription for the whole app, so the exit-on-expanded-navbar
-  // check below always runs first, deterministically, regardless of mount order.
+  // Each screen registers its own "did I consume this back press?" handler
+  // here, same as before.
   const handleRegisterBackHandler = useCallback(
     (route: TVRoute) => (handler: (() => boolean) | null) => {
       if (handler) {
@@ -148,6 +140,33 @@ export default function App() {
     });
   }, []);
 
+  // Keep the native rail's active-route highlight (and its nextFocusRightId
+  // wiring for the currently-active row) in sync with JS route state, and
+  // push whatever entry-focus target the active screen has registered.
+  useEffect(() => {
+    NavRail.setActiveRoute(currentRoute);
+    const tag = entryHandleGetterRef.current[currentRoute]?.() ?? null;
+    NavRail.registerRouteHandleTag(currentRoute, tag);
+  }, [currentRoute]);
+
+  // Native -> JS: rail selection changed / same tab re-selected / expand state.
+  useEffect(() => {
+    const subs = [
+      NavRail.onRouteChanged((route) => navigateTo(route)),
+      NavRail.onRouteReselected((route) => handleRequestContentFocus(route)),
+      NavRail.onExpandedChanged((expanded) => {
+        navExpandedRef.current = expanded;
+      }),
+    ];
+    return () => subs.forEach((s) => s?.remove());
+  }, [navigateTo, handleRequestContentFocus]);
+
+  // Hide the native rail entirely behind fullscreen player/details, exactly
+  // like the old JS conditionally unmounting <TVNavigationRail>.
+  useEffect(() => {
+    NavRail.setVisible(!activeStream && !selectedItem);
+  }, [activeStream, selectedItem]);
+
   useEffect(() => {
     const handleBackPress = () => {
       if (activeStream) {
@@ -160,9 +179,9 @@ export default function App() {
         return true;
       }
 
-      // If nav rail itself holds focus, Back always exits the app — this runs
-      // before any screen-level handling so an expanded/focused rail can't be
-      // intercepted by whatever screen happens to still be mounted underneath it.
+      // Defensive fallback only -- see navExpandedRef doc above. Under
+      // normal operation MainActivity's dispatchKeyEvent already exits the
+      // app before this listener ever runs when the rail holds focus.
       if (navExpandedRef.current) {
         BackHandler.exitApp();
         return true;
@@ -175,13 +194,10 @@ export default function App() {
         return true;
       }
 
-      // Otherwise, Back moves focus to that tab's rail button.
-      if (navRailRef.current) {
-        navRailRef.current.focusRoute(currentRoute);
-        return true;
-      }
-
-      return false;
+      // Otherwise, Back moves focus to that tab's rail button -- now a real
+      // native View.requestFocus() under the hood.
+      NavRail.focusRoute(currentRoute);
+      return true;
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
@@ -238,7 +254,6 @@ export default function App() {
                       );
                     }}
                     onClose={() => {
-                      suppressRailFocusRef.current = false;
                       setActiveStream(null);
                     }}
                   />
@@ -264,7 +279,7 @@ export default function App() {
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
-                          navFocusTarget={navHandles.home ?? null}
+                          navFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('home')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('home')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('home')}
@@ -274,7 +289,7 @@ export default function App() {
                       {currentRoute === 'search' && (
                         <TVSearch
                           onSelectItem={(item) => setSelectedItem(item)}
-                          navFocusTarget={navHandles.search ?? null}
+                          navFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('search')}
                         />
                       )}
@@ -284,7 +299,6 @@ export default function App() {
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
                           onPlayStream={(streamUrl, title, extraMeta) => {
-                            suppressRailFocusRef.current = true;
                             setActiveStream({
                               url: streamUrl,
                               title: title || extraMeta?.itemLink || 'Unknown',
@@ -292,7 +306,7 @@ export default function App() {
                               ...extraMeta,
                             });
                           }}
-                          discoverFocusTarget={navHandles.discover ?? null}
+                          discoverFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('discover')}
                         />
                       )}
@@ -301,7 +315,7 @@ export default function App() {
                         <TVSourceSelectScreen
                           onNavigateHome={() => navigateTo('home')}
                           onNavigateAddons={() => navigateTo('addons')}
-                          navFocusTarget={navHandles.sources ?? null}
+                          navFocusTarget={null}
                         />
                       )}
 
@@ -312,28 +326,13 @@ export default function App() {
                             goBack: () => navigateTo('home'),
                           } as any}
                           route={{} as any}
-                          navFocusTarget={navHandles.addons ?? null}
+                          navFocusTarget={null}
                           onRegisterBackHandler={handleRegisterBackHandler('addons')}
                         />
                       )}
 
-                      {currentRoute === 'settings' && (
-                        <TVSettingsScreen navFocusTarget={navHandles.settings ?? null} />
-                      )}
+                      {currentRoute === 'settings' && <TVSettingsScreen navFocusTarget={null} />}
                     </View>
-
-                    <TVNavigationRail
-                      ref={navRailRef}
-                      currentRoute={currentRoute}
-                      onRouteChange={navigateTo}
-                      onRegisterRouteHandle={handleRegisterRouteHandle}
-                      onExpandedChange={(expanded) => {
-                        navExpandedRef.current = expanded;
-                      }}
-                      onRequestContentFocus={handleRequestContentFocus}
-                      onGetEntryFocusHandle={handleGetEntryFocusHandle}
-                      suppressFocusEffectsRef={suppressRailFocusRef}
-                    />
                   </View>
                 )}
 
@@ -365,13 +364,11 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     backgroundColor: '#0A0A0E',
-    // Static reserve equal to the rail's *collapsed* width, so content never
-    // sits underneath the rail (which is absolutely positioned/overlaid) at
-    // rest. When the rail expands on focus it overlays on top of this
-    // padding rather than pushing content, so browsing doesn't reflow -- and
-    // since expansion only happens while focus is already on the rail, that
-    // brief overlap can't cause the wrong-nearest-neighbor focus jump that
-    // full overlap at rest was causing.
-    paddingLeft: COLLAPSED_WIDTH,
+    // The native rail is no longer part of this RN tree at all -- it's a
+    // real sibling View overlaid by MainActivity/NavRailManager above the
+    // whole ReactRootView. This padding just keeps content from rendering
+    // underneath that permanent 72dp-wide strip; it must stay equal to
+    // TVNavRailView.COLLAPSED_WIDTH_DP (see NATIVE_RAIL_COLLAPSED_WIDTH).
+    paddingLeft: NATIVE_RAIL_COLLAPSED_WIDTH,
   },
 });
