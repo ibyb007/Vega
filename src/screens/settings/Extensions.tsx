@@ -14,6 +14,7 @@ import {
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import useContentStore from '../../lib/zustand/contentStore';
 import useThemeStore from '../../lib/zustand/themeStore';
 import {
@@ -108,6 +109,10 @@ interface ProviderRowItemProps {
   isInstalled: boolean;
   isInstalling: boolean;
   onToggleInstall: (item: ProviderExtension) => void;
+  itemKey: string;
+  hasPreferredFocus: boolean;
+  onItemFocus: (key: string) => void;
+  registerItemRef: (key: string, node: View | null) => void;
 }
 
 // Memoized item row preventing unnecessary re-renders of 50+ items during scroll/state changes
@@ -116,6 +121,10 @@ const ProviderRowItem = memo(({
   isInstalled,
   isInstalling,
   onToggleInstall,
+  itemKey,
+  hasPreferredFocus,
+  onItemFocus,
+  registerItemRef,
 }: ProviderRowItemProps) => {
   return (
     <View style={styles.providerRow}>
@@ -140,11 +149,14 @@ const ProviderRowItem = memo(({
 
       <TVFocusablePressable
         ref={(el) => {
+          registerItemRef(itemKey, el);
           // This button is the only focusable element in the row -- there's
           // nothing else to its left -- so Left from it should always reach
           // the Addons rail button, for every row, not just the first.
           if (el) registerRailLeftEdge('addons', el);
         }}
+        hasTVPreferredFocus={hasPreferredFocus}
+        onFocus={() => onItemFocus(itemKey)}
         scaleFocused={1.04}
         focusedBorderColor="#FFFFFF"
         borderRadius={10}
@@ -181,9 +193,26 @@ interface ExtensionsScreenProps {
   navigation?: any;
   route?: any;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
+  onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
 }
 
-export default function Extensions({ navigation, onRegisterBackHandler }: ExtensionsScreenProps) {
+// Module-level so it survives this screen unmounting when the user leaves
+// the Addons tab and comes back -- same pattern as TVHomeScreen's
+// `lastFocusedKey`.
+let lastFocusedAddonsKey: string | null = null;
+
+export default function Extensions({
+  navigation,
+  onRegisterBackHandler,
+  onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
+}: ExtensionsScreenProps) {
+  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+    () => lastFocusedAddonsKey,
+    onRegisterEntryHandleGetter,
+    onRegisterReturnFocusTrigger
+  );
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
@@ -343,10 +372,14 @@ export default function Extensions({ navigation, onRegisterBackHandler }: Extens
 
         <View style={styles.headerActions}>
           <TVFocusablePressable
+            key={keyFor('refresh-btn')}
             ref={(el) => {
               refreshBtnRef.current = el;
+              setItemRef('refresh-btn', el);
               if (el) registerRailLeftEdge('addons', el);
             }}
+            hasTVPreferredFocus={shouldPreferFocus('refresh-btn', false)}
+            onFocus={() => (lastFocusedAddonsKey = 'refresh-btn')}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={10}
@@ -363,7 +396,10 @@ export default function Extensions({ navigation, onRegisterBackHandler }: Extens
           </TVFocusablePressable>
 
           <TVFocusablePressable
-            hasTVPreferredFocus={availableProviders.length === 0}
+            key={keyFor('add-source-btn')}
+            ref={(el) => setItemRef('add-source-btn', el)}
+            hasTVPreferredFocus={shouldPreferFocus('add-source-btn', availableProviders.length === 0)}
+            onFocus={() => (lastFocusedAddonsKey = 'add-source-btn')}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
@@ -410,15 +446,22 @@ export default function Extensions({ navigation, onRegisterBackHandler }: Extens
           removeClippedSubviews={true}
           scrollEventThrottle={16}
         >
-          {availableProviders.map((item) => (
-            <ProviderRowItem
-              key={item.value}
-              item={item}
-              isInstalled={installedSet.has(item.value)}
-              isInstalling={Boolean(installingMap[item.value])}
-              onToggleInstall={handleToggleInstall}
-            />
-          ))}
+          {availableProviders.map((item) => {
+            const rowKey = `provider-${item.value}`;
+            return (
+              <ProviderRowItem
+                key={keyFor(rowKey)}
+                itemKey={rowKey}
+                item={item}
+                isInstalled={installedSet.has(item.value)}
+                isInstalling={Boolean(installingMap[item.value])}
+                onToggleInstall={handleToggleInstall}
+                hasPreferredFocus={shouldPreferFocus(rowKey, false)}
+                onItemFocus={(key) => (lastFocusedAddonsKey = key)}
+                registerItemRef={setItemRef}
+              />
+            );
+          })}
         </ScrollView>
       )}
 
