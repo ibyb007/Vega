@@ -74,6 +74,9 @@ function withNativeNavRail(config) {
         '            // Activity in it.\n' +
         '            android.os.Process.killProcess(android.os.Process.myPid())\n' +
         '            return true\n' +
+        '        }\n' +
+        '        if (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT && event.action == android.view.KeyEvent.ACTION_DOWN && NavRailManager.handleDpadLeft(this)) {\n' +
+        '            return true\n' +
         '        }\n';
 
       if (src.includes('override fun dispatchKeyEvent(event: KeyEvent): Boolean {')) {
