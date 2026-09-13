@@ -129,8 +129,8 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             // previously hardcoded to 66, which sat every row 16dp higher
             // than the old builds.
             topMargin = dp(82)
-            leftMargin = dp(6)
-            rightMargin = dp(6)
+            leftMargin = dp(8)
+            rightMargin = dp(8)
         }
         addView(menuContainer, menuLp)
 
@@ -170,9 +170,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         row.isFocusable = true
         row.isFocusableInTouchMode = false
         row.isClickable = true
-        // Tightened from dp(12) so the trimmed EXPANDED_WIDTH_DP still leaves
-        // enough room for the longest labels without ellipsizing.
-        row.setPadding(dp(8), 0, dp(8), 0)
+        row.setPadding(dp(12), 0, dp(12), 0)
 
         val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP))
         lp.topMargin = if (index == 0) 0 else dp(ITEM_GAP_DP)
@@ -190,9 +188,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         val label = TextView(context).apply {
             text = item.label
             setTextColor(INACTIVE_LABEL)
-            // Trimmed from 14sp to help the label fit the narrower expanded
-            // width without ellipsizing.
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             visibility = View.GONE
@@ -202,7 +198,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         )
-        labelLp.marginStart = dp(10)
+        labelLp.marginStart = dp(14)
         row.addView(label, labelLp)
         row.labelView = label
 
@@ -350,11 +346,19 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     }
 
     fun registerRouteTarget(route: String, target: View?) {
-        // Clear the old target's back-link if it's being replaced/unmounted,
-        // so a stale content view never keeps a dangling nextFocusLeftId
-        // pointing at this rail after it's gone.
-        registeredTargets[route]?.let { old -> if (old !== target) old.nextFocusLeftId = NO_ID }
-
+        // NOTE: we intentionally do NOT clear any previous target's
+        // nextFocusLeftId here. That used to happen on every call ("evict
+        // the old one, it's stale now"), which was correct for Home/Discover
+        // where exactly one row is ever the current Left-key target at a
+        // time -- but Settings/Sources/Addons register MANY simultaneous,
+        // permanent targets for the same route (every row in a vertical
+        // list, every provider's install button, etc). With the eviction in
+        // place, each new registration for that route wiped out the LINK we
+        // had just set up on every row registered before it, so only the
+        // most-recently-mounted row ever kept a working path back to the
+        // rail -- exactly the "Left goes to a different button" symptom.
+        // Leaving an old target's nextFocusLeftId set is harmless: it's
+        // simply never consulted unless that specific view has focus.
         if (target == null) {
             registeredTargets.remove(route)
         } else {
@@ -371,12 +375,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         // RN at a time (App.tsx renders `currentRoute === 'home' && ...`
         // etc.), so unconditionally pointing this route's registered target
         // back at its own row is always correct -- there's no other visible
-        // content whose Left-key target it could be. Without this, Left
-        // from a screen's leftmost item had no explicit path back to the
-        // rail at all: it depends on Android's geometric focus search,
-        // which horizontal ScrollViews intercept at their own scroll
-        // boundary before it ever gets a chance to look outside the list
-        // (see tvFocusRegistry.ts for the same issue from the old JS rail).
+        // content whose Left-key target it could be.
         target?.nextFocusLeftId = row.id
     }
 
@@ -392,12 +391,11 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
     companion object {
         const val COLLAPSED_WIDTH_DP = 72
-        // Trimmed ~40% from the original 220dp per request. At this width the
-        // longest labels ("Discover"/"Settings", 8 chars) need the tighter
-        // padding/font below to avoid ellipsizing -- this is a best estimate
-        // from the numbers, not something verified on an actual TV screen, so
-        // nudge it up a bit if either label still truncates on-device.
-        const val EXPANDED_WIDTH_DP = 132
+        // Reverted to the original full width -- the 40% trim from the
+        // previous pass is suspected in a severe regression (rail going
+        // blank / becoming unresponsive) and wasn't verified on-device
+        // before shipping. Not worth the risk versus the modest space saved.
+        const val EXPANDED_WIDTH_DP = 220
         const val ITEM_HEIGHT_DP = 46
         const val ITEM_GAP_DP = 6
         const val COLLAPSE_DELAY_MS = 110L
