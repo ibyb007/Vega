@@ -31,6 +31,18 @@ object NavRailManager {
     private var railRef: WeakReference<TVNavRailView>? = null
 
     fun attachToActivity(activity: Activity) {
+        val existingActivity = activityRef?.get()
+        if (existingActivity != null && existingActivity !== activity) {
+            // The previous Activity instance was never cleanly detached --
+            // most likely it finished (Back-while-rail-focused ->
+            // finishAffinity()) without the process actually dying, and
+            // we're now attaching a brand new Activity in that same
+            // still-alive process. The old rail/activity are stale even
+            // though their WeakReferences haven't been GC'd yet -- drop
+            // them before attaching fresh, or the check below wrongly
+            // thinks a rail is already attached and no-ops forever.
+            reset()
+        }
         if (railRef?.get() != null) return
 
         val decorContent = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
@@ -118,5 +130,27 @@ object NavRailManager {
 
     fun registerRouteHandle(route: String, view: View?) {
         railRef?.get()?.registerRouteTarget(route, view)
+    }
+
+    /**
+     * Call from `MainActivity.onDestroy()`. Clears our static state *only*
+     * if the destroying Activity is the one we're currently tracking, so an
+     * unrelated/old call can't blow away a newer, already-attached rail.
+     * This is the other half of the stale-singleton fix in
+     * [attachToActivity]: with this in place the happy path (process
+     * actually dies or the new Activity attaches first) never even needs
+     * the defensive check there, but we keep both since Activity teardown
+     * ordering on TV launchers isn't something to fully trust.
+     */
+    fun detachFromActivity(activity: Activity) {
+        if (activityRef?.get() === activity) {
+            reset()
+        }
+    }
+
+    private fun reset() {
+        railRef?.get()?.listener = null
+        railRef = null
+        activityRef = null
     }
 }
