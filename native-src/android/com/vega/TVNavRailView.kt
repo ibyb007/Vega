@@ -57,11 +57,9 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     private val registeredTargets = mutableMapOf<String, View>()
 
     private val rows = mutableListOf<NavItemRow>()
-    private lateinit var menuContainer: FrameLayout
-    private lateinit var rowStack: LinearLayout
+    private lateinit var menuContainer: LinearLayout
     private lateinit var indicatorPill: View
     private lateinit var background2: GradientDrawable
-    private lateinit var brandLabel: TextView
 
     private val collapseRunnable = Runnable { collapseIfIdle() }
 
@@ -85,50 +83,22 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         }
         background = background2
 
-        val header = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), 0, dp(10), 0)
-        }
+        val header = FrameLayout(context)
         val logo = NavIconView(context).apply {
             iconType = NavIcon.LOGO
+            setColor(ACCENT)
         }
-        header.addView(logo, LinearLayout.LayoutParams(dp(30), dp(30)))
+        header.addView(logo, LayoutParams(dp(30), dp(30)).apply {
+            leftMargin = dp(10)
+            topMargin = dp(20)
+        })
+        addView(header, LayoutParams(LayoutParams.MATCH_PARENT, dp(56)))
 
-        brandLabel = TextView(context).apply {
-            text = "VEGA TV"
-            setTextColor(Color.WHITE)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            letterSpacing = 0.05f
-            maxLines = 1
-            visibility = View.GONE
-            alpha = 0f
+        menuContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
         }
-        header.addView(
-            brandLabel,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = dp(12)
-            }
-        )
-        addView(header, LayoutParams(LayoutParams.MATCH_PARENT, dp(36)).apply { topMargin = dp(20) })
-
-        // menuContainer is a FrameLayout (not the LinearLayout the pill and
-        // rows both used to share) specifically so the sliding indicator can
-        // overlay the rows via translationY without ever taking up a flow
-        // slot of its own -- it used to be the LinearLayout's first child,
-        // which reserved a whole extra ITEM_HEIGHT_DP row above everything
-        // else and silently pushed every real row (and their focus/left-key
-        // targets) down by one slot, so the highlight -- and Left-key
-        // targeting, which partly rode on this same geometry -- always
-        // landed one item above the actually-active route.
-        menuContainer = FrameLayout(context)
         val menuLp = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
-            // Matches the old JS layout exactly: container padding-top (20) +
-            // header height (36) + header's marginBottom (26) = 82. This was
-            // previously hardcoded to 66, which sat every row 16dp higher
-            // than the old builds.
-            topMargin = dp(82)
+            topMargin = dp(76)
             leftMargin = dp(8)
             rightMargin = dp(8)
         }
@@ -142,21 +112,17 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         }
         menuContainer.addView(
             indicatorPill,
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP), Gravity.TOP)
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP))
         )
-
-        rowStack = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
+        (indicatorPill.layoutParams as LinearLayout.LayoutParams).apply {
+            // Positioned via translationY, not layout -- it lives in the
+            // stack as the first child purely so it paints behind the rows.
         }
-        menuContainer.addView(
-            rowStack,
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP)
-        )
 
         NAV_ITEMS.forEachIndexed { index, item ->
             val row = buildRow(item, index)
             rows.add(row)
-            rowStack.addView(row)
+            menuContainer.addView(row)
         }
         wireVerticalChain()
         setActiveRouteFromJs(activeRoute)
@@ -203,7 +169,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         row.labelView = label
 
         row.setOnFocusChangeListener { _, hasFocus ->
-            if (hasFocus) onRowFocused(item, index) else onRowBlurred(item, index)
+            if (hasFocus) onRowFocused(item, index) else onRowBlurred()
         }
         row.setOnClickListener { onRowSelected(item) }
 
@@ -224,30 +190,11 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         removeCallbacks(collapseRunnable)
         setExpanded(true)
         animateIndicatorTo(index)
-        // Old JS brightened a row whenever it was EITHER focused or active
-        // (`color: focused || isActive ? white : dim`), so browsing with the
-        // D-pad lit up whatever you were currently on, not just the active
-        // tab. This was missing here -- every row you passed over while
-        // browsing stayed at its dim, inactive color the whole time.
-        setRowHighlighted(rows[index], highlighted = true)
     }
 
-    private fun onRowBlurred(item: NavItem, index: Int) {
+    private fun onRowBlurred() {
         focusDepth = maxOf(0, focusDepth - 1)
         scheduleCollapse()
-        // Revert to bright only if this row is still the active route;
-        // otherwise back to the dim inactive color.
-        setRowHighlighted(rows[index], highlighted = item.id == activeRoute)
-    }
-
-    private fun setRowHighlighted(row: NavItemRow, highlighted: Boolean) {
-        val isActive = row.item.id == activeRoute
-        row.iconView.setColor(if (highlighted) ACTIVE_COLOR else INACTIVE_ICON)
-        row.labelView.setTextColor(if (highlighted) ACTIVE_COLOR else INACTIVE_LABEL)
-        row.labelView.setTypeface(
-            row.labelView.typeface,
-            if (isActive) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
-        )
     }
 
     private fun onRowSelected(item: NavItem) {
@@ -296,7 +243,6 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
         if (value) {
             rows.forEach { it.labelView.visibility = View.VISIBLE }
-            brandLabel.visibility = View.VISIBLE
         }
 
         val animator = ValueAnimator.ofFloat(0f, 1f)
@@ -311,16 +257,11 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
                 layoutParams = lp
             }
             background2.setColor(evaluator.evaluate(t, fromColor, toColor) as Int)
-            val labelAlpha = if (value) t else 1f - t
-            rows.forEach { it.labelView.alpha = labelAlpha }
-            brandLabel.alpha = labelAlpha
+            rows.forEach { it.labelView.alpha = if (value) t else 1f - t }
         }
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                if (!value) {
-                    rows.forEach { it.labelView.visibility = View.GONE }
-                    brandLabel.visibility = View.GONE
-                }
+                if (!value) rows.forEach { it.labelView.visibility = View.GONE }
             }
         })
         animator.start()
@@ -334,9 +275,8 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         if (idx >= 0) animateIndicatorTo(idx)
         rows.forEach { row ->
             val isActive = row.item.id == route
-            val highlighted = isActive || row.isFocused
-            row.iconView.setColor(if (highlighted) ACTIVE_COLOR else INACTIVE_ICON)
-            row.labelView.setTextColor(if (highlighted) ACTIVE_COLOR else INACTIVE_LABEL)
+            row.iconView.setColor(if (isActive) ACTIVE_COLOR else INACTIVE_ICON)
+            row.labelView.setTextColor(if (isActive) ACTIVE_COLOR else INACTIVE_LABEL)
             row.labelView.setTypeface(row.labelView.typeface, if (isActive) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
             // Only the active row's Right D-pad press should leave the rail --
             // mirrors the old JS rail only ever wiring nextFocusRight for
@@ -346,41 +286,24 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     }
 
     fun registerRouteTarget(route: String, target: View?) {
-        // NOTE: we intentionally do NOT clear any previous target's
-        // nextFocusLeftId here. That used to happen on every call ("evict
-        // the old one, it's stale now"), which was correct for Home/Discover
-        // where exactly one row is ever the current Left-key target at a
-        // time -- but Settings/Sources/Addons register MANY simultaneous,
-        // permanent targets for the same route (every row in a vertical
-        // list, every provider's install button, etc). With the eviction in
-        // place, each new registration for that route wiped out the LINK we
-        // had just set up on every row registered before it, so only the
-        // most-recently-mounted row ever kept a working path back to the
-        // rail -- exactly the "Left goes to a different button" symptom.
-        // Leaving an old target's nextFocusLeftId set is harmless: it's
-        // simply never consulted unless that specific view has focus.
         if (target == null) {
             registeredTargets.remove(route)
         } else {
             if (target.id == NO_ID) target.id = generateViewId()
             registeredTargets[route] = target
         }
-
-        val row = rows.firstOrNull { it.item.id == route } ?: return
         if (route == activeRoute) {
-            row.nextFocusRightId = target?.id ?: NO_ID
+            rows.firstOrNull { it.item.id == route }?.nextFocusRightId = target?.id ?: NO_ID
         }
-        // Rail -> content (Right) is wired above; this is the missing
-        // reverse link. Only one route's screen is ever actually mounted in
-        // RN at a time (App.tsx renders `currentRoute === 'home' && ...`
-        // etc.), so unconditionally pointing this route's registered target
-        // back at its own row is always correct -- there's no other visible
-        // content whose Left-key target it could be.
-        target?.nextFocusLeftId = row.id
     }
 
     fun focusRoute(route: String) {
         rows.firstOrNull { it.item.id == route }?.requestFocus()
+    }
+
+    /** Always lands on the row for whichever route is currently displayed. */
+    fun focusActiveRoute() {
+        focusRoute(activeRoute)
     }
 
     fun collapsedWidthPx(): Int = dp(COLLAPSED_WIDTH_DP)
@@ -391,10 +314,6 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
     companion object {
         const val COLLAPSED_WIDTH_DP = 72
-        // Reverted to the original full width -- the 40% trim from the
-        // previous pass is suspected in a severe regression (rail going
-        // blank / becoming unresponsive) and wasn't verified on-device
-        // before shipping. Not worth the risk versus the modest space saved.
         const val EXPANDED_WIDTH_DP = 220
         const val ITEM_HEIGHT_DP = 46
         const val ITEM_GAP_DP = 6
