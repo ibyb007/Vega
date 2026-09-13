@@ -103,22 +103,41 @@ class NavIconView(context: Context) : View(context) {
     private fun drawDiscover(c: Canvas, w: Float, h: Float) {
         val cx = w * 0.5f
         val cy = h * 0.5f
-        val r = w * 0.4f
+        val r = w * 0.41f
         c.drawCircle(cx, cy, r, strokePaint)
 
-        // NE/SW-pointing kite needle with a center pin. The waist is a
-        // healthy fraction of the tip-to-tip length (was ~0.18/0.72 = a
-        // thin sliver that read as a faint scratch at rail size) so the
-        // needle actually reads as a compass needle at 22dp.
-        val nr = r * 0.8f
-        val needle = Path()
-        needle.moveTo(cx + nr * 0.85f, cy - nr * 0.85f) // NE tip
-        needle.lineTo(cx + nr * 0.22f, cy - nr * 0.22f)
-        needle.lineTo(cx - nr * 0.85f, cy + nr * 0.85f) // SW tip
-        needle.lineTo(cx - nr * 0.22f, cy + nr * 0.22f)
-        needle.close()
-        c.drawPath(needle, fillPaint)
-        c.drawCircle(cx, cy, w * 0.05f, fillPaint)
+        val tipNeX = cx + w * 0.28f
+        val tipNeY = cy - h * 0.28f
+        val tipSwX = cx - w * 0.28f
+        val tipSwY = cy + h * 0.28f
+
+        val waistNwX = cx - w * 0.085f
+        val waistNwY = cy - h * 0.085f
+        val waistSeX = cx + w * 0.085f
+        val waistSeY = cy + h * 0.085f
+
+        val neArrow = Path().apply {
+            moveTo(tipNeX, tipNeY)
+            lineTo(waistNwX, waistNwY)
+            lineTo(cx, cy)
+            lineTo(waistSeX, waistSeY)
+            close()
+        }
+        c.drawPath(neArrow, fillPaint)
+
+        val swArrow = Path().apply {
+            moveTo(tipSwX, tipSwY)
+            lineTo(waistNwX, waistNwY)
+            lineTo(cx, cy)
+            lineTo(waistSeX, waistSeY)
+            close()
+        }
+        val origStroke = strokePaint.strokeWidth
+        strokePaint.strokeWidth = w * 0.065f
+        c.drawPath(swArrow, strokePaint)
+
+        c.drawCircle(cx, cy, w * 0.065f, strokePaint)
+        strokePaint.strokeWidth = origStroke
     }
 
     private fun drawSources(c: Canvas, w: Float, h: Float) {
@@ -137,28 +156,70 @@ class NavIconView(context: Context) : View(context) {
     }
 
     private fun drawAddons(c: Canvas, w: Float, h: Float) {
-        // A real single-piece puzzle silhouette (body + one knob bump + one
-        // notch cut) built via path boolean ops. Drawn filled (like
-        // Settings/Logo) rather than thin-stroked -- at a 22dp rail size a
-        // hairline outline on a shape this small reads as a vague rounded
-        // square; a solid silhouette reads unambiguously as a puzzle piece.
-        // Bump/notch are also sized up for the same reason.
-        val body = Path()
-        body.addRoundRect(
-            RectF(w * 0.20f, h * 0.24f, w * 0.80f, h * 0.80f),
-            w * 0.05f, w * 0.05f,
-            Path.Direction.CW
+        val origJoin = strokePaint.strokeJoin
+        strokePaint.strokeJoin = Paint.Join.ROUND
+
+        val left = w * 0.23f
+        val right = w * 0.77f
+        val top = h * 0.23f
+        val bottom = h * 0.77f
+        val cx = w * 0.5f
+        val cy = h * 0.5f
+
+        val headR = w * 0.145f
+        val neckHalf = w * 0.09f
+        val headOffset = w * 0.055f
+
+        val path = Path()
+
+        // Top Edge (Outward Bulb)
+        path.moveTo(left, top)
+        path.lineTo(cx - neckHalf, top)
+        val topHeadCenterY = top - headOffset
+        path.arcTo(
+            RectF(cx - headR, topHeadCenterY - headR, cx + headR, topHeadCenterY + headR),
+            145f,
+            250f,
+            false
         )
+        path.lineTo(right, top)
 
-        val knob = Path()
-        knob.addCircle(w * 0.80f, h * 0.40f, w * 0.15f, Path.Direction.CW)
-        body.op(knob, Path.Op.UNION)
+        // Right Edge (Inward Notch)
+        path.lineTo(right, cy - neckHalf)
+        val rightHeadCenterX = right - headOffset
+        path.arcTo(
+            RectF(rightHeadCenterX - headR, cy - headR, rightHeadCenterX + headR, cy + headR),
+            -125f,
+            -250f,
+            false
+        )
+        path.lineTo(right, bottom)
 
-        val notch = Path()
-        notch.addCircle(w * 0.50f, h * 0.24f, w * 0.14f, Path.Direction.CW)
-        body.op(notch, Path.Op.DIFFERENCE)
+        // Bottom Edge (Inward Notch)
+        path.lineTo(cx + neckHalf, bottom)
+        val bottomHeadCenterY = bottom - headOffset
+        path.arcTo(
+            RectF(cx - headR, bottomHeadCenterY - headR, cx + headR, bottomHeadCenterY + headR),
+            -35f,
+            -250f,
+            false
+        )
+        path.lineTo(left, bottom)
 
-        c.drawPath(body, fillPaint)
+        // Left Edge (Outward Bulb)
+        path.lineTo(left, cy + neckHalf)
+        val leftHeadCenterX = left - headOffset
+        path.arcTo(
+            RectF(leftHeadCenterX - headR, cy - headR, leftHeadCenterX + headR, cy + headR),
+            55f,
+            250f,
+            false
+        )
+        path.lineTo(left, top)
+        path.close()
+
+        c.drawPath(path, strokePaint)
+        strokePaint.strokeJoin = origJoin
     }
 
     private fun drawSettings(c: Canvas, w: Float, h: Float) {
