@@ -45,6 +45,20 @@ function withNativeNavRail(config) {
       src = src.replace(/class MainActivity[^{]*\{/, (match) => `${match}${onContentChanged}`);
     }
 
+    // 1b. Tell the manager to drop its static references when this exact
+    // Activity instance goes away, so a relaunch in the same still-alive
+    // process (common on TV launchers/boxes after finishAffinity()) doesn't
+    // find a stale rail and skip attaching a fresh one.
+    if (!src.includes('NavRailManager.detachFromActivity')) {
+      const onDestroy = `
+    override fun onDestroy() {
+        NavRailManager.detachFromActivity(this)
+        super.onDestroy()
+    }
+`;
+      src = src.replace(/class MainActivity[^{]*\{/, (match) => `${match}${onDestroy}`);
+    }
+
     // 2. Back-key short circuit. Prefer merging into the dispatchKeyEvent
     // override installed by withKeyEvent.js; fall back to adding our own if
     // that plugin isn't present / already changed shape.
@@ -52,6 +66,13 @@ function withNativeNavRail(config) {
       const backCheck =
         '        if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK && event.action == android.view.KeyEvent.ACTION_DOWN && NavRailManager.shouldExitOnBack()) {\n' +
         '            finishAffinity()\n' +
+        '            // Belt-and-suspenders alongside the onDestroy() hook above:\n' +
+        '            // actually end the process on this intentional exit path\n' +
+        '            // instead of hoping the OS reclaims it before the user\n' +
+        '            // relaunches. Some TV launchers/boxes keep the process\n' +
+        '            // alive after finishAffinity() and just start a fresh\n' +
+        '            // Activity in it.\n' +
+        '            android.os.Process.killProcess(android.os.Process.myPid())\n' +
         '            return true\n' +
         '        }\n';
 
