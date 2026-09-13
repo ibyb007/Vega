@@ -77,6 +77,9 @@ function withNativeNavRail(config) {
         '        }\n' +
         '        if (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT && event.action == android.view.KeyEvent.ACTION_DOWN && NavRailManager.handleDpadLeft(this)) {\n' +
         '            return true\n' +
+        '        }\n' +
+        '        if (event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_RIGHT && event.action == android.view.KeyEvent.ACTION_DOWN && NavRailManager.handleDpadRight()) {\n' +
+        '            return true\n' +
         '        }\n';
 
       if (src.includes('override fun dispatchKeyEvent(event: KeyEvent): Boolean {')) {
