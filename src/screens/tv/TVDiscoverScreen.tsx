@@ -20,6 +20,7 @@ import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { providerManager } from '../../lib/services/ProviderManager';
@@ -92,7 +93,16 @@ interface TVDiscoverScreenProps {
   onNavigateRoute?: (route: TVRoute) => void;
   onPlayStream?: (streamUrl: string, title?: string, extraMeta?: any) => void;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
+  onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
 }
+
+// Module-level (not component state) so it survives this screen unmounting
+// when the user navigates to another rail route and back -- same pattern as
+// TVHomeScreen's `lastFocusedKey`. Tracks whichever browse-mode item (the
+// "Catalogs" button, a category pill, or a poster) last had real focus, so
+// the rail's Right-key/re-select can put focus back exactly there.
+let lastFocusedDiscoverKey: string | null = null;
 
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
   `${c.manifestUrl}::${c.type}::${c.id}`;
@@ -155,7 +165,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onNavigateRoute,
   onPlayStream,
   onRegisterBackHandler,
+  onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
 }) => {
+  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+    () => lastFocusedDiscoverKey,
+    onRegisterEntryHandleGetter,
+    onRegisterReturnFocusTrigger
+  );
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
   const [catalogs, setCatalogs] = useState<DiscoverCatalog[]>(savedDiscoverState?.catalogs || []);
@@ -1328,21 +1345,27 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             scrollEventThrottle={16}
           >
             <TVFocusablePressable
+              key={keyFor('manage-btn')}
               ref={(el) => {
                 manageBtnRef.current = el;
+                setItemRef('manage-btn', el);
                 // Eager registration -- this is a fixed, always-mounted
                 // button (not a virtualized list item), so it's safe and
                 // correct to register the instant it mounts rather than
                 // waiting for it to actually receive focus first.
                 if (el) registerRailLeftEdge('discover', el);
               }}
+              hasTVPreferredFocus={shouldPreferFocus('manage-btn', false)}
               scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
               // Fixed first item in this horizontal chip bar -- the true
               // left edge of the whole screen -- so Left from here should
               // always reach the Discover rail button.
-              onFocus={() => registerRailLeftEdge('discover', manageBtnRef.current)}
+              onFocus={() => {
+                lastFocusedDiscoverKey = 'manage-btn';
+                registerRailLeftEdge('discover', manageBtnRef.current);
+              }}
               onPress={() => setManageVisible(true)}
               style={styles.manageBtn}
             >
@@ -1356,15 +1379,18 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
             {visibleCatalogs.map((cat, idx) => {
               const isSelected = selectedCatalog ? catalogKey(cat) === catalogKey(selectedCatalog) : false;
+              const pillKey = `pill-${catalogKey(cat)}`;
               return (
                 <TVFocusablePressable
-                  key={catalogKey(cat)}
-                  hasTVPreferredFocus={idx === 0}
+                  key={keyFor(pillKey)}
+                  ref={(el) => setItemRef(pillKey, el)}
+                  hasTVPreferredFocus={shouldPreferFocus(pillKey, idx === 0)}
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={20}
                   onFocus={() => {
                     focusedPillRef.current = cat;
+                    lastFocusedDiscoverKey = pillKey;
                   }}
                   onBlur={() => {
                     focusedPillRef.current = null;
@@ -1423,21 +1449,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           >
             {items.map((item, index) => {
               const isLeftEdge = index % GRID_COLUMNS === 0;
+              const gridKey = `grid-${item.id}-${index}`;
               return (
                 <TVFocusablePressable
-                  key={`${item.id}-${index}`}
-                  ref={
-                    isLeftEdge
-                      ? (el) => {
-                          gridItemRefs.current[index] = el;
-                          if (el) registerRailLeftEdge('discover', el);
-                        }
-                      : undefined
-                  }
+                  key={keyFor(gridKey)}
+                  ref={(el) => {
+                    setItemRef(gridKey, el);
+                    if (isLeftEdge) {
+                      gridItemRefs.current[index] = el;
+                      if (el) registerRailLeftEdge('discover', el);
+                    }
+                  }}
+                  hasTVPreferredFocus={shouldPreferFocus(gridKey, false)}
                   scaleFocused={1.05}
                   focusedBorderColor="#FFFFFF"
                   borderRadius={8}
                   onFocus={() => {
+                    lastFocusedDiscoverKey = gridKey;
                     selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint);
                     // First column of this grid row -- Left from here should
                     // always reach the Discover rail button, whichever row

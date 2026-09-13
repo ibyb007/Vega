@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Switch, ToastAndroid } from 'react-
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import { settingsStorage } from '../../lib/storage';
 import { syncDohSettings, DOH_PROVIDERS } from '../../lib/services/dohService';
 import useThemeStore from '../../lib/zustand/themeStore';
@@ -35,9 +36,25 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
   },
 ];
 
-interface TVSettingsScreenProps {}
+interface TVSettingsScreenProps {
+  onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+}
 
-export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
+// Module-level so it survives this screen unmounting when the user leaves
+// the Settings tab and comes back -- same pattern as TVHomeScreen's
+// `lastFocusedKey`.
+let lastFocusedSettingsKey: string | null = null;
+
+export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
+  onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
+}) => {
+  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+    () => lastFocusedSettingsKey,
+    onRegisterEntryHandleGetter,
+    onRegisterReturnFocusTrigger
+  );
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const audioBoostProfile = useSettingsStore((state) => state.audioBoostProfile);
   const setAudioBoostProfile = useSettingsStore((state) => state.setAudioBoostProfile);
@@ -53,7 +70,11 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
   // mount (rather than only on focus) is enough since this screen's rows
   // are static, not virtualized, so there's no reordering/remounting to
   // race against.
-  const registerLeft = (el: View | null) => {
+  // Combines the rail's Left-edge registration with this hook's per-item
+  // ref bookkeeping, so every row on this screen can also serve as the
+  // rail's Right-key/re-select return-focus target.
+  const registerItem = (key: string) => (el: View | null) => {
+    setItemRef(key, el);
     if (el) registerRailLeftEdge('settings', el);
   };
 
@@ -138,10 +159,13 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
       <Text style={styles.sectionHeader}>Audio Preamp & Speech Clarity</Text>
       {AUDIO_PROFILES.map((p) => {
         const isSelected = audioBoostProfile === p.id;
+        const rowKey = `audio-${p.id}`;
         return (
           <TVFocusablePressable
-            key={p.id}
-            ref={registerLeft}
+            key={keyFor(rowKey)}
+            ref={registerItem(rowKey)}
+            hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
+            onFocus={() => (lastFocusedSettingsKey = rowKey)}
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
@@ -179,7 +203,10 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
       <Text style={styles.sectionHeader}>Network & DNS over HTTPS (DoH)</Text>
       
       <TVFocusablePressable
-        ref={registerLeft}
+        key={keyFor('doh-toggle')}
+        ref={registerItem('doh-toggle')}
+        hasTVPreferredFocus={shouldPreferFocus('doh-toggle', false)}
+        onFocus={() => (lastFocusedSettingsKey = 'doh-toggle')}
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
@@ -212,10 +239,13 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
           <Text style={styles.subGroupTitle}>Select DoH Resolver</Text>
           {DOH_OPTIONS.map((item) => {
             const isSelected = activeDohProvider === item.id;
+            const rowKey = `doh-provider-${item.id}`;
             return (
               <TVFocusablePressable
-                key={item.id}
-                ref={registerLeft}
+                key={keyFor(rowKey)}
+                ref={registerItem(rowKey)}
+                hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
+                onFocus={() => (lastFocusedSettingsKey = rowKey)}
                 scaleFocused={1.02}
                 focusedBorderColor={primaryColor}
                 borderRadius={10}
@@ -252,10 +282,13 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
         { id: 'system', title: 'System Chooser / Just Player', subtitle: 'Prompt Android app picker on playback' },
       ].map((p) => {
         const isSelected = selectedPlayer === p.id;
+        const rowKey = `player-${p.id}`;
         return (
           <TVFocusablePressable
-            key={p.id}
-            ref={registerLeft}
+            key={keyFor(rowKey)}
+            ref={registerItem(rowKey)}
+            hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
+            onFocus={() => (lastFocusedSettingsKey = rowKey)}
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
@@ -292,10 +325,16 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = () => {
         <View style={styles.chipRow}>
           {['360p', '480p', '720p'].map((quality, qIndex) => {
             const selected = excludedQualities.includes(quality);
+            const rowKey = `quality-${quality}`;
             return (
               <TVFocusablePressable
-                key={quality}
-                ref={qIndex === 0 ? registerLeft : undefined}
+                key={keyFor(rowKey)}
+                ref={(el) => {
+                  setItemRef(rowKey, el);
+                  if (qIndex === 0 && el) registerRailLeftEdge('settings', el);
+                }}
+                hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
+                onFocus={() => (lastFocusedSettingsKey = rowKey)}
                 scaleFocused={1.05}
                 focusedBorderColor={primaryColor}
                 borderRadius={16}

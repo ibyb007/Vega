@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Image, Dimensions } from 'react-nat
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import useContentStore from '../../lib/zustand/contentStore';
 import { Provider } from '../../lib/providers/types';
 
@@ -24,12 +25,26 @@ const GRID_COLUMNS = Math.max(
 interface TVSourceSelectScreenProps {
   onNavigateHome?: () => void;
   onNavigateAddons?: () => void;
+  onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
 }
+
+// Module-level so it survives this screen unmounting when the user leaves
+// the Sources tab and comes back -- same pattern as TVHomeScreen's
+// `lastFocusedKey`.
+let lastFocusedSourcesKey: string | null = null;
 
 export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   onNavigateHome,
   onNavigateAddons,
+  onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
 }) => {
+  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+    () => lastFocusedSourcesKey,
+    onRegisterEntryHandleGetter,
+    onRegisterReturnFocusTrigger
+  );
   const provider = useContentStore((state) => state.provider);
   const setProvider = useContentStore((state) => state.setProvider);
   const secondaryProvider = useContentStore((state) => state.secondaryProvider);
@@ -67,12 +82,16 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
         {onNavigateAddons && (
           <TVFocusablePressable
+            key={keyFor('manage-addons-btn')}
             ref={(el) => {
+              setItemRef('manage-addons-btn', el);
               // The header title beside this button isn't focusable, so
               // Left from here has nothing else to land on within the
               // screen -- it should always reach the Sources rail button.
               if (el) registerRailLeftEdge('sources', el);
             }}
+            hasTVPreferredFocus={shouldPreferFocus('manage-addons-btn', false)}
+            onFocus={() => (lastFocusedSourcesKey = 'manage-addons-btn')}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
@@ -99,10 +118,13 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
           </Text>
           {onNavigateAddons && (
             <TVFocusablePressable
+              key={keyFor('install-now-btn')}
               ref={(el) => {
+                setItemRef('install-now-btn', el);
                 if (el) registerRailLeftEdge('sources', el);
               }}
-              hasTVPreferredFocus={true}
+              hasTVPreferredFocus={shouldPreferFocus('install-now-btn', true)}
+              onFocus={() => (lastFocusedSourcesKey = 'install-now-btn')}
               scaleFocused={1.06}
               focusedBorderColor="#FFFFFF"
               borderRadius={12}
@@ -129,18 +151,19 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               const displayName = item.displayTitle || item.name || item.value || `Source ${index + 1}`;
               const version = item.version ? `v${item.version}` : 'v1.0.0';
               const author = item.author || 'global';
+              const cardKey = `provider-${item.value}-${index}`;
 
               return (
                 <TVFocusablePressable
-                  key={`${item.value}-${index}`}
-                  ref={
-                    index % GRID_COLUMNS === 0
-                      ? (el) => {
-                          if (el) registerRailLeftEdge('sources', el);
-                        }
-                      : undefined
-                  }
-                  hasTVPreferredFocus={isSelected || index === 0}
+                  key={keyFor(cardKey)}
+                  ref={(el) => {
+                    setItemRef(cardKey, el);
+                    if (index % GRID_COLUMNS === 0 && el) {
+                      registerRailLeftEdge('sources', el);
+                    }
+                  }}
+                  hasTVPreferredFocus={shouldPreferFocus(cardKey, isSelected || index === 0)}
+                  onFocus={() => (lastFocusedSourcesKey = cardKey)}
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={16}
@@ -211,11 +234,15 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
               <View style={styles.chipRow}>
                 <TVFocusablePressable
+                  key={keyFor('secondary-none')}
                   ref={(el) => {
+                    setItemRef('secondary-none', el);
                     // Fixed first chip in this row -- another left-edge row
                     // on this screen, below the main provider grid.
                     if (el) registerRailLeftEdge('sources', el);
                   }}
+                  hasTVPreferredFocus={shouldPreferFocus('secondary-none', false)}
+                  onFocus={() => (lastFocusedSourcesKey = 'secondary-none')}
                   scaleFocused={1.05}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={16}
@@ -241,9 +268,13 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                   const isSelected = secondaryProvider?.value === item.value;
                   const displayName =
                     item.displayTitle || item.name || item.display_name || item.value;
+                  const chipKey = `secondary-${item.value}`;
                   return (
                     <TVFocusablePressable
-                      key={`secondary-${item.value}`}
+                      key={keyFor(chipKey)}
+                      ref={(el) => setItemRef(chipKey, el)}
+                      hasTVPreferredFocus={shouldPreferFocus(chipKey, false)}
+                      onFocus={() => (lastFocusedSourcesKey = chipKey)}
                       scaleFocused={1.05}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={16}
