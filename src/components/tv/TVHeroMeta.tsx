@@ -188,7 +188,12 @@ const styles = StyleSheet.create({
   contentWrapper: {
     position: 'absolute',
     top: 20,
-    left: 88, // Aligns flush with the sidebar nav rail
+    // Was hardcoded to 88, calibrated back when the row content below it sat
+    // at a ~156px total inset (72 rail reserve + 84 row padding). Now that
+    // the row padding is trimmed to 20 (92 total), this needs to match so
+    // the title/synopsis stay flush with the content underneath instead of
+    // sitting well to the right of it.
+    left: 20,
     maxWidth: 620,
     zIndex: 10,
   },
