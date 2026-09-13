@@ -90,7 +90,11 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             setColor(ACCENT)
         }
         header.addView(logo, LayoutParams(dp(30), dp(30)).apply {
-            leftMargin = dp(10)
+            // 22dp lines the logo's own left edge up with the row icons'
+            // left edge: menuContainer's 8dp margin + each row's 12dp
+            // padding + the 2dp the 22dp icon is inset within its 26dp
+            // iconBox = 22dp from the rail's left edge.
+            leftMargin = dp(22)
             topMargin = dp(20)
         })
 
@@ -109,7 +113,10 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             alpha = 0f
         }
         header.addView(wordmarkView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-            leftMargin = dp(50)
+            // 60dp lines the wordmark up with the row labels: 8dp
+            // menuContainer margin + 12dp row padding + 26dp iconBox + 14dp
+            // label marginStart = 60dp from the rail's left edge.
+            leftMargin = dp(60)
             topMargin = dp(26)
         })
 
