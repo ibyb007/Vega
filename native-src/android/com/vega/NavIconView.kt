@@ -106,17 +106,19 @@ class NavIconView(context: Context) : View(context) {
         val r = w * 0.4f
         c.drawCircle(cx, cy, r, strokePaint)
 
-        // Slim NE/SW-pointing kite needle with a center pin, closer to the
-        // compass glyph Stremio uses than the old blockier diamond.
-        val nr = r * 0.62f
+        // NE/SW-pointing kite needle with a center pin. The waist is a
+        // healthy fraction of the tip-to-tip length (was ~0.18/0.72 = a
+        // thin sliver that read as a faint scratch at rail size) so the
+        // needle actually reads as a compass needle at 22dp.
+        val nr = r * 0.8f
         val needle = Path()
-        needle.moveTo(cx + nr * 0.72f, cy - nr * 0.72f) // NE tip
-        needle.lineTo(cx, cy - nr * 0.18f)
-        needle.lineTo(cx - nr * 0.72f, cy + nr * 0.72f) // SW tip
-        needle.lineTo(cx, cy + nr * 0.18f)
+        needle.moveTo(cx + nr * 0.85f, cy - nr * 0.85f) // NE tip
+        needle.lineTo(cx + nr * 0.22f, cy - nr * 0.22f)
+        needle.lineTo(cx - nr * 0.85f, cy + nr * 0.85f) // SW tip
+        needle.lineTo(cx - nr * 0.22f, cy + nr * 0.22f)
         needle.close()
         c.drawPath(needle, fillPaint)
-        c.drawCircle(cx, cy, w * 0.035f, fillPaint)
+        c.drawCircle(cx, cy, w * 0.05f, fillPaint)
     }
 
     private fun drawSources(c: Canvas, w: Float, h: Float) {
@@ -136,25 +138,27 @@ class NavIconView(context: Context) : View(context) {
 
     private fun drawAddons(c: Canvas, w: Float, h: Float) {
         // A real single-piece puzzle silhouette (body + one knob bump + one
-        // notch cut) built via path boolean ops, rather than a square with
-        // a circle glued to its edge -- reads as "puzzle" at a glance the
-        // way Stremio's addons icon does.
+        // notch cut) built via path boolean ops. Drawn filled (like
+        // Settings/Logo) rather than thin-stroked -- at a 22dp rail size a
+        // hairline outline on a shape this small reads as a vague rounded
+        // square; a solid silhouette reads unambiguously as a puzzle piece.
+        // Bump/notch are also sized up for the same reason.
         val body = Path()
         body.addRoundRect(
-            RectF(w * 0.18f, h * 0.22f, w * 0.78f, h * 0.82f),
-            w * 0.06f, w * 0.06f,
+            RectF(w * 0.20f, h * 0.24f, w * 0.80f, h * 0.80f),
+            w * 0.05f, w * 0.05f,
             Path.Direction.CW
         )
 
         val knob = Path()
-        knob.addCircle(w * 0.78f, h * 0.42f, w * 0.13f, Path.Direction.CW)
+        knob.addCircle(w * 0.80f, h * 0.40f, w * 0.15f, Path.Direction.CW)
         body.op(knob, Path.Op.UNION)
 
         val notch = Path()
-        notch.addCircle(w * 0.48f, h * 0.22f, w * 0.12f, Path.Direction.CW)
+        notch.addCircle(w * 0.50f, h * 0.24f, w * 0.14f, Path.Direction.CW)
         body.op(notch, Path.Op.DIFFERENCE)
 
-        c.drawPath(body, strokePaint)
+        c.drawPath(body, fillPaint)
     }
 
     private fun drawSettings(c: Canvas, w: Float, h: Float) {
