@@ -44,11 +44,13 @@ jobs:
           VERSION_CODE=$((100 + ${{ github.run_number }}))
           RUN_ATTEMPT=${{ github.run_attempt }}
 
-          # Ensure unique tag name across runs and re-run attempts
+          # Ensure unique tag name across runs and re-run attempts.
+          # "-kotlin" sits right next to the version so it's visible on the
+          # tag, the release title, and every APK filename below.
           if [ "$RUN_ATTEMPT" -gt 1 ]; then
-            TAG_NAME="v${VERSION_NAME}-tv-${{ github.run_number }}.${RUN_ATTEMPT}"
+            TAG_NAME="v${VERSION_NAME}-kotlin-tv-${{ github.run_number }}.${RUN_ATTEMPT}"
           else
-            TAG_NAME="v${VERSION_NAME}-tv-${{ github.run_number }}"
+            TAG_NAME="v${VERSION_NAME}-kotlin-tv-${{ github.run_number }}"
           fi
 
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
