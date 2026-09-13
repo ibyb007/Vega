@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, Dimensions } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Image, Dimensions, findNodeHandle } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
@@ -51,6 +51,16 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders) || [];
 
+  // Native node handle of the "Add / Manage Addons" button, captured once
+  // it mounts (see its ref callback below) so the top row of provider
+  // cards -- and the empty-state "Install Providers" CTA -- can wire an
+  // explicit nextFocusUp to it. Without this, Android's default geometric
+  // focus search sometimes prefers the nav rail's own Search button over
+  // this pill when pressing Up from the top row: the rail sits closer in
+  // both x and y even though "Add / Manage Addons" is the button that's
+  // actually directly above with nothing else in between.
+  const [manageAddonsHandle, setManageAddonsHandle] = useState<number | null>(null);
+
   // No local back-stack on this screen — Back is handled centrally by
   // App.tsx, which moves focus to the Sources button on the rail.
 
@@ -89,6 +99,8 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               // Left from here has nothing else to land on within the
               // screen -- it should always reach the Sources rail button.
               if (el) registerRailLeftEdge('sources', el);
+              const tag = el ? findNodeHandle(el) : null;
+              if (tag != null) setManageAddonsHandle(tag);
             }}
             hasTVPreferredFocus={shouldPreferFocus('manage-addons-btn', false)}
             onFocus={() => (lastFocusedSourcesKey = 'manage-addons-btn')}
@@ -125,6 +137,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               }}
               hasTVPreferredFocus={shouldPreferFocus('install-now-btn', true)}
               onFocus={() => (lastFocusedSourcesKey = 'install-now-btn')}
+              nextFocusUp={manageAddonsHandle ?? undefined}
               scaleFocused={1.06}
               focusedBorderColor="#FFFFFF"
               borderRadius={12}
@@ -164,6 +177,10 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                   }}
                   hasTVPreferredFocus={shouldPreferFocus(cardKey, isSelected || index === 0)}
                   onFocus={() => (lastFocusedSourcesKey = cardKey)}
+                  // Only the first row has nothing else above it -- rows
+                  // below correctly fall back to Android's default search,
+                  // which finds the row above just fine.
+                  nextFocusUp={index < GRID_COLUMNS ? manageAddonsHandle ?? undefined : undefined}
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={16}
