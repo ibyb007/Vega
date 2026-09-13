@@ -60,6 +60,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     private lateinit var menuContainer: LinearLayout
     private lateinit var indicatorPill: View
     private lateinit var background2: GradientDrawable
+    private lateinit var wordmarkView: TextView
 
     private val collapseRunnable = Runnable { collapseIfIdle() }
 
@@ -92,6 +93,26 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             leftMargin = dp(10)
             topMargin = dp(20)
         })
+
+        // "VEGA TV" wordmark shown next to the logo, mirroring how the
+        // row labels behave: hidden/collapsed to nothing while the rail is
+        // collapsed, faded + revealed in step with the expand animation.
+        wordmarkView = TextView(context).apply {
+            text = "VEGA TV"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            letterSpacing = 0.05f
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            visibility = View.GONE
+            alpha = 0f
+        }
+        header.addView(wordmarkView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dp(50)
+            topMargin = dp(26)
+        })
+
         addView(header, LayoutParams(LayoutParams.MATCH_PARENT, dp(56)))
 
         menuContainer = LinearLayout(context).apply {
@@ -245,6 +266,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
         if (value) {
             rows.forEach { it.labelView.visibility = View.VISIBLE }
+            wordmarkView.visibility = View.VISIBLE
         }
 
         val animator = ValueAnimator.ofFloat(0f, 1f)
@@ -260,10 +282,14 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             }
             background2.setColor(evaluator.evaluate(t, fromColor, toColor) as Int)
             rows.forEach { it.labelView.alpha = if (value) t else 1f - t }
+            wordmarkView.alpha = if (value) t else 1f - t
         }
         animator.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                if (!value) rows.forEach { it.labelView.visibility = View.GONE }
+                if (!value) {
+                    rows.forEach { it.labelView.visibility = View.GONE }
+                    wordmarkView.visibility = View.GONE
+                }
             }
         })
         animator.start()
