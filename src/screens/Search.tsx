@@ -12,6 +12,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { TVFocusablePressable } from '../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../lib/tv/registerRailLeftEdge';
+import { useTVEntryFocus } from '../lib/tv/useTVEntryFocus';
 import useContentStore from '../lib/zustand/contentStore';
 import { providerManager } from '../lib/services/ProviderManager';
 import { extensionStorage } from '../lib/storage';
@@ -28,13 +29,30 @@ interface SearchResultGroup {
 interface TVSearchProps {
   onSelectItem: (item: Post) => void;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
+  onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
 }
 
 const getProviderDisplayName = (p: Provider | any): string => {
   return p?.display_name || p?.displayTitle || p?.name || p?.value || 'Provider';
 };
 
-export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSearchProps) {
+// Module-level so it survives this screen unmounting when the user leaves
+// the Search tab and comes back -- same pattern as TVHomeScreen's
+// `lastFocusedKey`.
+let lastFocusedSearchKey: string | null = null;
+
+export default function TVSearch({
+  onSelectItem,
+  onRegisterBackHandler,
+  onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
+}: TVSearchProps) {
+  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+    () => lastFocusedSearchKey,
+    onRegisterEntryHandleGetter,
+    onRegisterReturnFocusTrigger
+  );
   const [query, setQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<SearchResultGroup[]>([]);
@@ -267,11 +285,15 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
 
         <View style={styles.header}>
           <TVFocusablePressable
+            key={keyFor('search-bar')}
             ref={(el) => {
+              setItemRef('search-bar', el);
               // Fixed, always-mounted -- the true left edge of the whole
               // screen -- so it's safe to register the instant it mounts.
               if (el) registerRailLeftEdge('search', el);
             }}
+            hasTVPreferredFocus={shouldPreferFocus('search-bar', false)}
+            onFocus={() => (lastFocusedSearchKey = 'search-bar')}
             scaleFocused={1.02}
             focusedBorderColor="#8A5CF6"
             borderRadius={14}
@@ -311,7 +333,10 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
           </TVFocusablePressable>
 
           <TVFocusablePressable
-            hasTVPreferredFocus={true}
+            key={keyFor('search-submit')}
+            ref={(el) => setItemRef('search-submit', el)}
+            hasTVPreferredFocus={shouldPreferFocus('search-submit', true)}
+            onFocus={() => (lastFocusedSearchKey = 'search-submit')}
             scaleFocused={1.05}
             focusedBorderColor="#FFFFFF"
             borderRadius={12}
@@ -341,11 +366,15 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
               contentContainerStyle={styles.tabScroll}
             >
               <TVFocusablePressable
+                key={keyFor('tab-all')}
                 ref={(el) => {
+                  setItemRef('tab-all', el);
                   // Fixed first tab in this horizontal bar -- another of the
                   // screen's left-edge rows once results are showing.
                   if (el) registerRailLeftEdge('search', el);
                 }}
+                hasTVPreferredFocus={shouldPreferFocus('tab-all', false)}
+                onFocus={() => (lastFocusedSearchKey = 'tab-all')}
                 scaleFocused={1.06}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={20}
@@ -359,35 +388,41 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
                 )}
               </TVFocusablePressable>
 
-              {results.map((group) => (
-                <TVFocusablePressable
-                  key={group.provider.value}
-                  scaleFocused={1.06}
-                  focusedBorderColor="#8A5CF6"
-                  borderRadius={20}
-                  onPress={() => setActiveTab(group.provider.value)}
-                  style={[
-                    styles.tabItem,
-                    activeTab === group.provider.value && styles.tabItemActive,
-                  ]}
-                >
-                  {() => (
-                    <View style={styles.tabContentRow}>
-                      <Text
-                        style={[
-                          styles.tabText,
-                          activeTab === group.provider.value && styles.tabTextActive,
-                        ]}
-                      >
-                        {group.providerName}
-                      </Text>
-                      <View style={styles.tabBadge}>
-                        <Text style={styles.tabBadgeText}>{group.posts.length}</Text>
+              {results.map((group) => {
+                const tabKey = `tab-${group.provider.value}`;
+                return (
+                  <TVFocusablePressable
+                    key={keyFor(tabKey)}
+                    ref={(el) => setItemRef(tabKey, el)}
+                    hasTVPreferredFocus={shouldPreferFocus(tabKey, false)}
+                    onFocus={() => (lastFocusedSearchKey = tabKey)}
+                    scaleFocused={1.06}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={20}
+                    onPress={() => setActiveTab(group.provider.value)}
+                    style={[
+                      styles.tabItem,
+                      activeTab === group.provider.value && styles.tabItemActive,
+                    ]}
+                  >
+                    {() => (
+                      <View style={styles.tabContentRow}>
+                        <Text
+                          style={[
+                            styles.tabText,
+                            activeTab === group.provider.value && styles.tabTextActive,
+                          ]}
+                        >
+                          {group.providerName}
+                        </Text>
+                        <View style={styles.tabBadge}>
+                          <Text style={styles.tabBadgeText}>{group.posts.length}</Text>
+                        </View>
                       </View>
-                    </View>
-                  )}
-                </TVFocusablePressable>
-              ))}
+                    )}
+                  </TVFocusablePressable>
+                );
+              })}
             </ScrollView>
           </View>
         )}
@@ -433,61 +468,65 @@ export default function TVSearch({ onSelectItem, onRegisterBackHandler }: TVSear
                       showsHorizontalScrollIndicator={false}
                       contentContainerStyle={styles.horizontalRow}
                     >
-                      {group.posts.map((item: any, pIndex) => (
-                        <TVFocusablePressable
-                          key={`${item.link}-${pIndex}`}
-                          ref={
-                            pIndex === 0
-                              ? (el) => {
-                                  // First poster of this provider's row sits
-                                  // at the screen's left edge -- register
-                                  // eagerly on mount (race-free) since these
-                                  // rows can re-render/reorder as results
-                                  // stream in.
-                                  if (el) registerRailLeftEdge('search', el);
-                                }
-                              : undefined
-                          }
-                          scaleFocused={1.08}
-                          focusedBorderColor="#8A5CF6"
-                          borderRadius={10}
-                          onFocus={() =>
-                            setActiveHero({
-                              title: item.title,
-                              backdropUrl: item.image,
-                              overview: item.extra || 'Select to browse stream links and episodes.',
-                              sourceName: group.providerName,
-                            })
-                          }
-                          onPress={() => onSelectItem(item)}
-                          style={styles.card}
-                        >
-                          {({ focused }) => (
-                            <View style={styles.cardInner}>
-                              <Image
-                                source={{
-                                  uri:
-                                    item.image ||
-                                    'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                                }}
-                                style={styles.cardPoster}
-                                resizeMode="cover"
-                              />
-                              <View style={styles.cardTopSourceBadge}>
-                                <Text numberOfLines={1} style={styles.cardTopSourceText}>
-                                  {group.providerName}
-                                </Text>
+                      {group.posts.map((item: any, pIndex) => {
+                        const posterKey = `poster-${group.provider.value}-${item.link}-${pIndex}`;
+                        return (
+                          <TVFocusablePressable
+                            key={keyFor(posterKey)}
+                            ref={(el) => {
+                              setItemRef(posterKey, el);
+                              if (pIndex === 0 && el) {
+                                // First poster of this provider's row sits
+                                // at the screen's left edge -- register
+                                // eagerly on mount (race-free) since these
+                                // rows can re-render/reorder as results
+                                // stream in.
+                                registerRailLeftEdge('search', el);
+                              }
+                            }}
+                            hasTVPreferredFocus={shouldPreferFocus(posterKey, false)}
+                            scaleFocused={1.08}
+                            focusedBorderColor="#8A5CF6"
+                            borderRadius={10}
+                            onFocus={() => {
+                              lastFocusedSearchKey = posterKey;
+                              setActiveHero({
+                                title: item.title,
+                                backdropUrl: item.image,
+                                overview: item.extra || 'Select to browse stream links and episodes.',
+                                sourceName: group.providerName,
+                              });
+                            }}
+                            onPress={() => onSelectItem(item)}
+                            style={styles.card}
+                          >
+                            {({ focused }) => (
+                              <View style={styles.cardInner}>
+                                <Image
+                                  source={{
+                                    uri:
+                                      item.image ||
+                                      'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+                                  }}
+                                  style={styles.cardPoster}
+                                  resizeMode="cover"
+                                />
+                                <View style={styles.cardTopSourceBadge}>
+                                  <Text numberOfLines={1} style={styles.cardTopSourceText}>
+                                    {group.providerName}
+                                  </Text>
+                                </View>
+                                {focused && <View style={styles.cardGlow} />}
+                                <View style={styles.cardLabelBottom}>
+                                  <Text numberOfLines={1} style={styles.cardLabelText}>
+                                    {item.title}
+                                  </Text>
+                                </View>
                               </View>
-                              {focused && <View style={styles.cardGlow} />}
-                              <View style={styles.cardLabelBottom}>
-                                <Text numberOfLines={1} style={styles.cardLabelText}>
-                                  {item.title}
-                                </Text>
-                              </View>
-                            </View>
-                          )}
-                        </TVFocusablePressable>
-                      ))}
+                            )}
+                          </TVFocusablePressable>
+                        );
+                      })}
                     </ScrollView>
                   ) : null}
                 </View>
