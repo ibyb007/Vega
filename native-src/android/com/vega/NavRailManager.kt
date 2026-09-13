@@ -102,6 +102,19 @@ object NavRailManager {
      */
     fun shouldExitOnBack(): Boolean = isRailFocused()
 
+    /**
+     * Handles DPAD_RIGHT for the whole Activity, mirroring [handleDpadLeft].
+     * Delegates the actual decision to the rail (see
+     * `TVNavRailView.requestRightNavigation()`), which asks JS live rather
+     * than jumping to a statically-cached target.
+     */
+    fun handleDpadRight(): Boolean {
+        val rail = railRef?.get() ?: return false
+        if (rail.visibility != View.VISIBLE) return false
+        if (!rail.hasFocus()) return false
+        return rail.requestRightNavigation()
+    }
+
     fun setActiveRoute(route: String) {
         railRef?.get()?.setActiveRouteFromJs(route)
     }
