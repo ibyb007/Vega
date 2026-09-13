@@ -102,7 +102,6 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             leftMargin = dp(8)
             rightMargin = dp(8)
         }
-        addView(menuContainer, menuLp)
 
         indicatorPill = View(context).apply {
             background = GradientDrawable().apply {
@@ -110,14 +109,19 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
                 cornerRadius = dp(10).toFloat()
             }
         }
-        menuContainer.addView(
-            indicatorPill,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP))
-        )
-        (indicatorPill.layoutParams as LinearLayout.LayoutParams).apply {
-            // Positioned via translationY, not layout -- it lives in the
-            // stack as the first child purely so it paints behind the rows.
+        // Added directly to the root FrameLayout -- NOT to menuContainer --
+        // with the same left/right/top offsets menuContainer uses, so index
+        // 0's translationY of 0 lines up exactly with the first row. Being
+        // a LinearLayout child (the old bug) made it consume real layout
+        // space and push every row down by one slot.
+        val pillLp = LayoutParams(LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP)).apply {
+            topMargin = dp(76)
+            leftMargin = dp(8)
+            rightMargin = dp(8)
         }
+        addView(indicatorPill, pillLp)
+
+        addView(menuContainer, menuLp)
 
         NAV_ITEMS.forEachIndexed { index, item ->
             val row = buildRow(item, index)
@@ -169,6 +173,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         row.labelView = label
 
         row.setOnFocusChangeListener { _, hasFocus ->
+            applyRowStyle(row)
             if (hasFocus) onRowFocused(item, index) else onRowBlurred()
         }
         row.setOnClickListener { onRowSelected(item) }
@@ -201,11 +206,8 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         focusDepth = 0
         scheduleCollapse()
         if (item.id == activeRoute) {
-            // Re-selecting the already-active tab: jump focus straight into
-            // that route's registered content entry point, exactly like a
-            // real View.requestFocus() call would -- no bridge round-trip
-            // needed to know *where* to land.
-            registeredTargets[item.id]?.requestFocus()
+            // Same live JS round-trip as requestRightNavigation() -- no
+            // static cached target, so this can't go stale either.
             listener?.onRouteReselected(item.id)
         } else {
             listener?.onRouteChanged(item.id)
@@ -269,31 +271,42 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
     // ---- external API (driven from NavRailModule / NavRailManager) --------
 
+    // A row is drawn bright/highlighted when it currently has real Android
+    // focus (you're actively browsing it) OR it's the active route (the
+    // "you are here" indicator even while focus has moved elsewhere, e.g.
+    // out into content). Everything else stays dim. This used to only
+    // check "is active route", so any row you focused while browsing that
+    // wasn't also the active route stayed stuck at dim gray sitting on top
+    // of the bright accent pill -- which is what read as washed-out/dimmed.
+    private fun applyRowStyle(row: NavItemRow) {
+        val highlighted = row.hasFocus() || row.item.id == activeRoute
+        row.iconView.setColor(if (highlighted) ACTIVE_COLOR else INACTIVE_ICON)
+        row.labelView.setTextColor(if (highlighted) ACTIVE_COLOR else INACTIVE_LABEL)
+        row.labelView.setTypeface(
+            row.labelView.typeface,
+            if (highlighted) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL
+        )
+    }
+
     fun setActiveRouteFromJs(route: String) {
         activeRoute = route
         val idx = NAV_ITEMS.indexOfFirst { it.id == route }
         if (idx >= 0) animateIndicatorTo(idx)
-        rows.forEach { row ->
-            val isActive = row.item.id == route
-            row.iconView.setColor(if (isActive) ACTIVE_COLOR else INACTIVE_ICON)
-            row.labelView.setTextColor(if (isActive) ACTIVE_COLOR else INACTIVE_LABEL)
-            row.labelView.setTypeface(row.labelView.typeface, if (isActive) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
-            // Only the active row's Right D-pad press should leave the rail --
-            // mirrors the old JS rail only ever wiring nextFocusRight for
-            // `item.id === currentRoute`.
-            row.nextFocusRightId = if (isActive) (registeredTargets[route]?.id ?: NO_ID) else NO_ID
-        }
+        rows.forEach { row -> applyRowStyle(row) }
     }
 
     fun registerRouteTarget(route: String, target: View?) {
+        // Kept for JS-side backward compatibility (NavRail.registerRouteHandleTag
+        // still calls this), but no longer drives focus directly -- Right
+        // from the rail now always goes through the live
+        // onRouteReselected -> entryReturnTrigger path instead (see
+        // requestRightNavigation()), so a stale cached target here can no
+        // longer cause a wrong or oscillating jump.
         if (target == null) {
             registeredTargets.remove(route)
         } else {
             if (target.id == NO_ID) target.id = generateViewId()
             registeredTargets[route] = target
-        }
-        if (route == activeRoute) {
-            rows.firstOrNull { it.item.id == route }?.nextFocusRightId = target?.id ?: NO_ID
         }
     }
 
@@ -304,6 +317,30 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     /** Always lands on the row for whichever route is currently displayed. */
     fun focusActiveRoute() {
         focusRoute(activeRoute)
+    }
+
+    /**
+     * Handles DPAD_RIGHT while the rail has focus. Deliberately does NOT
+     * jump focus itself via a static `nextFocusRightId` -- that value can
+     * only ever reflect a snapshot taken back when `currentRoute` last
+     * changed (see App.tsx), so it goes stale the instant you move focus
+     * around within the same screen and Right stops landing anywhere near
+     * where you actually were. Instead this asks JS live, at the moment of
+     * the key press, via the same "give me focus back" event already used
+     * when re-selecting the active tab with Enter -- which is presumably
+     * backed by each screen's own up-to-date last-focused ref, not a cached
+     * native id.
+     *
+     * Returns true (event consumed) whenever focus was on the rail at all,
+     * even on a non-active row, so Right can never fall through to
+     * Android's own geometric search and land somewhere arbitrary in
+     * content for the wrong screen.
+     */
+    fun requestRightNavigation(): Boolean {
+        val focusedRow = rows.firstOrNull { it.hasFocus() } ?: return false
+        if (focusedRow.item.id != activeRoute) return true // no defined target for a non-active row -- swallow, no-op
+        listener?.onRouteReselected(activeRoute)
+        return true
     }
 
     fun collapsedWidthPx(): Int = dp(COLLAPSED_WIDTH_DP)
