@@ -251,6 +251,19 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
     private fun collapseIfIdle() {
         if (focusDepth > 0) return
+        // Up/Down browsing moves the indicator pill to whichever row was
+        // last focused (see onRowFocused/animateIndicatorTo). If focus then
+        // leaves the rail without the active route actually changing --
+        // e.g. Right cancels the browse and returns to content for the
+        // same tab -- nothing else ever moves the pill back: JS has no
+        // reason to call setActiveRouteFromJs again since the route itself
+        // never changed, so the pill would otherwise sit on the
+        // browsed-to row indefinitely, even after the rail collapses.
+        // Re-sync it here, every time focus genuinely leaves the rail, so
+        // it always reflects the true active route once you're back in
+        // content.
+        val idx = NAV_ITEMS.indexOfFirst { it.id == activeRoute }
+        if (idx >= 0) animateIndicatorTo(idx)
         setExpanded(false)
     }
 
