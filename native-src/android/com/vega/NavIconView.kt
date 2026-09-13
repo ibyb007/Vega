@@ -79,10 +79,18 @@ class NavIconView(context: Context) : View(context) {
     }
 
     private fun drawHome(c: Canvas, w: Float, h: Float) {
+        val path = Path()
+        path.moveTo(w * 0.5f, h * 0.08f)
+        path.lineTo(w * 0.92f, h * 0.42f)
+        path.lineTo(w * 0.5f, h * 0.08f)
+        path.moveTo(w * 0.08f, h * 0.42f)
+        path.lineTo(w * 0.5f, h * 0.08f)
+        c.drawPath(path, strokePaint)
+
         val roof = Path()
-        roof.moveTo(w * 0.12f, h * 0.48f)
-        roof.lineTo(w * 0.5f, h * 0.1f)
-        roof.lineTo(w * 0.88f, h * 0.48f)
+        roof.moveTo(w * 0.16f, h * 0.46f)
+        roof.lineTo(w * 0.5f, h * 0.14f)
+        roof.lineTo(w * 0.84f, h * 0.46f)
         c.drawPath(roof, strokePaint)
 
         val body = RectF(w * 0.22f, h * 0.46f, w * 0.78f, h * 0.9f)
@@ -95,16 +103,20 @@ class NavIconView(context: Context) : View(context) {
     private fun drawDiscover(c: Canvas, w: Float, h: Float) {
         val cx = w * 0.5f
         val cy = h * 0.5f
-        val r = w * 0.42f
+        val r = w * 0.4f
         c.drawCircle(cx, cy, r, strokePaint)
 
+        // Slim NE/SW-pointing kite needle with a center pin, closer to the
+        // compass glyph Stremio uses than the old blockier diamond.
+        val nr = r * 0.62f
         val needle = Path()
-        needle.moveTo(cx + r * 0.55f, cy - r * 0.55f)
-        needle.lineTo(cx - r * 0.15f, cy + r * 0.1f)
-        needle.lineTo(cx - r * 0.55f, cy + r * 0.55f)
-        needle.lineTo(cx + r * 0.15f, cy - r * 0.1f)
+        needle.moveTo(cx + nr * 0.72f, cy - nr * 0.72f) // NE tip
+        needle.lineTo(cx, cy - nr * 0.18f)
+        needle.lineTo(cx - nr * 0.72f, cy + nr * 0.72f) // SW tip
+        needle.lineTo(cx, cy + nr * 0.18f)
         needle.close()
         c.drawPath(needle, fillPaint)
+        c.drawCircle(cx, cy, w * 0.035f, fillPaint)
     }
 
     private fun drawSources(c: Canvas, w: Float, h: Float) {
@@ -123,67 +135,75 @@ class NavIconView(context: Context) : View(context) {
     }
 
     private fun drawAddons(c: Canvas, w: Float, h: Float) {
-        // Rounded square body with a puzzle "knob" bump on one edge.
-        val body = RectF(w * 0.16f, h * 0.16f, w * 0.84f, h * 0.84f)
-        c.drawRoundRect(body, w * 0.08f, w * 0.08f, strokePaint)
-        val knobR = w * 0.12f
-        c.drawCircle(w * 0.84f, h * 0.5f, knobR, strokePaint)
+        // A real single-piece puzzle silhouette (body + one knob bump + one
+        // notch cut) built via path boolean ops, rather than a square with
+        // a circle glued to its edge -- reads as "puzzle" at a glance the
+        // way Stremio's addons icon does.
+        val body = Path()
+        body.addRoundRect(
+            RectF(w * 0.18f, h * 0.22f, w * 0.78f, h * 0.82f),
+            w * 0.06f, w * 0.06f,
+            Path.Direction.CW
+        )
+
+        val knob = Path()
+        knob.addCircle(w * 0.78f, h * 0.42f, w * 0.13f, Path.Direction.CW)
+        body.op(knob, Path.Op.UNION)
+
+        val notch = Path()
+        notch.addCircle(w * 0.48f, h * 0.22f, w * 0.12f, Path.Direction.CW)
+        body.op(notch, Path.Op.DIFFERENCE)
+
+        c.drawPath(body, strokePaint)
     }
 
     private fun drawSettings(c: Canvas, w: Float, h: Float) {
         val cx = w * 0.5f
         val cy = h * 0.5f
-        val outerR = w * 0.4f
-        val innerR = w * 0.16f
-        c.drawCircle(cx, cy, innerR, strokePaint)
+        val outerR = w * 0.32f
+        val innerR = w * 0.14f
+        val toothCount = 8
+        val toothHeight = w * 0.11f
+        val toothBaseHalf = w * 0.065f
+        val toothTipHalf = w * 0.042f
 
-        val toothLen = w * 0.14f
-        val toothWidth = w * 0.1f
-        c.save()
-        for (i in 0 until 8) {
-            c.save()
-            c.rotate((360f / 8f) * i, cx, cy)
-            val tooth = RectF(
-                cx - toothWidth / 2f,
-                cy - outerR,
-                cx + toothWidth / 2f,
-                cy - outerR + toothLen
-            )
-            c.drawRoundRect(tooth, toothWidth * 0.3f, toothWidth * 0.3f, fillPaint)
-            c.restore()
+        // Trapezoid teeth (wider at the base, narrower at the tip) fused
+        // onto the ring via boolean union -- a proper cog silhouette
+        // instead of rectangular blocks stuck on the outside.
+        val gear = Path()
+        gear.addCircle(cx, cy, outerR, Path.Direction.CW)
+        for (i in 0 until toothCount) {
+            val tooth = Path()
+            tooth.moveTo(-toothBaseHalf, -outerR)
+            tooth.lineTo(toothBaseHalf, -outerR)
+            tooth.lineTo(toothTipHalf, -outerR - toothHeight)
+            tooth.lineTo(-toothTipHalf, -outerR - toothHeight)
+            tooth.close()
+            val m = android.graphics.Matrix()
+            m.postRotate((360f / toothCount) * i)
+            m.postTranslate(cx, cy)
+            tooth.transform(m)
+            gear.op(tooth, Path.Op.UNION)
         }
-        c.restore()
+
+        val hole = Path()
+        hole.addCircle(cx, cy, innerR, Path.Direction.CW)
+        gear.op(hole, Path.Op.DIFFERENCE)
+
+        c.drawPath(gear, fillPaint)
     }
 
-    // Deliberately ignores the strokePaint/fillPaint colors set via
-    // setColor() -- the brand mark is always a solid accent-purple badge
-    // with a white play glyph, regardless of what color a focus/active
-    // state would otherwise tint a nav icon.
     private fun drawLogo(c: Canvas, w: Float, h: Float) {
         val cx = w * 0.5f
         val cy = h * 0.5f
-        val r = w * 0.5f
-
-        val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-            color = LOGO_ACCENT
-        }
-        c.drawCircle(cx, cy, r, badgePaint)
-
-        val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-            color = Color.WHITE
-        }
+        val r = w * 0.46f
+        c.drawCircle(cx, cy, r, strokePaint)
         val play = Path()
-        val pr = r * 0.52f
-        play.moveTo(cx - pr * 0.55f, cy - pr * 0.85f)
-        play.lineTo(cx - pr * 0.55f, cy + pr * 0.85f)
-        play.lineTo(cx + pr * 0.95f, cy)
+        val pr = r * 0.5f
+        play.moveTo(cx - pr * 0.5f, cy - pr * 0.8f)
+        play.lineTo(cx - pr * 0.5f, cy + pr * 0.8f)
+        play.lineTo(cx + pr * 0.9f, cy)
         play.close()
-        c.drawPath(play, glyphPaint)
-    }
-
-    companion object {
-        private val LOGO_ACCENT = Color.parseColor("#8A5CF6")
+        c.drawPath(play, fillPaint)
     }
 }
