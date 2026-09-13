@@ -289,6 +289,8 @@ export default function App() {
                         <TVSearch
                           onSelectItem={(item) => setSelectedItem(item)}
                           onRegisterBackHandler={handleRegisterBackHandler('search')}
+                          onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('search')}
+                          onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('search')}
                         />
                       )}
 
@@ -305,6 +307,8 @@ export default function App() {
                             });
                           }}
                           onRegisterBackHandler={handleRegisterBackHandler('discover')}
+                          onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('discover')}
+                          onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('discover')}
                         />
                       )}
 
@@ -312,6 +316,8 @@ export default function App() {
                         <TVSourceSelectScreen
                           onNavigateHome={() => navigateTo('home')}
                           onNavigateAddons={() => navigateTo('addons')}
+                          onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('sources')}
+                          onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('sources')}
                         />
                       )}
 
@@ -323,10 +329,17 @@ export default function App() {
                           } as any}
                           route={{} as any}
                           onRegisterBackHandler={handleRegisterBackHandler('addons')}
+                          onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('addons')}
+                          onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('addons')}
                         />
                       )}
 
-                      {currentRoute === 'settings' && <TVSettingsScreen />}
+                      {currentRoute === 'settings' && (
+                        <TVSettingsScreen
+                          onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('settings')}
+                          onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('settings')}
+                        />
+                      )}
                     </View>
                   </View>
                 )}
