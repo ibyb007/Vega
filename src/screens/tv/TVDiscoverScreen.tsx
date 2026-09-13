@@ -19,6 +19,7 @@ import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
+import { NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import useContentStore from '../../lib/zustand/contentStore';
@@ -56,8 +57,20 @@ const CONTAINER_PADDING_LEFT = 20;
 const CONTAINER_PADDING_RIGHT = 40;
 const GRID_GAP = 14;
 const GRID_COLUMNS = 6;
+// This screen's content sits inside App.tsx's shared viewport wrapper,
+// which already applies `paddingLeft: NATIVE_RAIL_COLLAPSED_WIDTH` (72dp)
+// to reserve room for the collapsed rail -- on top of this screen's own
+// CONTAINER_PADDING_LEFT/RIGHT. The old CARD_WIDTH math sized 6 columns
+// against the raw SCREEN_WIDTH and never subtracted that 72dp, so the
+// cards were sized wider than the real available row width: the 6th
+// column had nowhere to go, wrapped to the next line, and left a gap on
+// the right of every row instead of a full 6-across grid.
 const CARD_WIDTH = Math.floor(
-  (SCREEN_WIDTH - CONTAINER_PADDING_LEFT - CONTAINER_PADDING_RIGHT - GRID_GAP * (GRID_COLUMNS - 1)) /
+  (SCREEN_WIDTH -
+    NATIVE_RAIL_COLLAPSED_WIDTH -
+    CONTAINER_PADDING_LEFT -
+    CONTAINER_PADDING_RIGHT -
+    GRID_GAP * (GRID_COLUMNS - 1)) /
     GRID_COLUMNS,
 );
 const CARD_HEIGHT = Math.round(CARD_WIDTH * 1.5);
