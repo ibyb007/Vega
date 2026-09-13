@@ -133,6 +133,45 @@ object NavRailManager {
     }
 
     /**
+     * Handles DPAD_LEFT for the whole Activity. Called from
+     * `MainActivity.dispatchKeyEvent`, ahead of any RN/view-tree handling.
+     *
+     * Rule (matches the simplified nav model): Left inside the rail is a
+     * no-op. Left from content lets Android's own focus search run first --
+     * so moving left *within* a row of posters is untouched -- and only
+     * overrides the result when that search would leave content for a
+     * geometrically-nearest (and often wrong) rail row, or find nothing at
+     * all. In that case focus always jumps to the row for whichever route
+     * is currently on screen, never wherever happens to sit closest.
+     */
+    fun handleDpadLeft(activity: Activity): Boolean {
+        val rail = railRef?.get() ?: return false
+        if (rail.visibility != View.VISIBLE) return false // hidden behind fullscreen player/details
+
+        val current = activity.window.decorView.findFocus() ?: return false
+        if (isDescendantOf(current, rail)) {
+            return true // already in the rail -- swallow, do nothing
+        }
+
+        val next = current.focusSearch(View.FOCUS_LEFT)
+        if (next == null || isDescendantOf(next, rail)) {
+            rail.focusActiveRoute()
+            return true
+        }
+
+        return false // a legitimate leftward move within content -- let it proceed normally
+    }
+
+    private fun isDescendantOf(view: View, ancestor: View): Boolean {
+        var v: View? = view
+        while (v != null) {
+            if (v === ancestor) return true
+            v = v.parent as? View
+        }
+        return false
+    }
+
+    /**
      * Call from `MainActivity.onDestroy()`. Clears our static state *only*
      * if the destroying Activity is the one we're currently tracking, so an
      * unrelated/old call can't blow away a newer, already-attached rail.
