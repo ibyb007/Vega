@@ -63,6 +63,8 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     private lateinit var wordmarkView: TextView
 
     private val collapseRunnable = Runnable { collapseIfIdle() }
+    private val fastInterpolator = DecelerateInterpolator(2.0f)
+    private var expandAnimator: ValueAnimator? = null
 
     private inner class NavItemRow(ctx: Context, val item: NavItem) : LinearLayout(ctx) {
         lateinit var iconView: NavIconView
@@ -256,8 +258,8 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         val targetY = (index * (ITEM_HEIGHT_DP + ITEM_GAP_DP)).toFloat()
         indicatorPill.animate()
             .translationY(dp(targetY.toInt()).toFloat())
-            .setDuration(140)
-            .setInterpolator(DecelerateInterpolator())
+            .setDuration(INDICATOR_DURATION_MS)
+            .setInterpolator(fastInterpolator)
             .start()
     }
 
@@ -266,7 +268,13 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         expanded = value
         listener?.onExpandedChanged(value)
 
-        val fromWidth = width.takeIf { it > 0 } ?: collapsedWidthPx()
+        expandAnimator?.cancel()
+
+        // Direction-aware fallback: if the view hasn't been laid out yet
+        // (width == 0) and we're collapsing, falling back to the collapsed
+        // width here would make the animation start already at its own end
+        // state -- a silent jump-cut instead of a visible collapse.
+        val fromWidth = width.takeIf { it > 0 } ?: if (value) collapsedWidthPx() else expandedWidthPx()
         val toWidth = if (value) expandedWidthPx() else collapsedWidthPx()
         val fromColor = if (value) COLLAPSED_BG else EXPANDED_BG
         val toColor = if (value) EXPANDED_BG else COLLAPSED_BG
@@ -277,8 +285,8 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         }
 
         val animator = ValueAnimator.ofFloat(0f, 1f)
-        animator.duration = 140
-        animator.interpolator = DecelerateInterpolator()
+        animator.duration = EXPAND_DURATION_MS
+        animator.interpolator = fastInterpolator
         val evaluator = ArgbEvaluator()
         animator.addUpdateListener { anim ->
             val t = anim.animatedValue as Float
@@ -299,6 +307,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
                 }
             }
         })
+        expandAnimator = animator
         animator.start()
     }
 
@@ -364,14 +373,21 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
      * backed by each screen's own up-to-date last-focused ref, not a cached
      * native id.
      *
+     * Right ALWAYS returns focus to the currently active screen's content,
+     * regardless of which row is currently hovered -- matching Stremio,
+     * where browsing Up/Down over other rail items and then pressing Right
+     * instantly cancels that browse and drops you straight back into
+     * content for the tab you were already on. It does not require
+     * navigating back to the active row first. Previously, a Right press
+     * on a non-active row was swallowed (consumed the key, did nothing
+     * visible), which is exactly the "dead" Right press from the recording.
+     *
      * Returns true (event consumed) whenever focus was on the rail at all,
-     * even on a non-active row, so Right can never fall through to
-     * Android's own geometric search and land somewhere arbitrary in
-     * content for the wrong screen.
+     * so Right can never fall through to Android's own geometric search
+     * and land somewhere arbitrary in content for the wrong screen.
      */
     fun requestRightNavigation(): Boolean {
-        val focusedRow = rows.firstOrNull { it.hasFocus() } ?: return false
-        if (focusedRow.item.id != activeRoute) return true // no defined target for a non-active row -- swallow, no-op
+        rows.firstOrNull { it.hasFocus() } ?: return false
         listener?.onRouteReselected(activeRoute)
         return true
     }
@@ -387,7 +403,14 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         const val EXPANDED_WIDTH_DP = 220
         const val ITEM_HEIGHT_DP = 46
         const val ITEM_GAP_DP = 6
-        const val COLLAPSE_DELAY_MS = 110L
+        const val COLLAPSE_DELAY_MS = 90L
+        // Both animations were a flat 140ms with DecelerateInterpolator,
+        // which reads as a visible "catch-up" lag next to Stremio's
+        // near-instant Up/Down highlight snap. 90ms is short enough to
+        // read as instant while still giving the eye a motion cue instead
+        // of a hard jump-cut.
+        const val INDICATOR_DURATION_MS = 90L
+        const val EXPAND_DURATION_MS = 90L
 
         val ACCENT = Color.parseColor("#8A5CF6")
         val COLLAPSED_BG = Color.parseColor("#F20A0A0E")
