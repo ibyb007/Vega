@@ -39,6 +39,7 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
 interface TVSettingsScreenProps {
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
 }
 
 // Module-level so it survives this screen unmounting when the user leaves
@@ -49,11 +50,16 @@ let lastFocusedSettingsKey: string | null = null;
 export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
 }) => {
   const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
     () => lastFocusedSettingsKey,
     onRegisterEntryHandleGetter,
-    onRegisterReturnFocusTrigger
+    onRegisterReturnFocusTrigger,
+    resetFocusOnMount,
+    () => {
+      lastFocusedSettingsKey = null;
+    }
   );
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const audioBoostProfile = useSettingsStore((state) => state.audioBoostProfile);
