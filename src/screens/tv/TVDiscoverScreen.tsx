@@ -1935,7 +1935,7 @@ const styles = StyleSheet.create({
     textShadowRadius: 4,
   },
   targetCastLabel: {
-    color: '#D1D5DB',
+    color: '#DDE00B',
     fontWeight: '700',
   },
   sectionContainer: {
@@ -2014,7 +2014,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   qualityChip: {
-    backgroundColor: 'rgba(22, 22, 30, 0.4)',
+    backgroundColor: 'rgba(22, 22, 30, 0.6)',
     paddingHorizontal: 14,
     paddingVertical: 9,
     borderRadius: 8,
@@ -2040,7 +2040,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   episodeCard: {
-    backgroundColor: 'rgba(22, 22, 30, 0.4)',
+    backgroundColor: 'rgba(22, 22, 30, 0.6)',
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1.5,
