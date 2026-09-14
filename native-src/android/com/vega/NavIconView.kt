@@ -156,85 +156,42 @@ class NavIconView(context: Context) : View(context) {
     }
 
     private fun drawAddons(c: Canvas, w: Float, h: Float) {
-        val origJoin = strokePaint.strokeJoin
-        strokePaint.strokeJoin = Paint.Join.ROUND
+        // Solid-filled puzzle piece: a rounded square body with an outward
+        // knob on the top and right edges, and an inward socket (bite) on
+        // the bottom and left edges -- built with path boolean ops so each
+        // bump/notch is a clean circle union/difference rather than a
+        // hand-stitched arc, matching the reference glyph.
 
         // Outer bounds of the main square body
-        val left = w * 0.24f
-        val right = w * 0.76f
-        val top = h * 0.24f
-        val bottom = h * 0.76f
+        val left = w * 0.22f
+        val right = w * 0.82f
+        val top = h * 0.22f
+        val bottom = h * 0.82f
         val cx = (left + right) / 2f
         val cy = (top + bottom) / 2f
-        val cornerR = w * 0.04f
+        val cornerR = w * 0.05f
+        val knobR = w * 0.155f
 
-        // Tab and socket dimensions matching the reference image
-        val headR = w * 0.145f
-        val offset = w * 0.07f
-        val neckHalf = w * 0.082f
+        val piece = Path()
+        piece.addRoundRect(RectF(left, top, right, bottom), cornerR, cornerR, Path.Direction.CW)
 
-        val path = Path()
+        // Top knob (outward bump), centered on the top edge
+        val topKnob = Path().apply { addCircle(cx, top, knobR, Path.Direction.CW) }
+        piece.op(topKnob, Path.Op.UNION)
 
-        // 1. Top-left corner
-        path.moveTo(left, top + cornerR)
-        path.quadTo(left, top, left + cornerR, top)
+        // Right knob (outward bump), centered on the right edge
+        val rightKnob = Path().apply { addCircle(right, cy, knobR, Path.Direction.CW) }
+        piece.op(rightKnob, Path.Op.UNION)
 
-        // 2. Top edge -> Outward knob
-        path.lineTo(cx - neckHalf, top)
-        val topHeadCy = top - offset
-        path.arcTo(
-            RectF(cx - headR, topHeadCy - headR, cx + headR, topHeadCy + headR),
-            145f,
-            250f,
-            false
-        )
-        path.lineTo(right - cornerR, top)
+        // Left socket (inward notch), centered on the left edge
+        val leftSocket = Path().apply { addCircle(left, cy, knobR, Path.Direction.CW) }
+        piece.op(leftSocket, Path.Op.DIFFERENCE)
 
-        // 3. Top-right corner
-        path.quadTo(right, top, right, top + cornerR)
+        // Bottom socket (inward notch), centered on the bottom edge
+        val bottomSocket = Path().apply { addCircle(cx, bottom, knobR, Path.Direction.CW) }
+        piece.op(bottomSocket, Path.Op.DIFFERENCE)
 
-        // 4. Right edge -> Inward socket
-        path.lineTo(right, cy - neckHalf)
-        val rightHeadCx = right - offset
-        path.arcTo(
-            RectF(rightHeadCx - headR, cy - headR, rightHeadCx + headR, cy + headR),
-            -125f,
-            -250f,
-            false
-        )
-        path.lineTo(right, bottom - cornerR)
-
-        // 5. Bottom-right corner
-        path.quadTo(right, bottom, right - cornerR, bottom)
-
-        // 6. Bottom edge -> Inward socket
-        path.lineTo(cx + neckHalf, bottom)
-        val bottomHeadCy = bottom - offset
-        path.arcTo(
-            RectF(cx - headR, bottomHeadCy - headR, cx + headR, bottomHeadCy + headR),
-            -35f,
-            -250f,
-            false
-        )
-        path.lineTo(left + cornerR, bottom)
-
-        // 7. Bottom-left corner
-        path.quadTo(left, bottom, left, bottom - cornerR)
-
-        // 8. Left edge -> Outward knob
-        path.lineTo(left, cy + neckHalf)
-        val leftHeadCx = left - offset
-        path.arcTo(
-            RectF(leftHeadCx - headR, cy - headR, leftHeadCx + headR, cy + headR),
-            55f,
-            250f,
-            false
-        )
-        path.lineTo(left, top + cornerR)
-        path.close()
-
-        c.drawPath(path, strokePaint)
-        strokePaint.strokeJoin = origJoin
+        c.drawPath(piece, fillPaint)
     }
 
     private fun drawSettings(c: Canvas, w: Float, h: Float) {
