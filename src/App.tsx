@@ -64,6 +64,22 @@ export default function App() {
   const screenBackHandlersRef = useRef<Partial<Record<TVRoute, () => boolean>>>({});
   const currentProvider = useContentStore((state) => state.provider);
 
+  // Marks a tab "dirty" the moment the user actually navigates away from it
+  // to a *different* rail tab. The next time that tab is shown again, its
+  // screen is told to forget whatever item it last had focused and treat
+  // the mount like a fresh launch (see `resetFocusOnMount` below). This is
+  // only set on a genuine route change -- opening details/player over the
+  // current tab and closing them again never touches `currentRoute`, so
+  // that round trip is untouched and normal resume behaviour still applies.
+  const routeFocusDirtyRef = useRef<Partial<Record<TVRoute, boolean>>>({});
+  const consumeRouteFocusReset = useCallback((route: TVRoute): boolean => {
+    const dirty = routeFocusDirtyRef.current[route] === true;
+    if (dirty) {
+      routeFocusDirtyRef.current[route] = false;
+    }
+    return dirty;
+  }, []);
+
   // ---- content entry-focus plumbing (unchanged from before) --------------
   // Screens still register "where should focus land if the rail sends you
   // here" the same way they always did. The only thing that changed is who
@@ -135,6 +151,10 @@ export default function App() {
     setCurrentRoute((prev) => {
       if (prev !== route) {
         setRouteHistory((h) => [...h, route]);
+        // A genuine tab switch is happening -- flag the tab being left so
+        // its content resets to a fresh-launch focus state the next time
+        // it's shown, instead of restoring wherever focus was left.
+        routeFocusDirtyRef.current[prev] = true;
       }
       return route;
     });
@@ -282,6 +302,7 @@ export default function App() {
                           onRegisterBackHandler={handleRegisterBackHandler('home')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('home')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('home')}
+                          resetFocusOnMount={consumeRouteFocusReset('home')}
                         />
                       )}
 
@@ -291,6 +312,7 @@ export default function App() {
                           onRegisterBackHandler={handleRegisterBackHandler('search')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('search')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('search')}
+                          resetFocusOnMount={consumeRouteFocusReset('search')}
                         />
                       )}
 
@@ -309,6 +331,7 @@ export default function App() {
                           onRegisterBackHandler={handleRegisterBackHandler('discover')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('discover')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('discover')}
+                          resetFocusOnMount={consumeRouteFocusReset('discover')}
                         />
                       )}
 
@@ -318,6 +341,7 @@ export default function App() {
                           onNavigateAddons={() => navigateTo('addons')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('sources')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('sources')}
+                          resetFocusOnMount={consumeRouteFocusReset('sources')}
                         />
                       )}
 
@@ -331,6 +355,7 @@ export default function App() {
                           onRegisterBackHandler={handleRegisterBackHandler('addons')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('addons')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('addons')}
+                          resetFocusOnMount={consumeRouteFocusReset('addons')}
                         />
                       )}
 
@@ -338,6 +363,7 @@ export default function App() {
                         <TVSettingsScreen
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('settings')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('settings')}
+                          resetFocusOnMount={consumeRouteFocusReset('settings')}
                         />
                       )}
                     </View>
