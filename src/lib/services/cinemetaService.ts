@@ -29,6 +29,7 @@ export interface CinemetaMeta {
   imdbRating?: string | number;
   rating?: string | number;
   genres?: string[];
+  cast?: string[];
   videos?: CinemetaVideo[];
 }
 
