@@ -28,8 +28,22 @@ import { findNodeHandle } from 'react-native';
 export function useTVEntryFocus(
   getLastFocusedKey: () => string | null,
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void,
-  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void,
+  resetOnMount?: boolean,
+  onResetFocus?: () => void
 ) {
+  // When the screen's tab was actually switched away from and back to (a
+  // real rail navigation round-trip, as opposed to an in-tab overlay like
+  // details/player closing), App.tsx passes `resetOnMount=true` for this
+  // one mount so the screen forgets its remembered focus target and lands
+  // on its own natural default item again -- exactly like a fresh launch.
+  // Guarded by a ref so it only fires once per mount, not on every render.
+  const resetConsumedRef = useRef(false);
+  if (resetOnMount && !resetConsumedRef.current) {
+    resetConsumedRef.current = true;
+    onResetFocus?.();
+  }
+
   // key -> the real native View currently rendered for that key. Screens
   // populate this via `setItemRef` from every relevant item's `ref` prop.
   const itemRefsRef = useRef<Record<string, any>>({});
