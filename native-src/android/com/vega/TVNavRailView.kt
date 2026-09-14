@@ -213,8 +213,9 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
     private fun wireVerticalChain() {
         for (i in rows.indices) {
-            if (i > 0) rows[i].nextFocusUpId = rows[i - 1].id
-            if (i < rows.size - 1) rows[i].nextFocusDownId = rows[i + 1].id
+            // Search (top) stays clamped to itself on Up; Settings (bottom) stays clamped to itself on Down
+            rows[i].nextFocusUpId = if (i > 0) rows[i - 1].id else rows[i].id
+            rows[i].nextFocusDownId = if (i < rows.size - 1) rows[i + 1].id else rows[i].id
         }
     }
 
@@ -416,14 +417,9 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         const val EXPANDED_WIDTH_DP = 220
         const val ITEM_HEIGHT_DP = 46
         const val ITEM_GAP_DP = 6
-        const val COLLAPSE_DELAY_MS = 90L
-        // Both animations were a flat 140ms with DecelerateInterpolator,
-        // which reads as a visible "catch-up" lag next to Stremio's
-        // near-instant Up/Down highlight snap. 90ms is short enough to
-        // read as instant while still giving the eye a motion cue instead
-        // of a hard jump-cut.
-        const val INDICATOR_DURATION_MS = 90L
-        const val EXPAND_DURATION_MS = 90L
+        const val COLLAPSE_DELAY_MS = 35L
+        const val INDICATOR_DURATION_MS = 65L
+        const val EXPAND_DURATION_MS = 75L
 
         val ACCENT = Color.parseColor("#8A5CF6")
         val COLLAPSED_BG = Color.parseColor("#F20A0A0E")
