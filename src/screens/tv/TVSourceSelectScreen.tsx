@@ -27,6 +27,7 @@ interface TVSourceSelectScreenProps {
   onNavigateAddons?: () => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
 }
 
 // Module-level so it survives this screen unmounting when the user leaves
@@ -39,11 +40,16 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   onNavigateAddons,
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
 }) => {
   const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
     () => lastFocusedSourcesKey,
     onRegisterEntryHandleGetter,
-    onRegisterReturnFocusTrigger
+    onRegisterReturnFocusTrigger,
+    resetFocusOnMount,
+    () => {
+      lastFocusedSourcesKey = null;
+    }
   );
   const provider = useContentStore((state) => state.provider);
   const setProvider = useContentStore((state) => state.setProvider);
