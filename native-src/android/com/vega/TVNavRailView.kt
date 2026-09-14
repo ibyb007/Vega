@@ -31,10 +31,10 @@ private val NAV_ITEMS = listOf(
  * Every row is a real, focusable [View] living directly in the Activity's own
  * view hierarchy (as a sibling of the ReactRootView -- see [NavRailManager]),
  * so Android's normal focus engine handles D-pad Up/Down between rail items,
- * and Left/Right between the rail and RN content, with no JS bridge involved.
+ * and Left/Right between the rail and RN content, with no JS bridge involved[cite: 10].
  * Only three things ever cross into JS: which route is active, when a route
  * is (re)selected, and whether the rail is currently expanded -- exactly the
- * three signals `App.tsx` used to get from the old component.
+ * three signals `App.tsx` used to get from the old component[cite: 10].
  */
 class TVNavRailView(context: Context) : FrameLayout(context) {
 
@@ -73,7 +73,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         // The default geometric focus-search for Up/Down inside a vertical
         // rail is already correct, but we pin it explicitly via
         // nextFocusUpId/nextFocusDownId once all rows exist (see wireVerticalChain())
-        // so ordering can never be ambiguous regardless of pixel layout.
+        // so ordering can never be ambiguous regardless of pixel layout[cite: 10].
     }
 
     init {
@@ -95,14 +95,14 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             // 22dp lines the logo's own left edge up with the row icons'
             // left edge: menuContainer's 8dp margin + each row's 12dp
             // padding + the 2dp the 22dp icon is inset within its 26dp
-            // iconBox = 22dp from the rail's left edge.
+            // iconBox = 22dp from the rail's left edge[cite: 10].
             leftMargin = dp(22)
             topMargin = dp(20)
         })
 
         // "VEGA TV" wordmark shown next to the logo, mirroring how the
         // row labels behave: hidden/collapsed to nothing while the rail is
-        // collapsed, faded + revealed in step with the expand animation.
+        // collapsed, faded + revealed in step with the expand animation[cite: 10].
         wordmarkView = TextView(context).apply {
             text = "VEGA TV"
             setTextColor(Color.WHITE)
@@ -117,7 +117,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         header.addView(wordmarkView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
             // 60dp lines the wordmark up with the row labels: 8dp
             // menuContainer margin + 12dp row padding + 26dp iconBox + 14dp
-            // label marginStart = 60dp from the rail's left edge.
+            // label marginStart = 60dp from the rail's left edge[cite: 10].
             leftMargin = dp(60)
             topMargin = dp(26)
         })
@@ -143,7 +143,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         // with the same left/right/top offsets menuContainer uses, so index
         // 0's translationY of 0 lines up exactly with the first row. Being
         // a LinearLayout child (the old bug) made it consume real layout
-        // space and push every row down by one slot.
+        // space and push every row down by one slot[cite: 10].
         val pillLp = LayoutParams(LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP)).apply {
             topMargin = dp(76)
             leftMargin = dp(8)
@@ -213,7 +213,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
 
     private fun wireVerticalChain() {
         for (i in rows.indices) {
-            // Search (top) stays clamped to itself on Up; Settings (bottom) stays clamped to itself on Down
+            // Search (top) stays clamped to itself on Up; Settings (bottom) stays clamped to itself on Down[cite: 10]
             rows[i].nextFocusUpId = if (i > 0) rows[i - 1].id else rows[i].id
             rows[i].nextFocusDownId = if (i < rows.size - 1) rows[i + 1].id else rows[i].id
         }
@@ -238,9 +238,17 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         scheduleCollapse()
         if (item.id == activeRoute) {
             // Same live JS round-trip as requestRightNavigation() -- no
-            // static cached target, so this can't go stale either.
+            // static cached target, so this can't go stale either[cite: 10].
             listener?.onRouteReselected(item.id)
         } else {
+            // Optimistically update the active route and visual highlights locally
+            // so the indicator immediately snaps to the clicked item without waiting
+            // on the asynchronous React Native bridge round-trip.
+            activeRoute = item.id
+            val idx = NAV_ITEMS.indexOfFirst { it.id == item.id }
+            if (idx >= 0) animateIndicatorTo(idx)
+            rows.forEach { row -> applyRowStyle(row) }
+
             listener?.onRouteChanged(item.id)
         }
     }
@@ -253,16 +261,16 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     private fun collapseIfIdle() {
         if (focusDepth > 0) return
         // Up/Down browsing moves the indicator pill to whichever row was
-        // last focused (see onRowFocused/animateIndicatorTo). If focus then
+        // last focused (see onRowFocused/animateIndicatorTo)[cite: 10]. If focus then
         // leaves the rail without the active route actually changing --
         // e.g. Right cancels the browse and returns to content for the
         // same tab -- nothing else ever moves the pill back: JS has no
         // reason to call setActiveRouteFromJs again since the route itself
         // never changed, so the pill would otherwise sit on the
-        // browsed-to row indefinitely, even after the rail collapses.
+        // browsed-to row indefinitely, even after the rail collapses[cite: 10].
         // Re-sync it here, every time focus genuinely leaves the rail, so
         // it always reflects the true active route once you're back in
-        // content.
+        // content[cite: 10].
         val idx = NAV_ITEMS.indexOfFirst { it.id == activeRoute }
         if (idx >= 0) animateIndicatorTo(idx)
         setExpanded(false)
@@ -287,7 +295,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         // Direction-aware fallback: if the view hasn't been laid out yet
         // (width == 0) and we're collapsing, falling back to the collapsed
         // width here would make the animation start already at its own end
-        // state -- a silent jump-cut instead of a visible collapse.
+        // state -- a silent jump-cut instead of a visible collapse[cite: 10].
         val fromWidth = width.takeIf { it > 0 } ?: if (value) collapsedWidthPx() else expandedWidthPx()
         val toWidth = if (value) expandedWidthPx() else collapsedWidthPx()
         val fromColor = if (value) COLLAPSED_BG else EXPANDED_BG
@@ -330,10 +338,10 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     // A row is drawn bright/highlighted when it currently has real Android
     // focus (you're actively browsing it) OR it's the active route (the
     // "you are here" indicator even while focus has moved elsewhere, e.g.
-    // out into content). Everything else stays dim. This used to only
+    // out into content)[cite: 10]. Everything else stays dim[cite: 10]. This used to only
     // check "is active route", so any row you focused while browsing that
     // wasn't also the active route stayed stuck at dim gray sitting on top
-    // of the bright accent pill -- which is what read as washed-out/dimmed.
+    // of the bright accent pill -- which is what read as washed-out/dimmed[cite: 10].
     private fun applyRowStyle(row: NavItemRow) {
         val highlighted = row.hasFocus() || row.item.id == activeRoute
         row.iconView.setColor(if (highlighted) ACTIVE_COLOR else INACTIVE_ICON)
@@ -357,7 +365,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         // from the rail now always goes through the live
         // onRouteReselected -> entryReturnTrigger path instead (see
         // requestRightNavigation()), so a stale cached target here can no
-        // longer cause a wrong or oscillating jump.
+        // longer cause a wrong or oscillating jump[cite: 10].
         if (target == null) {
             registeredTargets.remove(route)
         } else {
@@ -370,35 +378,35 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         rows.firstOrNull { it.item.id == route }?.requestFocus()
     }
 
-    /** Always lands on the row for whichever route is currently displayed. */
+    /** Always lands on the row for whichever route is currently displayed.[cite: 10] */
     fun focusActiveRoute() {
         focusRoute(activeRoute)
     }
 
     /**
-     * Handles DPAD_RIGHT while the rail has focus. Deliberately does NOT
+     * Handles DPAD_RIGHT while the rail has focus[cite: 10]. Deliberately does NOT
      * jump focus itself via a static `nextFocusRightId` -- that value can
      * only ever reflect a snapshot taken back when `currentRoute` last
      * changed (see App.tsx), so it goes stale the instant you move focus
      * around within the same screen and Right stops landing anywhere near
-     * where you actually were. Instead this asks JS live, at the moment of
+     * where you actually were[cite: 10]. Instead this asks JS live, at the moment of
      * the key press, via the same "give me focus back" event already used
      * when re-selecting the active tab with Enter -- which is presumably
      * backed by each screen's own up-to-date last-focused ref, not a cached
-     * native id.
+     * native id[cite: 10].
      *
      * Right ALWAYS returns focus to the currently active screen's content,
      * regardless of which row is currently hovered -- matching Stremio,
      * where browsing Up/Down over other rail items and then pressing Right
      * instantly cancels that browse and drops you straight back into
-     * content for the tab you were already on. It does not require
-     * navigating back to the active row first. Previously, a Right press
+     * content for the tab you were already on[cite: 10]. It does not require
+     * navigating back to the active row first[cite: 10]. Previously, a Right press
      * on a non-active row was swallowed (consumed the key, did nothing
-     * visible), which is exactly the "dead" Right press from the recording.
+     * visible), which is exactly the "dead" Right press from the recording[cite: 10].
      *
      * Returns true (event consumed) whenever focus was on the rail at all,
      * so Right can never fall through to Android's own geometric search
-     * and land somewhere arbitrary in content for the wrong screen.
+     * and land somewhere arbitrary in content for the wrong screen[cite: 10].
      */
     fun requestRightNavigation(): Boolean {
         rows.firstOrNull { it.hasFocus() } ?: return false
