@@ -159,63 +159,78 @@ class NavIconView(context: Context) : View(context) {
         val origJoin = strokePaint.strokeJoin
         strokePaint.strokeJoin = Paint.Join.ROUND
 
-        val left = w * 0.23f
-        val right = w * 0.77f
-        val top = h * 0.23f
-        val bottom = h * 0.77f
-        val cx = w * 0.5f
-        val cy = h * 0.5f
+        // Outer bounds of the main square body
+        val left = w * 0.24f
+        val right = w * 0.76f
+        val top = h * 0.24f
+        val bottom = h * 0.76f
+        val cx = (left + right) / 2f
+        val cy = (top + bottom) / 2f
+        val cornerR = w * 0.04f
 
+        // Tab and socket dimensions matching the reference image
         val headR = w * 0.145f
-        val neckHalf = w * 0.09f
-        val headOffset = w * 0.055f
+        val offset = w * 0.07f
+        val neckHalf = w * 0.082f
 
         val path = Path()
 
-        // Top Edge (Outward Bulb)
-        path.moveTo(left, top)
+        // 1. Top-left corner
+        path.moveTo(left, top + cornerR)
+        path.quadTo(left, top, left + cornerR, top)
+
+        // 2. Top edge -> Outward knob
         path.lineTo(cx - neckHalf, top)
-        val topHeadCenterY = top - headOffset
+        val topHeadCy = top - offset
         path.arcTo(
-            RectF(cx - headR, topHeadCenterY - headR, cx + headR, topHeadCenterY + headR),
+            RectF(cx - headR, topHeadCy - headR, cx + headR, topHeadCy + headR),
             145f,
             250f,
             false
         )
-        path.lineTo(right, top)
+        path.lineTo(right - cornerR, top)
 
-        // Right Edge (Inward Notch)
+        // 3. Top-right corner
+        path.quadTo(right, top, right, top + cornerR)
+
+        // 4. Right edge -> Inward socket
         path.lineTo(right, cy - neckHalf)
-        val rightHeadCenterX = right - headOffset
+        val rightHeadCx = right - offset
         path.arcTo(
-            RectF(rightHeadCenterX - headR, cy - headR, rightHeadCenterX + headR, cy + headR),
+            RectF(rightHeadCx - headR, cy - headR, rightHeadCx + headR, cy + headR),
             -125f,
             -250f,
             false
         )
-        path.lineTo(right, bottom)
+        path.lineTo(right, bottom - cornerR)
 
-        // Bottom Edge (Inward Notch)
+        // 5. Bottom-right corner
+        path.quadTo(right, bottom, right - cornerR, bottom)
+
+        // 6. Bottom edge -> Inward socket
         path.lineTo(cx + neckHalf, bottom)
-        val bottomHeadCenterY = bottom - headOffset
+        val bottomHeadCy = bottom - offset
         path.arcTo(
-            RectF(cx - headR, bottomHeadCenterY - headR, cx + headR, bottomHeadCenterY + headR),
+            RectF(cx - headR, bottomHeadCy - headR, cx + headR, bottomHeadCy + headR),
             -35f,
             -250f,
             false
         )
-        path.lineTo(left, bottom)
+        path.lineTo(left + cornerR, bottom)
 
-        // Left Edge (Outward Bulb)
+        // 7. Bottom-left corner
+        path.quadTo(left, bottom, left, bottom - cornerR)
+
+        // 8. Left edge -> Outward knob
         path.lineTo(left, cy + neckHalf)
-        val leftHeadCenterX = left - headOffset
+        val leftHeadCx = left - offset
         path.arcTo(
-            RectF(leftHeadCenterX - headR, cy - headR, leftHeadCenterX + headR, cy + headR),
+            RectF(leftHeadCx - headR, cy - headR, leftHeadCx + headR, cy + headR),
             55f,
             250f,
             false
         )
-        path.lineTo(left, top)
+        path.lineTo(left, top + cornerR)
         path.close()
 
         c.drawPath(path, strokePaint)
