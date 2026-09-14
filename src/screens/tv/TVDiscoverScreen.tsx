@@ -164,7 +164,7 @@ interface SavedDiscoverState {
   activeHero?: TVHeroMedia | null;
 
   screenMode: 'browse' | 'results';
-  resultsTarget: (CatalogMediaItem & { logo?: string }) | null;
+  resultsTarget: (CatalogMediaItem & { logo?: string; cast?: string[] }) | null;
   matchedAddonPosts: Post[];
   activeSourcePost: Post | null;
   sourceInfo: Info | null;
@@ -215,9 +215,9 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     savedDiscoverState?.screenMode || 'browse',
   );
 
-  const [resultsTarget, setResultsTarget] = useState<(CatalogMediaItem & { logo?: string }) | null>(
-    savedDiscoverState?.resultsTarget ?? null,
-  );
+  const [resultsTarget, setResultsTarget] = useState<
+    (CatalogMediaItem & { logo?: string; cast?: string[] }) | null
+  >(savedDiscoverState?.resultsTarget ?? null);
   const [resultsLoading, setResultsLoading] = useState(false);
   const [matchedAddonPosts, setMatchedAddonPosts] = useState<Post[]>(
     savedDiscoverState?.matchedAddonPosts || [],
@@ -478,9 +478,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           });
         }
         fetchMatchingCinemetaMeta(metaId, item.type, item.title).then((cMeta: any) => {
-          if (cMeta?.logo) {
+          if (cMeta?.logo || (cMeta?.cast && cMeta.cast.length > 0)) {
             setResultsTarget((prev) => {
-              const next = prev ? { ...prev, logo: cMeta.logo } : prev;
+              const next = prev
+                ? {
+                    ...prev,
+                    logo: cMeta.logo || (prev as any).logo,
+                    cast: cMeta.cast && cMeta.cast.length > 0 ? cMeta.cast : (prev as any).cast,
+                  }
+                : prev;
               if (savedDiscoverState) savedDiscoverState.resultsTarget = next;
               return next;
             });
@@ -1049,6 +1055,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             <Text numberOfLines={4} style={styles.targetOverview}>
               {resultsTarget?.overview || 'Select a matched addon source below to view stream links.'}
             </Text>
+            {resultsTarget?.cast && resultsTarget.cast.length > 0 ? (
+              <Text numberOfLines={1} style={styles.targetCastText}>
+                <Text style={styles.targetCastLabel}>Cast: </Text>
+                {resultsTarget.cast.slice(0, 3).join(', ')}
+              </Text>
+            ) : null}
           </View>
 
           <View style={styles.sectionContainer}>
@@ -1181,7 +1193,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                               seasonNum,
                               episodeNum,
                             );
-                            const episodeThumb = ep.image || cinemetaEp?.thumbnail;
+                            // Cinemeta's per-episode `thumbnail` is the
+                            // actual still for that episode; many addon
+                            // providers -- especially ones with no TMDB/
+                            // IMDb id to key off of -- only ever return the
+                            // show's own poster as `ep.image` for every
+                            // episode. Prefer the real Cinemeta still when
+                            // we have one and only fall back to the
+                            // provider's image if Cinemeta has nothing for
+                            // this episode.
+                            const episodeThumb = cinemetaEp?.thumbnail || ep.image;
                             const episodeOverview = ep.description || cinemetaEp?.overview;
                             return (
                               <TVFocusablePressable
@@ -1903,6 +1924,19 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.85)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
+  },
+  targetCastText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6,
+    textShadowColor: 'rgba(0, 0, 0, 0.85)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  targetCastLabel: {
+    color: '#D1D5DB',
+    fontWeight: '700',
   },
   sectionContainer: {
     marginBottom: 24,
