@@ -31,6 +31,7 @@ interface TVSearchProps {
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
 }
 
 const getProviderDisplayName = (p: Provider | any): string => {
@@ -42,27 +43,59 @@ const getProviderDisplayName = (p: Provider | any): string => {
 // `lastFocusedKey`.
 let lastFocusedSearchKey: string | null = null;
 
+// Also module-level (mirrors TVDiscoverScreen's `savedDiscoverState`):
+// selecting a result opens TVDetailsScreen full-screen, which unmounts this
+// whole component (App.tsx swaps its entire content tree while
+// `selectedItem` is set). Without this, coming back from details wiped the
+// query/results/tab/hero back to their initial empty state even though the
+// user never actually left the Search tab -- this keeps that content alive
+// across that round trip so Back genuinely returns to where they were.
+interface SavedSearchState {
+  query: string;
+  results: SearchResultGroup[];
+  activeTab: string;
+  activeHero: {
+    title: string;
+    backdropUrl?: string;
+    overview?: string;
+    sourceName?: string;
+  } | null;
+}
+let savedSearchState: SavedSearchState | null = null;
+
 export default function TVSearch({
   onSelectItem,
   onRegisterBackHandler,
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
 }: TVSearchProps) {
   const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
     () => lastFocusedSearchKey,
     onRegisterEntryHandleGetter,
-    onRegisterReturnFocusTrigger
+    onRegisterReturnFocusTrigger,
+    resetFocusOnMount,
+    () => {
+      lastFocusedSearchKey = null;
+    }
   );
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(savedSearchState?.query ?? '');
   const [isSearching, setIsSearching] = useState(false);
-  const [results, setResults] = useState<SearchResultGroup[]>([]);
-  const [activeTab, setActiveTab] = useState<string>('all');
+  const [results, setResults] = useState<SearchResultGroup[]>(savedSearchState?.results ?? []);
+  const [activeTab, setActiveTab] = useState<string>(savedSearchState?.activeTab ?? 'all');
   const [activeHero, setActiveHero] = useState<{
     title: string;
     backdropUrl?: string;
     overview?: string;
     sourceName?: string;
-  } | null>(null);
+  } | null>(savedSearchState?.activeHero ?? null);
+
+  // Keep the module-level snapshot in sync with the latest state so it's
+  // ready the instant this screen unmounts (there's no unmount event to
+  // hook into that fires reliably before App.tsx tears the tree down).
+  useEffect(() => {
+    savedSearchState = { query, results, activeTab, activeHero };
+  }, [query, results, activeTab, activeHero]);
 
   const storeProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
@@ -297,7 +330,20 @@ export default function TVSearch({
             scaleFocused={1.02}
             focusedBorderColor="#8A5CF6"
             borderRadius={14}
-            onPress={() => searchInputRef.current?.focus()}
+            onPress={() => {
+              // Calling TextInput.focus() synchronously in the same event
+              // tick as the OK press that just gave this Pressable real
+              // Android focus races the platform's own focus-commit: the
+              // EditText silently gains native focus but the IME's "show
+              // keyboard" request gets dropped, so the first OK does nothing
+              // visible and a second OK (now with the field already
+              // focused) is what actually raises the keyboard. Deferring to
+              // the next frame lets this Pressable's own focus settle first,
+              // so a single OK reliably opens the keyboard.
+              requestAnimationFrame(() => {
+                searchInputRef.current?.focus();
+              });
+            }}
             style={styles.searchBarWrapper}
           >
             {() => (
