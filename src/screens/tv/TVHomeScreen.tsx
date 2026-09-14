@@ -71,6 +71,7 @@ interface TVHomeScreenProps {
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
 }
 
 export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
@@ -80,7 +81,23 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onRegisterBackHandler,
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
 }) => {
+  // When the user actually leaves the Home tab for a different rail tab and
+  // comes back (a real tab switch, as opposed to opening details/player and
+  // returning), App.tsx passes `resetFocusOnMount=true` for this one mount.
+  // Forget whatever was last focused so this mount behaves exactly like a
+  // fresh app launch: focus lands on the 1st Continue Watching poster if one
+  // exists, otherwise the 1st poster of the 1st row. Guarded by a ref so it
+  // only runs once per mount and never disturbs normal in-tab resume
+  // behaviour (e.g. going to details and back) on later re-renders.
+  const resetFocusConsumedRef = useRef(false);
+  if (resetFocusOnMount && !resetFocusConsumedRef.current) {
+    resetFocusConsumedRef.current = true;
+    lastFocusedKey = null;
+    lastFocusedRowIndex = 0;
+  }
+
   const provider = useContentStore((state) => state.provider);
   const secondaryProvider = useContentStore((state) => state.secondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders);
@@ -211,11 +228,14 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         (item.episode?.title && item.episode.title !== item.title
           ? item.episode.title
           : undefined);
+      // Don't show a generic "select title to browse..." placeholder before
+      // the real synopsis has been fetched -- leave it blank instead and let
+      // the enrichment below fill it in once actual metadata arrives.
       const baseOverview = isHistory
         ? episodeTitle
           ? `${episodeTitle} • Resume (${progressPercent}%)`
           : `Resume watching (${progressPercent}%)`
-        : item.extra || item.description || 'Select title to browse stream links and episodes.';
+        : item.extra || item.description || undefined;
 
       setActiveHero({
         title: item.title,
