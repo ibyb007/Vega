@@ -818,7 +818,7 @@ const styles = StyleSheet.create({
   seasonChip: {
     paddingHorizontal: 16,
     paddingVertical: 9,
-    backgroundColor: 'rgba(22, 22, 30, 0.4)',
+    backgroundColor: 'rgba(22, 22, 30, 0.6)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
   },
@@ -844,7 +844,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   episodeRow: {
-    backgroundColor: 'rgba(22, 22, 30, 0.4)',
+    backgroundColor: 'rgba(22, 22, 30, 0.6)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.06)',
     paddingVertical: 12,
