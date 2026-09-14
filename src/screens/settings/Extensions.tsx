@@ -195,6 +195,7 @@ interface ExtensionsScreenProps {
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
 }
 
 // Module-level so it survives this screen unmounting when the user leaves
@@ -207,11 +208,16 @@ export default function Extensions({
   onRegisterBackHandler,
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
 }: ExtensionsScreenProps) {
   const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
     () => lastFocusedAddonsKey,
     onRegisterEntryHandleGetter,
-    onRegisterReturnFocusTrigger
+    onRegisterReturnFocusTrigger,
+    resetFocusOnMount,
+    () => {
+      lastFocusedAddonsKey = null;
+    }
   );
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
   const installedProviders = useContentStore((state) => state.installedProviders);
