@@ -108,6 +108,7 @@ interface TVDiscoverScreenProps {
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
 }
 
 // Module-level (not component state) so it survives this screen unmounting
@@ -180,11 +181,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onRegisterBackHandler,
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
 }) => {
   const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
     () => lastFocusedDiscoverKey,
     onRegisterEntryHandleGetter,
-    onRegisterReturnFocusTrigger
+    onRegisterReturnFocusTrigger,
+    resetFocusOnMount,
+    () => {
+      lastFocusedDiscoverKey = null;
+    }
   );
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
