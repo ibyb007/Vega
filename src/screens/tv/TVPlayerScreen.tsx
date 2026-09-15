@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   ActivityIndicator,
   ToastAndroid,
@@ -21,7 +22,7 @@ import useSettingsStore, { AudioBoostProfile } from '../../lib/zustand/settingsS
 import { providerManager } from '../../lib/services/ProviderManager';
 import { launchVideo } from '../../lib/services/PlayerLauncher';
 import { settingsStorage } from '../../lib/storage';
-import type { EpisodeLink, TextTracks } from '../../lib/providers/types';
+import type { EpisodeLink, TextTracks, SkipInterval } from '../../lib/providers/types';
 
 // Android hardware key codes used by the global listener below.
 // (react-native-keyevent reports raw Android KeyEvent.KEYCODE_* values.)
@@ -133,6 +134,15 @@ interface EpisodeItem {
   type?: string;
   image?: string;
   poster?: string;
+  // Per-episode metadata enrichment (Cinemeta, or whatever the caller
+  // screen -- e.g. TVDiscoverScreen -- already had in memory) used by the
+  // "Videos" episode picker and the "Up Next" popup: synopsis/mini-poster
+  // (`image`) plus real season/episode numbers for the "S01E02" label.
+  synopsis?: string;
+  season?: number;
+  episodeNumber?: number;
+  releaseDate?: string;
+  skip?: SkipInterval[];
 }
 
 interface ResolvedNextEpisode extends EpisodeItem {
@@ -140,6 +150,11 @@ interface ResolvedNextEpisode extends EpisodeItem {
   sourceType?: string;
   subtitles?: TextTracks;
   qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
+  // Absolute index into `episodes` this resolves to. Omitted for a plain
+  // "advance to the next one" (defaults to `currentEpisodeIndex + 1`);
+  // set explicitly when jumping to an arbitrary episode picked from the
+  // "Videos" list.
+  targetIndex?: number;
 }
 
 interface TVPlayerScreenProps {
@@ -156,6 +171,11 @@ interface TVPlayerScreenProps {
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
   qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
+  // Intro/outro/recap markers for the *currently playing* stream (from the
+  // provider's `Stream.skip`). When an interval titled "Outro" is present,
+  // it's used to time the "Up Next" popup instead of the 90s-remaining
+  // fallback.
+  skip?: SkipInterval[];
   startPosition?: number;
   onSelectNextEpisode?: (nextEpisode: ResolvedNextEpisode) => void;
   onSelectServer?: (serverUrl: string) => void;
@@ -180,6 +200,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   currentEpisodeIndex = 0,
   servers = [],
   qualities = [],
+  skip,
   startPosition,
   onSelectNextEpisode,
   onSelectServer,
@@ -241,6 +262,14 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [activeHeaders, setActiveHeaders] = useState<Record<string, string> | undefined>(headers);
   const [activeSourceType, setActiveSourceType] = useState<string | undefined>(sourceType);
   const [resolvingNextEpisode, setResolvingNextEpisode] = useState(false);
+  const [activeSkip, setActiveSkip] = useState<SkipInterval[] | undefined>(skip);
+  const [showEpisodesList, setShowEpisodesList] = useState(false);
+  const [showNextUpPopup, setShowNextUpPopup] = useState(false);
+  // One-shot per episode: flips true the moment the "Up Next" popup has
+  // been triggered (whether by outro marker or the 90s fallback) so it
+  // never re-appears after the person dismisses it, and resets on the
+  // streamUrl-change effect below whenever a new episode actually loads.
+  const nextUpTriggeredRef = useRef(false);
 
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
@@ -270,13 +299,16 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       setActiveMediaUrl(streamUrl);
       setActiveHeaders(headers);
       setActiveSourceType(sourceType);
+      setActiveSkip(skip);
       setBuffering(true);
       setCurrentTime(0);
       setDuration(0);
       setPaused(false);
       currentProgRef.current = { currentTime: 0, duration: 0 };
+      nextUpTriggeredRef.current = false;
+      setShowNextUpPopup(false);
     }
-  }, [streamUrl, headers, sourceType]);
+  }, [streamUrl, headers, sourceType, skip]);
 
   const videoSource = useMemo(
     () => ({
@@ -488,6 +520,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   const activeDialogRef = useRef(activeDialog);
   activeDialogRef.current = activeDialog;
+  const showNextUpPopupRef = useRef(showNextUpPopup);
+  showNextUpPopupRef.current = showNextUpPopup;
+  const showEpisodesListRef = useRef(showEpisodesList);
+  showEpisodesListRef.current = showEpisodesList;
   const showControlsRef = useRef(showControls);
   showControlsRef.current = showControls;
   const isSeekbarFocusedRef = useRef(isSeekbarFocused);
@@ -505,7 +541,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     const handleKeyDown = (keyEvent: { keyCode?: number }) => {
       const keyCode = keyEvent?.keyCode;
       if (keyCode == null) return;
-      if (activeDialogRef.current) return;
+      if (activeDialogRef.current || showNextUpPopupRef.current || showEpisodesListRef.current) return;
       if (keyCode === KEYCODE_BACK) return;
 
       const isLeft = keyCode === KEYCODE_DPAD_LEFT;
@@ -570,6 +606,16 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   useEffect(() => {
     const handleBackPress = () => {
+      if (showNextUpPopup) {
+        setShowNextUpPopup(false);
+        resetInactivityTimer();
+        return true;
+      }
+      if (showEpisodesList) {
+        setShowEpisodesList(false);
+        resetInactivityTimer();
+        return true;
+      }
       if (activeDialog) {
         setActiveDialog(null);
         resetInactivityTimer();
@@ -591,42 +637,56 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => sub.remove();
-  }, [activeDialog, showControls, onClose, resetInactivityTimer, syncProgressToStore]);
+  }, [
+    activeDialog,
+    showControls,
+    showNextUpPopup,
+    showEpisodesList,
+    onClose,
+    resetInactivityTimer,
+    syncProgressToStore,
+  ]);
 
   const openInVLC = async () => {
     await launchVideo(activeMediaUrl || streamUrl, title, 'vlc', activeHeaders);
   };
 
-  const handleNextEpisode = async () => {
+  // Resolves and plays an arbitrary episode by its absolute index into
+  // `episodes` -- shared by the auto "next episode" flow (onEnd / Up Next
+  // popup / the physical "skip next" button) and by picking an arbitrary
+  // row out of the "Videos" episode list.
+  const playEpisodeAtIndex = async (targetIndex: number) => {
     if (resolvingNextEpisode) return;
 
     syncProgressToStore(
       currentProgRef.current.currentTime,
       currentProgRef.current.duration
     );
-    const nextIndex = currentEpisodeIndex + 1;
-    if (episodes.length <= nextIndex) {
-      ToastAndroid.show(
-        episodes.length > 0 ? 'That was the last episode.' : 'Playback finished.',
-        ToastAndroid.SHORT
-      );
-      onClose();
+
+    if (targetIndex < 0 || targetIndex >= episodes.length) {
+      if (targetIndex >= episodes.length) {
+        ToastAndroid.show(
+          episodes.length > 0 ? 'That was the last episode.' : 'Playback finished.',
+          ToastAndroid.SHORT
+        );
+        onClose();
+      }
       return;
     }
 
-    const nextEp = episodes[nextIndex];
-    const nextTitle = nextEp.title || `Episode ${nextIndex + 1}`;
+    const targetEp = episodes[targetIndex];
+    const targetTitle = targetEp.title || `Episode ${targetIndex + 1}`;
 
-    if (!nextEp.link || !providerValue) {
-      ToastAndroid.show('Unable to resolve next episode.', ToastAndroid.SHORT);
+    if (!targetEp.link || !providerValue) {
+      ToastAndroid.show('Unable to resolve this episode.', ToastAndroid.SHORT);
       return;
     }
 
     setResolvingNextEpisode(true);
-    ToastAndroid.show(`Loading next episode: ${nextTitle}`, ToastAndroid.SHORT);
+    ToastAndroid.show(`Loading: ${targetTitle}`, ToastAndroid.SHORT);
     try {
       const streams = await providerManager.getStream({
-        link: nextEp.link,
+        link: targetEp.link,
         type: 'series',
         providerValue,
       });
@@ -645,21 +705,25 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       }));
 
       onSelectNextEpisode?.({
-        ...nextEp,
-        title: nextTitle,
+        ...targetEp,
+        title: targetTitle,
         url: best.link,
         headers: best.headers,
         sourceType: best.type,
         subtitles: best.subtitles,
         qualities: qualList,
+        skip: best.skip,
+        targetIndex,
       });
     } catch (e: any) {
-      console.warn('[TVPlayerScreen] Next episode extraction failed:', e);
-      ToastAndroid.show(e?.message || 'Failed to load next episode.', ToastAndroid.LONG);
+      console.warn('[TVPlayerScreen] Episode extraction failed:', e);
+      ToastAndroid.show(e?.message || 'Failed to load episode.', ToastAndroid.LONG);
     } finally {
       setResolvingNextEpisode(false);
     }
   };
+
+  const handleNextEpisode = () => playEpisodeAtIndex(currentEpisodeIndex + 1);
 
   const toggleAspectRatio = () => {
     resetInactivityTimer();
@@ -677,6 +741,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   };
 
   const hasNextEpisode = episodes.length > currentEpisodeIndex + 1;
+  const nextEpisodePreview = hasNextEpisode ? episodes[currentEpisodeIndex + 1] : undefined;
+
+  const formatEpisodeLabel = (ep?: EpisodeItem) => {
+    if (!ep) return '';
+    if (ep.season != null && ep.episodeNumber != null) {
+      const s = String(ep.season).padStart(2, '0');
+      const e = String(ep.episodeNumber).padStart(2, '0');
+      return `S${s}E${e} \u2013 ${ep.title || 'Next Episode'}`;
+    }
+    return ep.title || 'Next Episode';
+  };
 
   return (
     <View style={styles.container}>
@@ -742,6 +817,21 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           if (now - lastSyncTimeRef.current > 3000) {
             lastSyncTimeRef.current = now;
             syncProgressToStore(prog.currentTime, duration);
+          }
+
+          // "Up Next" popup: fires once per episode, either right when an
+          // outro marker (a `skip` interval titled "Outro") starts, or --
+          // when no such marker was supplied by the provider -- 90 seconds
+          // before the end, whichever data is actually available.
+          if (!nextUpTriggeredRef.current && hasNextEpisode && duration > 0) {
+            const outroInterval = (activeSkip || []).find(
+              (s) => /outro/i.test(s.title || '') && s.from > 0 && s.from < duration
+            );
+            const triggerAt = outroInterval ? outroInterval.from : duration - 90;
+            if (triggerAt >= 0 && prog.currentTime >= triggerAt && duration - prog.currentTime > 1) {
+              nextUpTriggeredRef.current = true;
+              setShowNextUpPopup(true);
+            }
           }
         }}
         onBuffer={(buf) => setBuffering(buf.isBuffering)}
@@ -992,59 +1082,40 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
               {/* Audio Selector */}
               <TVFocusablePressable
-                scaleFocused={1.08}
+                scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
                 onFocus={() => resetInactivityTimer()}
                 onPress={() => setActiveDialog('audio')}
-                style={styles.controlPillBtn}
+                style={styles.controlBtn}
               >
-                {() => (
-                  <View style={styles.pillInner}>
-                    <MaterialCommunityIcons name="volume-high" size={20} color="#FFFFFF" />
-                    <Text style={styles.pillText}>Audio</Text>
-                  </View>
-                )}
+                {() => <MaterialCommunityIcons name="volume-high" size={22} color="#FFFFFF" />}
               </TVFocusablePressable>
 
               {/* Audio Boost Profile Switcher */}
               <TVFocusablePressable
-                scaleFocused={1.08}
+                scaleFocused={1.12}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
                 onFocus={() => resetInactivityTimer()}
                 onPress={handleCycleAudioBoost}
                 style={[
-                  styles.controlPillBtn,
-                  audioBoostProfile !== 'off' && styles.activePillBtn,
+                  styles.controlBtn,
+                  audioBoostProfile !== 'off' && styles.activeIconBtn,
                 ]}
               >
                 {() => (
-                  <View style={styles.pillInner}>
-                    <MaterialCommunityIcons
-                      name={
-                        audioBoostProfile === 'rich'
-                          ? 'surround-sound'
-                          : audioBoostProfile === 'dialogue'
-                          ? 'account-voice'
-                          : 'volume-medium'
-                      }
-                      size={20}
-                      color={audioBoostProfile !== 'off' ? '#A78BFA' : '#9CA3AF'}
-                    />
-                    <Text
-                      style={[
-                        styles.pillText,
-                        audioBoostProfile !== 'off' && styles.activePillText,
-                      ]}
-                    >
-                      {audioBoostProfile === 'rich'
-                        ? 'Rich Boost'
+                  <MaterialCommunityIcons
+                    name={
+                      audioBoostProfile === 'rich'
+                        ? 'surround-sound'
                         : audioBoostProfile === 'dialogue'
-                        ? 'Dialogue Boost'
-                        : 'Audio Boost'}
-                    </Text>
-                  </View>
+                        ? 'account-voice'
+                        : 'volume-medium'
+                    }
+                    size={22}
+                    color={audioBoostProfile !== 'off' ? '#A78BFA' : '#9CA3AF'}
+                  />
                 )}
               </TVFocusablePressable>
 
@@ -1091,19 +1162,31 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               {/* Quality Selector */}
               {usableQualities.length > 0 && (
                 <TVFocusablePressable
-                  scaleFocused={1.08}
+                  scaleFocused={1.12}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={8}
                   onFocus={() => resetInactivityTimer()}
                   onPress={() => setActiveDialog('quality')}
-                  style={styles.controlPillBtn}
+                  style={styles.controlBtn}
                 >
-                  {() => (
-                    <View style={styles.pillInner}>
-                      <MaterialCommunityIcons name="tune-variant" size={20} color="#FFFFFF" />
-                      <Text style={styles.pillText}>Quality</Text>
-                    </View>
-                  )}
+                  {() => <MaterialCommunityIcons name="tune-variant" size={22} color="#FFFFFF" />}
+                </TVFocusablePressable>
+              )}
+
+              {/* Episodes List */}
+              {episodes.length > 0 && (
+                <TVFocusablePressable
+                  scaleFocused={1.12}
+                  focusedBorderColor="#8A5CF6"
+                  borderRadius={8}
+                  onFocus={() => resetInactivityTimer()}
+                  onPress={() => {
+                    setShowEpisodesList(true);
+                    resetInactivityTimer();
+                  }}
+                  style={styles.controlBtn}
+                >
+                  {() => <MaterialCommunityIcons name="view-list" size={22} color="#FFFFFF" />}
                 </TVFocusablePressable>
               )}
 
@@ -1280,6 +1363,170 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           </View>
         </View>
       </Modal>
+
+      {/* "Up Next" Popup -- appears at the outro marker (if the provider
+          supplied one) or 90s before the end otherwise. */}
+      <Modal
+        visible={showNextUpPopup}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowNextUpPopup(false);
+          resetInactivityTimer();
+        }}
+      >
+        <View style={styles.nextUpOverlay} pointerEvents="box-none">
+          <View style={styles.nextUpCard}>
+            <View style={styles.nextUpTextCol}>
+              <Text numberOfLines={1} style={styles.nextUpShowTitle}>
+                {title}
+              </Text>
+              <Text numberOfLines={2} style={styles.nextUpEpisodeLine}>
+                {formatEpisodeLabel(nextEpisodePreview)}
+              </Text>
+
+              <View style={styles.nextUpActionsRow}>
+                <TVFocusablePressable
+                  hasTVPreferredFocus
+                  scaleFocused={1.04}
+                  focusedBorderColor="#FFFFFF"
+                  borderRadius={24}
+                  onFocus={() => resetInactivityTimer()}
+                  onPress={() => {
+                    setShowNextUpPopup(false);
+                    handleNextEpisode();
+                  }}
+                  style={styles.nextUpPlayBtn}
+                >
+                  {() => (
+                    <View style={styles.nextUpBtnInner}>
+                      <MaterialCommunityIcons name="play" size={16} color="#0A0A0E" />
+                      <Text style={styles.nextUpPlayBtnText}>Play Now</Text>
+                    </View>
+                  )}
+                </TVFocusablePressable>
+
+                <TVFocusablePressable
+                  scaleFocused={1.04}
+                  focusedBorderColor="#FFFFFF"
+                  borderRadius={24}
+                  onFocus={() => resetInactivityTimer()}
+                  onPress={() => {
+                    setShowNextUpPopup(false);
+                    resetInactivityTimer();
+                  }}
+                  style={styles.nextUpDismissBtn}
+                >
+                  {() => (
+                    <View style={styles.nextUpBtnInner}>
+                      <MaterialCommunityIcons name="close" size={16} color="#D1D5DB" />
+                      <Text style={styles.nextUpDismissText}>Dismiss</Text>
+                    </View>
+                  )}
+                </TVFocusablePressable>
+              </View>
+            </View>
+
+            {nextEpisodePreview?.image ? (
+              <Image
+                source={{ uri: nextEpisodePreview.image }}
+                style={styles.nextUpPoster}
+                resizeMode="cover"
+              />
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* "Videos" Episode Picker -- scrollable list of every episode in the
+          currently active season, each with its Cinemeta/Discover-sourced
+          mini-poster and synopsis when available. */}
+      <Modal
+        visible={showEpisodesList}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowEpisodesList(false);
+          resetInactivityTimer();
+        }}
+      >
+        <View style={styles.episodesOverlay}>
+          <View style={styles.episodesCard}>
+            <Text style={styles.episodesTitle}>Videos</Text>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.episodesListContent}
+            >
+              {episodes.map((ep, idx) => {
+                const isCurrent = idx === currentEpisodeIndex;
+                const label =
+                  ep.episodeNumber != null
+                    ? `${ep.episodeNumber}. ${ep.title || `Episode ${idx + 1}`}`
+                    : ep.title || `Episode ${idx + 1}`;
+                return (
+                  <TVFocusablePressable
+                    key={`ep-list-${ep.id || ep.link || idx}`}
+                    hasTVPreferredFocus={isCurrent}
+                    scaleFocused={1.01}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={12}
+                    onFocus={() => resetInactivityTimer()}
+                    onPress={() => {
+                      setShowEpisodesList(false);
+                      if (idx !== currentEpisodeIndex) playEpisodeAtIndex(idx);
+                    }}
+                    style={[styles.episodeListRow, isCurrent && styles.episodeListRowActive]}
+                  >
+                    {() => (
+                      <View style={styles.episodeListRowInner}>
+                        {ep.image ? (
+                          <Image
+                            source={{ uri: ep.image }}
+                            style={styles.episodeListThumb}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={[styles.episodeListThumb, styles.episodeListThumbFallback]}>
+                            <MaterialCommunityIcons name="play" size={20} color="#9CA3AF" />
+                          </View>
+                        )}
+                        <View style={styles.episodeListTextCol}>
+                          <View style={styles.episodeListHeaderRow}>
+                            <Text
+                              numberOfLines={1}
+                              style={[styles.episodeListName, isCurrent && styles.episodeListNameActive]}
+                            >
+                              {label}
+                            </Text>
+                            {!!ep.releaseDate && (
+                              <Text
+                                style={[styles.episodeListDate, isCurrent && styles.episodeListDateActive]}
+                              >
+                                {ep.releaseDate}
+                              </Text>
+                            )}
+                          </View>
+                          {!!ep.synopsis && (
+                            <Text
+                              numberOfLines={2}
+                              style={[
+                                styles.episodeListSynopsis,
+                                isCurrent && styles.episodeListSynopsisActive,
+                              ]}
+                            >
+                              {ep.synopsis}
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -1411,6 +1658,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#8A5CF6',
   },
+  activeIconBtn: {
+    backgroundColor: 'rgba(138, 92, 246, 0.25)',
+    borderWidth: 1,
+    borderColor: '#8A5CF6',
+  },
   activePillText: {
     color: '#A78BFA',
     fontWeight: '700',
@@ -1480,6 +1732,157 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+
+  // ---- "Up Next" popup ----------------------------------------------
+  nextUpOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
+    padding: 36,
+  },
+  nextUpCard: {
+    flexDirection: 'row',
+    width: 560,
+    backgroundColor: 'rgba(24, 24, 30, 0.96)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    overflow: 'hidden',
+  },
+  nextUpTextCol: {
+    flex: 1,
+    padding: 22,
+    justifyContent: 'center',
+  },
+  nextUpShowTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  nextUpEpisodeLine: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 18,
+  },
+  nextUpActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  nextUpBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  nextUpPlayBtn: {
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+  },
+  nextUpPlayBtnText: {
+    color: '#0A0A0E',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  nextUpDismissBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  nextUpDismissText: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  nextUpPoster: {
+    width: 150,
+    height: '100%',
+  },
+
+  // ---- "Videos" episode picker ---------------------------------------
+  episodesOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  episodesCard: {
+    width: 920,
+    maxHeight: 620,
+    backgroundColor: '#101014',
+    borderRadius: 18,
+    padding: 26,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  episodesTitle: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '800',
+    marginBottom: 16,
+  },
+  episodesListContent: {
+    gap: 10,
+    paddingBottom: 10,
+  },
+  episodeListRow: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    padding: 10,
+  },
+  episodeListRowActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+  },
+  episodeListRowInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  episodeListThumb: {
+    width: 120,
+    height: 68,
+    borderRadius: 6,
+    backgroundColor: '#1E1E28',
+  },
+  episodeListThumbFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  episodeListTextCol: {
+    flex: 1,
+  },
+  episodeListHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 4,
+  },
+  episodeListName: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  episodeListNameActive: {
+    color: '#111114',
+  },
+  episodeListDate: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  episodeListDateActive: {
+    color: '#4B5563',
+  },
+  episodeListSynopsis: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  episodeListSynopsisActive: {
+    color: '#3F3F46',
   },
 });
 
