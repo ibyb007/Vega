@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, Dimensions, findNodeHandle } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
@@ -66,6 +66,10 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   // both x and y even though "Add / Manage Addons" is the button that's
   // actually directly above with nothing else in between.
   const [manageAddonsHandle, setManageAddonsHandle] = useState<number | null>(null);
+  // Raw node (not just its handle tag) so `onFocus` below can re-run
+  // `registerRailLeftEdge` -- see that handler for why a one-time,
+  // mount-only registration isn't enough for this particular button.
+  const manageAddonsNodeRef = useRef<unknown>(null);
 
   // No local back-stack on this screen — Back is handled centrally by
   // App.tsx, which moves focus to the Sources button on the rail.
@@ -101,6 +105,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
             key={keyFor('manage-addons-btn')}
             ref={(el) => {
               setItemRef('manage-addons-btn', el);
+              manageAddonsNodeRef.current = el;
               // The header title beside this button isn't focusable, so
               // Left from here has nothing else to land on within the
               // screen -- it should always reach the Sources rail button.
@@ -109,7 +114,29 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               if (tag != null) setManageAddonsHandle(tag);
             }}
             hasTVPreferredFocus={shouldPreferFocus('manage-addons-btn', false)}
-            onFocus={() => (lastFocusedSourcesKey = 'manage-addons-btn')}
+            onFocus={() => {
+              lastFocusedSourcesKey = 'manage-addons-btn';
+              // Re-claim the rail's Right-key return target every time this
+              // button is actually focused, not just once at mount. Every
+              // other left-edge item on this screen (the provider grid's
+              // first column, the secondary-source chip row, ...) also
+              // calls `registerRailLeftEdge` from its own `ref` callback,
+              // and those all mount/re-mount *after* this header -- so
+              // without this, whichever of them rendered last silently
+              // steals the "Right from Sources" target, and pressing Right
+              // from the rail while sitting on this button lands somewhere
+              // else (or, if that element later unmounts, nowhere at all).
+              if (manageAddonsNodeRef.current) {
+                registerRailLeftEdge('sources', manageAddonsNodeRef.current);
+              }
+            }}
+            // This is the topmost focusable item on the screen -- nothing
+            // sits above it to receive an Up press. Once mounted,
+            // `manageAddonsHandle` is this button's own node handle, so
+            // this is a deliberate self-loop: Up does nothing instead of
+            // Android's default geometric search either finding a distant,
+            // wrong target or nothing at all (which drops focus entirely).
+            nextFocusUp={manageAddonsHandle ?? undefined}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
