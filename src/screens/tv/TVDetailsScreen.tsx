@@ -291,7 +291,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNum, episodeNum);
       return {
         ...ep,
-        title: ep.title || cinemetaEp?.name || cinemetaEp?.title || `Episode ${index + 1}`,
+        // Real episode name (Cinemeta) over the provider's own bare/numeric
+        // label -- feeds the player's "Videos" list and "Up Next" popup.
+        title: cinemetaEp?.name || cinemetaEp?.title || ep.title || `Episode ${index + 1}`,
         image: ep.image || cinemetaEp?.thumbnail,
         synopsis: ep.description || cinemetaEp?.overview,
         season: seasonNum,
@@ -630,7 +632,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                       )}
                       <View style={styles.episodeTextWrap}>
                         <Text numberOfLines={1} style={styles.episodeTitle}>
-                          {ep.title || cinemetaEp?.name || cinemetaEp?.title || `Episode ${index + 1}`}
+                          {cinemetaEp?.name || cinemetaEp?.title || ep.title || `Episode ${index + 1}`}
                         </Text>
                         {!!episodeOverview && (
                           <Text numberOfLines={2} style={styles.episodeDesc}>
@@ -676,7 +678,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                     const episodeNum = parseEpisodeNumber(d.title) ?? index + 1;
                     const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNum, episodeNum);
                     return {
-                      title: d.title,
+                      title: cinemetaEp?.name || cinemetaEp?.title || d.title,
                       link: d.link,
                       description: d.description,
                       image: d.image || cinemetaEp?.thumbnail,
@@ -693,6 +695,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               return usableDirectItems.map((d, index) => {
                 const seasonNum = parseSeasonNumber(activeLink?.title) ?? seasonIndex + 1;
                 const episodeNum = parseEpisodeNumber(d.title) ?? index + 1;
+                const directCinemetaEp = directItemsAreEpisodes
+                  ? findCinemetaEpisode(cinemetaMeta, seasonNum, episodeNum)
+                  : null;
                 const directEpisodeKey = directItemsAreEpisodes
                   ? `S${seasonNum}E${episodeNum}`
                   : undefined;
@@ -730,7 +735,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                           <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
                         </View>
                         <Text numberOfLines={1} style={styles.episodeTitle}>
-                          {d.title}
+                          {directCinemetaEp?.name || directCinemetaEp?.title || d.title}
                         </Text>
                         {isResumeTarget && resumeHint?.position ? (
                           <Text style={styles.resumeBadge}>

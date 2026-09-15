@@ -946,6 +946,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               const cinemetaEp = findCinemetaEpisode(sourceCinemetaMeta, seasonNum, episodeNum);
               return {
                 ...ep,
+                // Real episode name (Cinemeta) over whatever bare/numeric
+                // label the provider used, e.g. "Episode 12" or "S01E12" --
+                // mirrors the on-screen episode grid above so the player's
+                // "Videos" list and "Up Next" popup show real names too.
+                title: cinemetaEp?.name || cinemetaEp?.title || ep.title,
                 image: cinemetaEp?.thumbnail || ep.image,
                 synopsis: ep.description || cinemetaEp?.overview,
                 season: seasonNum,
@@ -1449,7 +1454,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                     )}
                                     <View style={styles.episodeTextWrap}>
                                       <Text numberOfLines={1} style={styles.episodeText}>
-                                        {ep.title || cinemetaEp?.name || cinemetaEp?.title || `Episode ${idx + 1}`}
+                                        {cinemetaEp?.name || cinemetaEp?.title || ep.title || `Episode ${idx + 1}`}
                                       </Text>
                                       {!!episodeReleaseDate && (
                                         <Text numberOfLines={1} style={styles.episodeReleaseText}>

@@ -748,7 +748,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     if (ep.season != null && ep.episodeNumber != null) {
       const s = String(ep.season).padStart(2, '0');
       const e = String(ep.episodeNumber).padStart(2, '0');
-      return `S${s}E${e} \u2013 ${ep.title || 'Next Episode'}`;
+      return `S${s}E${e}-${ep.title || 'Next Episode'}`;
     }
     return ep.title || 'Next Episode';
   };
@@ -821,13 +821,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
           // "Up Next" popup: fires once per episode, either right when an
           // outro marker (a `skip` interval titled "Outro") starts, or --
-          // when no such marker was supplied by the provider -- 90 seconds
+          // when no such marker was supplied by the provider -- 120 seconds
           // before the end, whichever data is actually available.
           if (!nextUpTriggeredRef.current && hasNextEpisode && duration > 0) {
             const outroInterval = (activeSkip || []).find(
               (s) => /outro/i.test(s.title || '') && s.from > 0 && s.from < duration
             );
-            const triggerAt = outroInterval ? outroInterval.from : duration - 90;
+            const triggerAt = outroInterval ? outroInterval.from : duration - 120;
             if (triggerAt >= 0 && prog.currentTime >= triggerAt && duration - prog.currentTime > 1) {
               nextUpTriggeredRef.current = true;
               setShowNextUpPopup(true);
@@ -1365,7 +1365,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       </Modal>
 
       {/* "Up Next" Popup -- appears at the outro marker (if the provider
-          supplied one) or 90s before the end otherwise. */}
+          supplied one) or 120s before the end otherwise. Deliberately has
+          no onFocus-driven resetInactivityTimer() calls: it's a self-
+          contained modal, so it shouldn't also wake the bottom control
+          bar behind it when it appears. */}
       <Modal
         visible={showNextUpPopup}
         transparent
@@ -1391,7 +1394,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   scaleFocused={1.04}
                   focusedBorderColor="#FFFFFF"
                   borderRadius={24}
-                  onFocus={() => resetInactivityTimer()}
                   onPress={() => {
                     setShowNextUpPopup(false);
                     handleNextEpisode();
@@ -1410,7 +1412,6 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   scaleFocused={1.04}
                   focusedBorderColor="#FFFFFF"
                   borderRadius={24}
-                  onFocus={() => resetInactivityTimer()}
                   onPress={() => {
                     setShowNextUpPopup(false);
                     resetInactivityTimer();
@@ -1801,27 +1802,34 @@ const styles = StyleSheet.create({
     height: '100%',
   },
 
-  // ---- "Videos" episode picker ---------------------------------------
+  // ---- "Videos" episode picker -----------------------------------------
+  // A compact, right-of-center panel rather than a full-screen takeover --
+  // it leaves the paused frame (and, below it, the player's own bottom
+  // control bar) visible and only lightly dimmed around the edges.
   episodesOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
-    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 90,
+    paddingBottom: 150,
   },
   episodesCard: {
-    width: 920,
-    maxHeight: 620,
-    backgroundColor: '#101014',
-    borderRadius: 18,
-    padding: 26,
+    width: 860,
+    maxWidth: '62%',
+    flex: 1,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(15, 15, 19, 0.96)',
+    borderRadius: 20,
+    padding: 24,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   episodesTitle: {
     color: '#FFFFFF',
-    fontSize: 26,
+    fontSize: 22,
     fontWeight: '800',
-    marginBottom: 16,
+    marginBottom: 14,
   },
   episodesListContent: {
     gap: 10,
