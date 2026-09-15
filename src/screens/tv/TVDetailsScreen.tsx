@@ -620,36 +620,70 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         ) : usableDirectItems.length > 1 ? (
           <View style={styles.listSection}>
             <Text style={styles.sectionHeader}>Select Source</Text>
-            {usableDirectItems.map((d, index) => (
-              <TVFocusablePressable
-                key={`direct-${d.link}-${index}`}
-                hasTVPreferredFocus={index === 0}
-                scaleFocused={1.02}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={10}
-                onPress={() =>
-                  resolveAndPlay(d.link, info?.title || item?.title, d.type || info?.type || 'movie')
-                }
-                style={styles.episodeRow}
-              >
-                {({ focused }) => (
-                  <View style={styles.episodeRowInner}>
-                    <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
-                      <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
-                    </View>
-                    <Text numberOfLines={1} style={styles.episodeTitle}>
-                      {d.title}
-                    </Text>
-                    {resumeHint?.position ? (
-                      <Text style={styles.resumeBadge}>
-                        Resume {Math.floor(resumeHint.position / 60)}:
-                        {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+            {usableDirectItems.map((d, index) => {
+              // Providers without a TMDB/IMDb id often can't group a show
+              // into proper season tabs + an `episodesLink` fetch, so each
+              // episode ends up here as a flat "direct link" entry instead
+              // of going through the `hasEpisodes` branch above. Those
+              // entries are still individual episodes (`d.type ===
+              // 'series'`) and need the same per-item resume matching that
+              // branch does -- otherwise every entry in this list looks
+              // like "the" resume target as soon as *any* position is
+              // saved. A movie's multiple direct entries, by contrast, are
+              // just different servers/qualities for the *same* content,
+              // so every one of those legitimately gets the badge.
+              const isSeriesDirectItem = d.type === 'series';
+              const seasonNum = parseSeasonNumber(activeLink?.title) ?? seasonIndex + 1;
+              const episodeNum = parseEpisodeNumber(d.title) ?? index + 1;
+              const directEpisodeKey = isSeriesDirectItem
+                ? `S${seasonNum}E${episodeNum}`
+                : undefined;
+              const isResumeTarget = directEpisodeKey
+                ? resumeHint?.episodeKey
+                  ? resumeHint.episodeKey === directEpisodeKey
+                  : !!resumeHint?.episodeLink && d.link === resumeHint.episodeLink
+                : true;
+              return (
+                <TVFocusablePressable
+                  key={`direct-${d.link}-${index}`}
+                  hasTVPreferredFocus={
+                    isSeriesDirectItem && (resumeHint?.episodeKey || resumeHint?.episodeLink)
+                      ? isResumeTarget
+                      : index === 0
+                  }
+                  scaleFocused={1.02}
+                  focusedBorderColor="#8A5CF6"
+                  borderRadius={10}
+                  onPress={() =>
+                    resolveAndPlay(
+                      d.link,
+                      info?.title || item?.title,
+                      d.type || info?.type || 'movie',
+                      index,
+                      directEpisodeKey,
+                    )
+                  }
+                  style={styles.episodeRow}
+                >
+                  {({ focused }) => (
+                    <View style={styles.episodeRowInner}>
+                      <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
+                        <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
+                      </View>
+                      <Text numberOfLines={1} style={styles.episodeTitle}>
+                        {d.title}
                       </Text>
-                    ) : null}
-                  </View>
-                )}
-              </TVFocusablePressable>
-            ))}
+                      {isResumeTarget && resumeHint?.position ? (
+                        <Text style={styles.resumeBadge}>
+                          Resume {Math.floor(resumeHint.position / 60)}:
+                          {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+                        </Text>
+                      ) : null}
+                    </View>
+                  )}
+                </TVFocusablePressable>
+              );
+            })}
           </View>
         ) : (
           <View style={styles.playActionSection}>
