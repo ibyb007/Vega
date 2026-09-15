@@ -592,6 +592,23 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                           if (isFirstInRow && el) {
                             registerRailLeftEdge('home', el);
                           }
+                          // The topmost row (Continue Watching when present,
+                          // otherwise whichever row loads first) has nothing
+                          // above it, but Android's default geometric focus
+                          // search doesn't know that -- the rail is a single
+                          // absolutely-positioned column spanning the full
+                          // screen height, so pressing Up from here lands on
+                          // whichever rail button happens to sit nearest
+                          // vertically (usually "Sources"), not on nothing.
+                          // Pointing `nextFocusUp` at the card's own handle
+                          // makes Up a no-op for row 0 without touching
+                          // Left/Right/Down, which are wired separately.
+                          if (rowIndex === 0 && el) {
+                            const selfHandle = findNodeHandle(el);
+                            if (selfHandle != null) {
+                              (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+                            }
+                          }
                         }}
                         hasTVPreferredFocus={shouldFocus}
                         scaleFocused={1.05}
@@ -606,6 +623,17 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                           // button, from whichever row the user is on.
                           if (isFirstInRow) {
                             registerRailLeftEdge('home', itemRefsRef.current[itemKey]);
+                          }
+                          // Same re-assertion as the ref callback above, in
+                          // case this card was focused (e.g. via the refocus
+                          // remount path) before the ref callback's write had
+                          // landed.
+                          if (rowIndex === 0) {
+                            const node = itemRefsRef.current[itemKey] as any;
+                            const selfHandle = node ? findNodeHandle(node) : null;
+                            if (selfHandle != null) {
+                              node.setNativeProps?.({ nextFocusUp: selfHandle });
+                            }
                           }
                         }}
                         onPress={() => {
