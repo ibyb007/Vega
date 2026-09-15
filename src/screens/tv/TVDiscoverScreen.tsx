@@ -1580,6 +1580,18 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               ref={(el) => {
                 manageBtnRef.current = el;
                 setItemRef('manage-btn', el);
+                // This bar is the topmost row of the Browse screen -- Hero
+                // above it isn't focusable, but the side nav rail spans the
+                // full screen height, so Android's default geometric search
+                // still finds "Sources" as the nearest thing Up from here.
+                // Self-pointing nextFocusUp makes Up a no-op for this row
+                // without touching Left/Right/Down.
+                if (el) {
+                  const selfHandle = findNodeHandle(el);
+                  if (selfHandle != null) {
+                    (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+                  }
+                }
               }}
               hasTVPreferredFocus={shouldPreferFocus('manage-btn', false)}
               scaleFocused={1.04}
@@ -1588,6 +1600,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               onFocus={() => {
                 lastFocusedDiscoverBrowseKey = 'manage-btn';
                 registerRailLeftEdge('discover', manageBtnRef.current);
+                const node = manageBtnRef.current as any;
+                const selfHandle = node ? findNodeHandle(node) : null;
+                if (selfHandle != null) {
+                  node.setNativeProps?.({ nextFocusUp: selfHandle });
+                }
               }}
               onPress={() => setManageVisible(true)}
               style={styles.manageBtn}
@@ -1606,7 +1623,19 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               return (
                 <TVFocusablePressable
                   key={keyFor(pillKey)}
-                  ref={(el) => setItemRef(pillKey, el)}
+                  ref={(el) => {
+                    setItemRef(pillKey, el);
+                    // Same self-pointing nextFocusUp as the "Catalogs"
+                    // button above -- every pill in this top row needs it,
+                    // not just the first, since Up can be pressed from
+                    // whichever pill currently has focus.
+                    if (el) {
+                      const selfHandle = findNodeHandle(el);
+                      if (selfHandle != null) {
+                        (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+                      }
+                    }
+                  }}
                   hasTVPreferredFocus={shouldPreferFocus(pillKey, false)}
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
