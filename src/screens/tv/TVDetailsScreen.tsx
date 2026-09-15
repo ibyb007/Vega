@@ -279,6 +279,28 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const isAwaitingEpisodes = hasEpisodesLink && episodes.length === 0 && !error;
   const stillResolving = loading || isAwaitingEpisodes || episodesLoading || extractingStreams;
 
+  // Episode payload actually handed to TVPlayerScreen -- same list as
+  // `episodes` above, but enriched with each episode's real season/episode
+  // number plus Cinemeta's synopsis/thumbnail (falling back to whatever the
+  // provider itself returned) when the provider's own data is missing one.
+  // Powers the player's "Videos" episode picker and "Up Next" popup.
+  const playerEpisodes: EpisodeLink[] = useMemo(() => {
+    return episodes.map((ep, index) => {
+      const seasonNum = parseSeasonNumber(activeLink?.title) ?? seasonIndex + 1;
+      const episodeNum = parseEpisodeNumber(ep.title) ?? index + 1;
+      const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNum, episodeNum);
+      return {
+        ...ep,
+        title: ep.title || cinemetaEp?.name || cinemetaEp?.title || `Episode ${index + 1}`,
+        image: ep.image || cinemetaEp?.thumbnail,
+        synopsis: ep.description || cinemetaEp?.overview,
+        season: seasonNum,
+        episodeNumber: episodeNum,
+        releaseDate: cinemetaEp?.released,
+      } as EpisodeLink & { synopsis?: string; season?: number; episodeNumber?: number; releaseDate?: string };
+    });
+  }, [episodes, cinemetaMeta, activeLink, seasonIndex]);
+
   const resolveAndPlay = useCallback(
     async (
       link: string,
@@ -373,9 +395,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           itemLink: item?.link,
           episodeId: episodeKey,
           providerValue: providerId,
-          episodes: episodesOverride ?? episodes,
+          episodes: episodesOverride ?? playerEpisodes,
           currentEpisodeIndex: episodeIdx,
           qualities,
+          skip: best.skip,
           headers: best.headers,
           sourceType: best.type,
           subtitles: best.subtitles,
@@ -388,7 +411,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         setExtractingStreams(false);
       }
     },
-    [providerId, info, item, episodes, onPlayStream, resumeHint, excludedQualities],
+    [providerId, info, item, playerEpisodes, onPlayStream, resumeHint, excludedQualities],
   );
 
   const handlePickServer = async (option: { url: string; headers?: Record<string, string> }) => {
@@ -648,14 +671,23 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 usableDirectItems.some((d) => d.type === 'series') ||
                 (info?.type || 'series') !== 'movie';
               const episodesForPlayer: EpisodeLink[] | undefined = directItemsAreEpisodes
-                ? usableDirectItems.map((d) => ({
-                    title: d.title,
-                    link: d.link,
-                    description: d.description,
-                    image: d.image,
-                    quickDownload: d.quickDownload,
-                    skip: d.skip,
-                  }))
+                ? usableDirectItems.map((d, index) => {
+                    const seasonNum = parseSeasonNumber(activeLink?.title) ?? seasonIndex + 1;
+                    const episodeNum = parseEpisodeNumber(d.title) ?? index + 1;
+                    const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNum, episodeNum);
+                    return {
+                      title: d.title,
+                      link: d.link,
+                      description: d.description,
+                      image: d.image || cinemetaEp?.thumbnail,
+                      synopsis: d.description || cinemetaEp?.overview,
+                      season: seasonNum,
+                      episodeNumber: episodeNum,
+                      releaseDate: cinemetaEp?.released,
+                      quickDownload: d.quickDownload,
+                      skip: d.skip,
+                    } as EpisodeLink & { synopsis?: string; season?: number; episodeNumber?: number; releaseDate?: string };
+                  })
                 : undefined;
 
               return usableDirectItems.map((d, index) => {
