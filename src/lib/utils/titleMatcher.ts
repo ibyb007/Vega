@@ -32,29 +32,38 @@ const truncateAtReleaseMarker = (raw: string): string => {
 const YEAR_TOLERANCE = 2;
 
 /**
- * Pulls a leading 4-digit year out of a title if the provider embedded it
- * there directly, e.g. "The Hobbit: An Unexpected Journey (2012)".
+ * Pulls a 4-digit year out of a title if the provider embedded it there,
+ * e.g. "The Hobbit: An Unexpected Journey (2012)" or
+ * "The Gentlemen.2024.webdl.1080p". Looks within the release-marker-
+ * truncated title rather than only the absolute end of the raw string --
+ * addons commonly glue the year on with a dot/dash separator followed by
+ * more release tags ("2024.webdl.1080p"), not just trailing whitespace.
  */
 export const extractYearFromTitle = (raw: string): string | undefined => {
-  const match = raw.match(/\((19|20)\d{2}\)|\b(19|20)\d{2}\b$/);
-  if (!match) return undefined;
-  const digits = match[0].replace(/[^\d]/g, '');
-  return digits.length === 4 ? digits : undefined;
+  const truncated = truncateAtReleaseMarker(raw || '');
+  const parenMatch = truncated.match(/\((19|20)\d{2}\)/);
+  if (parenMatch) return parenMatch[0].replace(/[^\d]/g, '');
+  const looseMatch = truncated.match(/\b(19|20)\d{2}\b(?!\d)/);
+  return looseMatch ? looseMatch[0] : undefined;
 };
 
 /**
  * Normalizes a title for comparison: truncates at the first release/quality
- * marker, lowercases, drops a leading article, strips a trailing embedded
- * year, bracketed/parenthetical noise, punctuation, and collapses
- * whitespace.
+ * marker, lowercases, strips bracketed/parenthetical noise, normalizes all
+ * punctuation to spaces, then -- only once punctuation can no longer hide a
+ * trailing year token behind a "." or "-" (e.g. "Gentlemen.2024.") -- strips
+ * a trailing embedded year and a leading article.
  */
 export const cleanTitle = (raw: string): string => {
-  return truncateAtReleaseMarker(raw || '')
-    .toLowerCase()
-    .replace(TRAILING_YEAR, '')
-    .replace(BRACKETED, ' ')
-    .replace(ARTICLE_PREFIX, '')
+  const truncated = truncateAtReleaseMarker(raw || '').toLowerCase();
+  const withoutBrackets = truncated.replace(BRACKETED, ' ');
+  const withoutPunctuation = withoutBrackets
     .replace(NON_WORD, ' ')
+    .replace(WHITESPACE, ' ')
+    .trim();
+  return withoutPunctuation
+    .replace(TRAILING_YEAR, '')
+    .replace(ARTICLE_PREFIX, '')
     .replace(WHITESPACE, ' ')
     .trim();
 };
@@ -89,16 +98,22 @@ export const isStrictMatch = (
   const normTarget = cleanTitle(targetTitle);
   const normCandidate = cleanTitle(candidateTitle);
 
-  // An exact title match is trusted on its own -- two addons agreeing on
-  // the full title is strong enough signal that we don't also gate it on
-  // year, which varies too much between sources to be a reliable veto here.
-  if (normTarget.length > 0 && normTarget === normCandidate) {
-    return true;
-  }
-
   const resolvedTargetYear = targetYear || extractYearFromTitle(targetTitle);
   const resolvedCandidateYear = candidateYear || extractYearFromTitle(candidateTitle);
-  if (!yearsAreCompatible(resolvedTargetYear, resolvedCandidateYear)) {
+  const yearsOk = yearsAreCompatible(resolvedTargetYear, resolvedCandidateYear);
+
+  // An exact (year-stripped) title match is trusted on its own *unless*
+  // both sides actually name a year and those years disagree -- e.g. "The
+  // Gentlemen" (2024) vs "The Gentlemen (2019)" clean down to the same
+  // text but are different releases, so an explicit, incompatible year
+  // must still veto the match. Missing year on either side stays
+  // permissive (yearsAreCompatible already treats "nothing to disqualify
+  // on" as compatible).
+  if (normTarget.length > 0 && normTarget === normCandidate) {
+    return yearsOk;
+  }
+
+  if (!yearsOk) {
     return false;
   }
 
@@ -125,4 +140,77 @@ export const isStrictMatch = (
   }
 
   return candidateSub.includes(targetSub) || targetSub.includes(candidateSub);
+};
+
+// ---------------------------------------------------------------------------
+// External id (IMDb/TMDB) matching
+// ---------------------------------------------------------------------------
+// Some provider search results embed the actual IMDb or TMDB id for the
+// title they scraped. When that's present it's a far stronger signal than
+// any amount of text/year normalization -- so it's treated as the *only*
+// criterion for that candidate, overriding the text-matching path entirely
+// (both to accept things text matching would miss, and to reject
+// same-titled-but-different-release results text matching would wrongly
+// accept). Only candidates with no id at all fall back to `isStrictMatch`.
+
+export interface ExternalIds {
+  imdbId?: string;
+  tmdbId?: string;
+}
+
+const IMDB_ID_PATTERN = /^tt\d+$/i;
+const TMDB_PREFIXED_ID_PATTERN = /^tmdb[:\-]?(\d+)$/i;
+
+/**
+ * Pulls an IMDb id and/or TMDB id out of an object's common id-ish fields.
+ * Providers and catalog metas spell these differently (imdb_id, imdbId,
+ * imdbID, tmdb_id, tmdbId), or fold the source right into a Stremio-style
+ * `id` field ("tt1234567" for IMDb-based addons, "tmdb:527774" for
+ * TMDB-based ones) -- this normalizes all of those into one shape so
+ * callers can compare like-for-like.
+ */
+export const extractExternalIds = (obj: any): ExternalIds => {
+  if (!obj || typeof obj !== 'object') return {};
+
+  const rawImdb = obj.imdb_id ?? obj.imdbId ?? obj.imdbID ?? obj.imdb;
+  const rawTmdb = obj.tmdb_id ?? obj.tmdbId ?? obj.tmdbID ?? obj.tmdb;
+
+  let imdbId: string | undefined =
+    typeof rawImdb === 'string' && IMDB_ID_PATTERN.test(rawImdb.trim())
+      ? rawImdb.trim().toLowerCase()
+      : undefined;
+  let tmdbId: string | undefined =
+    rawTmdb !== undefined && rawTmdb !== null && String(rawTmdb).trim() !== ''
+      ? String(rawTmdb).trim()
+      : undefined;
+
+  const rawId = typeof obj.id === 'string' ? obj.id.trim() : undefined;
+  if (rawId) {
+    if (!imdbId && IMDB_ID_PATTERN.test(rawId)) {
+      imdbId = rawId.toLowerCase();
+    }
+    if (!tmdbId) {
+      const tmdbMatch = rawId.match(TMDB_PREFIXED_ID_PATTERN);
+      if (tmdbMatch) tmdbId = tmdbMatch[1];
+    }
+  }
+
+  return { imdbId, tmdbId };
+};
+
+/** True when an object had a usable IMDb or TMDB id extracted from it. */
+export const hasExternalId = (ids: ExternalIds): boolean =>
+  Boolean(ids.imdbId || ids.tmdbId);
+
+/**
+ * True when both sides name the same external id. Only ever consulted once
+ * the candidate is known to have *some* id (see `hasExternalId`) -- a
+ * target with no id of the matching kind simply fails to agree, it doesn't
+ * fall back to text matching (that fallback only applies when the
+ * candidate has no id at all).
+ */
+export const hasMatchingExternalId = (target: ExternalIds, candidate: ExternalIds): boolean => {
+  if (target.imdbId && candidate.imdbId) return target.imdbId === candidate.imdbId;
+  if (target.tmdbId && candidate.tmdbId) return target.tmdbId === candidate.tmdbId;
+  return false;
 };
