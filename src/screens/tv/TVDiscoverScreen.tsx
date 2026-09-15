@@ -1990,7 +1990,7 @@ const styles = StyleSheet.create({
     textShadowRadius: 4,
   },
   targetCastText: {
-    color: '#9CA3AF',
+    color: '#DDE00B',
     fontSize: 12,
     lineHeight: 18,
     marginTop: 6,
