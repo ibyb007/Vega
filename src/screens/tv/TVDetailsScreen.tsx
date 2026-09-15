@@ -286,6 +286,16 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       type: string,
       episodeIdx: number = 0,
       episodeKey?: string,
+      // Overrides the component-level `episodes` state (populated only via
+      // the `episodesLink` fetch) with a caller-supplied list. The flat
+      // "Select Source" list below is itself the episode list for shows
+      // whose provider never exposed a proper `episodesLink` -- without
+      // this, TVPlayerScreen falls back to an empty episode array, which
+      // is exactly what stops it from ever saving a matchable per-episode
+      // link/key (see `syncProgressToStore`), and *that*, not just the
+      // rendering below, is what let every entry appear as "the" resume
+      // target.
+      episodesOverride?: EpisodeLink[],
     ) => {
       if (!providerId || !link) {
         ToastAndroid.show('No active provider found for this media', ToastAndroid.SHORT);
@@ -363,7 +373,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           itemLink: item?.link,
           episodeId: episodeKey,
           providerValue: providerId,
-          episodes,
+          episodes: episodesOverride ?? episodes,
           currentEpisodeIndex: episodeIdx,
           qualities,
           headers: best.headers,
@@ -620,70 +630,88 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         ) : usableDirectItems.length > 1 ? (
           <View style={styles.listSection}>
             <Text style={styles.sectionHeader}>Select Source</Text>
-            {usableDirectItems.map((d, index) => {
+            {(() => {
               // Providers without a TMDB/IMDb id often can't group a show
               // into proper season tabs + an `episodesLink` fetch, so each
               // episode ends up here as a flat "direct link" entry instead
-              // of going through the `hasEpisodes` branch above. Those
-              // entries are still individual episodes (`d.type ===
-              // 'series'`) and need the same per-item resume matching that
-              // branch does -- otherwise every entry in this list looks
-              // like "the" resume target as soon as *any* position is
-              // saved. A movie's multiple direct entries, by contrast, are
-              // just different servers/qualities for the *same* content,
-              // so every one of those legitimately gets the badge.
-              const isSeriesDirectItem = d.type === 'series';
-              const seasonNum = parseSeasonNumber(activeLink?.title) ?? seasonIndex + 1;
-              const episodeNum = parseEpisodeNumber(d.title) ?? index + 1;
-              const directEpisodeKey = isSeriesDirectItem
-                ? `S${seasonNum}E${episodeNum}`
+              // of going through the `hasEpisodes` branch above. Whether
+              // this list is actually a set of distinct episodes (needing
+              // per-item resume matching, same as that branch) or just
+              // several servers/qualities for one movie (where every entry
+              // legitimately shares the same resume badge) can't be read
+              // off `d.type` alone -- most providers never bother setting
+              // it. `info.type` is set from basic scraping regardless of
+              // TMDB/IMDb enrichment, so -- matching the convention already
+              // used elsewhere in this app (TVInfoScreen, TVDiscoverScreen)
+              // -- treat anything not explicitly `'movie'` as episodes.
+              const directItemsAreEpisodes =
+                usableDirectItems.some((d) => d.type === 'series') ||
+                (info?.type || 'series') !== 'movie';
+              const episodesForPlayer: EpisodeLink[] | undefined = directItemsAreEpisodes
+                ? usableDirectItems.map((d) => ({
+                    title: d.title,
+                    link: d.link,
+                    description: d.description,
+                    image: d.image,
+                    quickDownload: d.quickDownload,
+                    skip: d.skip,
+                  }))
                 : undefined;
-              const isResumeTarget = directEpisodeKey
-                ? resumeHint?.episodeKey
-                  ? resumeHint.episodeKey === directEpisodeKey
-                  : !!resumeHint?.episodeLink && d.link === resumeHint.episodeLink
-                : true;
-              return (
-                <TVFocusablePressable
-                  key={`direct-${d.link}-${index}`}
-                  hasTVPreferredFocus={
-                    isSeriesDirectItem && (resumeHint?.episodeKey || resumeHint?.episodeLink)
-                      ? isResumeTarget
-                      : index === 0
-                  }
-                  scaleFocused={1.02}
-                  focusedBorderColor="#8A5CF6"
-                  borderRadius={10}
-                  onPress={() =>
-                    resolveAndPlay(
-                      d.link,
-                      info?.title || item?.title,
-                      d.type || info?.type || 'movie',
-                      index,
-                      directEpisodeKey,
-                    )
-                  }
-                  style={styles.episodeRow}
-                >
-                  {({ focused }) => (
-                    <View style={styles.episodeRowInner}>
-                      <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
-                        <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
-                      </View>
-                      <Text numberOfLines={1} style={styles.episodeTitle}>
-                        {d.title}
-                      </Text>
-                      {isResumeTarget && resumeHint?.position ? (
-                        <Text style={styles.resumeBadge}>
-                          Resume {Math.floor(resumeHint.position / 60)}:
-                          {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+
+              return usableDirectItems.map((d, index) => {
+                const seasonNum = parseSeasonNumber(activeLink?.title) ?? seasonIndex + 1;
+                const episodeNum = parseEpisodeNumber(d.title) ?? index + 1;
+                const directEpisodeKey = directItemsAreEpisodes
+                  ? `S${seasonNum}E${episodeNum}`
+                  : undefined;
+                const isResumeTarget = directEpisodeKey
+                  ? resumeHint?.episodeKey
+                    ? resumeHint.episodeKey === directEpisodeKey
+                    : !!resumeHint?.episodeLink && d.link === resumeHint.episodeLink
+                  : true;
+                return (
+                  <TVFocusablePressable
+                    key={`direct-${d.link}-${index}`}
+                    hasTVPreferredFocus={
+                      directItemsAreEpisodes && (resumeHint?.episodeKey || resumeHint?.episodeLink)
+                        ? isResumeTarget
+                        : index === 0
+                    }
+                    scaleFocused={1.02}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={10}
+                    onPress={() =>
+                      resolveAndPlay(
+                        d.link,
+                        info?.title || item?.title,
+                        d.type || info?.type || 'movie',
+                        index,
+                        directEpisodeKey,
+                        episodesForPlayer,
+                      )
+                    }
+                    style={styles.episodeRow}
+                  >
+                    {({ focused }) => (
+                      <View style={styles.episodeRowInner}>
+                        <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
+                          <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
+                        </View>
+                        <Text numberOfLines={1} style={styles.episodeTitle}>
+                          {d.title}
                         </Text>
-                      ) : null}
-                    </View>
-                  )}
-                </TVFocusablePressable>
-              );
-            })}
+                        {isResumeTarget && resumeHint?.position ? (
+                          <Text style={styles.resumeBadge}>
+                            Resume {Math.floor(resumeHint.position / 60)}:
+                            {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+                          </Text>
+                        ) : null}
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                );
+              });
+            })()}
           </View>
         ) : (
           <View style={styles.playActionSection}>
