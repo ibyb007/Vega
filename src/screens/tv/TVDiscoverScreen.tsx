@@ -282,19 +282,31 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const focusHero = useCallback(
     (item: CatalogMediaItem, baseEndpoint: string) => {
       setActiveHero(heroFor(item));
-      if (item.banner) return;
       const metaId = item.imdb_id || item.id;
-      if (!metaId) return;
       const requestId = ++heroRequestIdRef.current;
-      fetchItemMeta(baseEndpoint, item.type, metaId).then((meta) => {
-        if (!meta?.background) return;
-        if (heroRequestIdRef.current !== requestId) return;
-        setActiveHero((prev) =>
-          prev && prev.title === item.title
-            ? { ...prev, backdropUrl: meta.background, isPosterFallback: false }
-            : prev,
-        );
-      });
+      if (!item.banner && metaId) {
+        fetchItemMeta(baseEndpoint, item.type, metaId).then((meta) => {
+          if (!meta?.background) return;
+          if (heroRequestIdRef.current !== requestId) return;
+          setActiveHero((prev) =>
+            prev && prev.title === item.title
+              ? { ...prev, backdropUrl: meta.background, isPosterFallback: false }
+              : prev,
+          );
+        });
+      }
+      // Same "Cast: Name1, Name2, Name3" data the results page already
+      // pulls from Cinemeta, now surfaced under the page 1 browse hero's
+      // synopsis too.
+      if (metaId) {
+        fetchMatchingCinemetaMeta(metaId, item.type, item.title).then((cMeta) => {
+          if (!cMeta?.cast || cMeta.cast.length === 0) return;
+          if (heroRequestIdRef.current !== requestId) return;
+          setActiveHero((prev) =>
+            prev && prev.title === item.title ? { ...prev, cast: cMeta.cast!.slice(0, 3) } : prev,
+          );
+        });
+      }
     },
     [heroFor],
   );
@@ -985,6 +997,22 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     const isAwaitingEpisodes = isSeries && episodesLoading && episodes.length === 0;
     const logoUrl = resultsTarget?.logo || (sourceCinemetaMeta as any)?.logo;
 
+    // Page 2 (this results/detail view) previously never fed the same
+    // keyFor/setItemRef/shouldPreferFocus/lastFocusedDiscoverKey
+    // focus-memory machinery that page 1's catalog grid already uses --
+    // none of its cards ever recorded themselves as "last focused". That's
+    // why pressing Right on the rail's Discover row while viewing results
+    // always tried to hand focus back to a stale (or nonexistent) page-1
+    // grid key and went dead. This mirrors `shouldPreferFocus`, but only
+    // trusts a remembered key as an override when it actually belongs to
+    // this page (namespaced with `results:`) -- a leftover page-1 grid key
+    // must never suppress the default entry point (the Back button) the
+    // first time results are shown.
+    const shouldPreferResultsFocus = (key: string, defaultValue: boolean): boolean =>
+      lastFocusedDiscoverKey && lastFocusedDiscoverKey.startsWith('results:')
+        ? lastFocusedDiscoverKey === key
+        : defaultValue;
+
     return (
       <View style={styles.resultsRoot}>
         <View style={styles.resultsBackdropLayer} pointerEvents="none">
@@ -1013,7 +1041,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           removeClippedSubviews={true}
         >
           <TVFocusablePressable
-            hasTVPreferredFocus={true}
+            key={keyFor('results:back')}
+            ref={(el) => setItemRef('results:back', el)}
+            hasTVPreferredFocus={shouldPreferResultsFocus('results:back', true)}
+            onFocus={() => {
+              lastFocusedDiscoverKey = 'results:back';
+            }}
             scaleFocused={1.04}
             focusedBorderColor="#8A5CF6"
             borderRadius={8}
@@ -1052,7 +1085,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 <Text style={styles.targetMetaText}>{resultsTarget.genres.join(' • ')}</Text>
               ) : null}
             </View>
-            <Text numberOfLines={4} style={styles.targetOverview}>
+            <Text numberOfLines={5} style={styles.targetOverview}>
               {resultsTarget?.overview || 'Select a matched addon source below to view stream links.'}
             </Text>
             {resultsTarget?.cast && resultsTarget.cast.length > 0 ? (
@@ -1082,18 +1115,22 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 {matchedAddonPosts.map((post, idx) => {
                   const isSelected = activeSourcePost?.link === post.link;
                   const isFirst = idx === 0;
+                  const sourceKey = `results:source:${post.link}:${idx}`;
                   return (
                     <TVFocusablePressable
-                      key={`${post.link}-${idx}`}
-                      ref={isFirst ? (el) => { sourcesRowFirstRef.current = el; } : undefined}
+                      key={keyFor(sourceKey)}
+                      ref={(el) => {
+                        setItemRef(sourceKey, el);
+                        if (isFirst) sourcesRowFirstRef.current = el;
+                      }}
+                      hasTVPreferredFocus={shouldPreferResultsFocus(sourceKey, false)}
                       scaleFocused={1.04}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
-                      onFocus={
-                        isFirst
-                          ? () => registerRailLeftEdge('discover', sourcesRowFirstRef.current)
-                          : undefined
-                      }
+                      onFocus={() => {
+                        lastFocusedDiscoverKey = sourceKey;
+                        if (isFirst) registerRailLeftEdge('discover', sourcesRowFirstRef.current);
+                      }}
                       onPress={() => handleSelectSourceCard(post)}
                       style={[styles.sourceCard, isSelected && styles.sourceCardActive]}
                     >
@@ -1153,7 +1190,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       <View style={styles.chipsRow}>
                         {usableLinkList.map((l, idx) => (
                           <TVFocusablePressable
-                            key={`link-${idx}`}
+                            key={keyFor(`results:link:${idx}`)}
+                            ref={(el) => setItemRef(`results:link:${idx}`, el)}
+                            hasTVPreferredFocus={shouldPreferResultsFocus(`results:link:${idx}`, false)}
+                            onFocus={() => {
+                              lastFocusedDiscoverKey = `results:link:${idx}`;
+                            }}
                             scaleFocused={1.04}
                             focusedBorderColor="#8A5CF6"
                             borderRadius={8}
@@ -1204,9 +1246,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             // this episode.
                             const episodeThumb = cinemetaEp?.thumbnail || ep.image;
                             const episodeOverview = ep.description || cinemetaEp?.overview;
+                            const episodeKey = `results:ep:${ep.link || idx}`;
                             return (
                               <TVFocusablePressable
-                                key={`ep-${ep.link || idx}`}
+                                key={keyFor(episodeKey)}
+                                ref={(el) => setItemRef(episodeKey, el)}
+                                hasTVPreferredFocus={shouldPreferResultsFocus(episodeKey, false)}
+                                onFocus={() => {
+                                  lastFocusedDiscoverKey = episodeKey;
+                                }}
                                 scaleFocused={1.02}
                                 focusedBorderColor="#8A5CF6"
                                 borderRadius={8}
@@ -1268,7 +1316,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       <View style={styles.chipsRow}>
                         {usableDirectItems.map((d, idx) => (
                           <TVFocusablePressable
-                            key={`direct-${idx}`}
+                            key={keyFor(`results:direct:${idx}`)}
+                            ref={(el) => setItemRef(`results:direct:${idx}`, el)}
+                            hasTVPreferredFocus={shouldPreferResultsFocus(`results:direct:${idx}`, false)}
+                            onFocus={() => {
+                              lastFocusedDiscoverKey = `results:direct:${idx}`;
+                            }}
                             scaleFocused={1.04}
                             focusedBorderColor="#FFFFFF"
                             borderRadius={8}
@@ -1304,6 +1357,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     </View>
                   ) : (
                     <TVFocusablePressable
+                      key={keyFor('results:direct-stream-btn')}
+                      ref={(el) => setItemRef('results:direct-stream-btn', el)}
+                      hasTVPreferredFocus={shouldPreferResultsFocus('results:direct-stream-btn', false)}
+                      onFocus={() => {
+                        lastFocusedDiscoverKey = 'results:direct-stream-btn';
+                      }}
                       scaleFocused={1.04}
                       focusedBorderColor="#FFFFFF"
                       borderRadius={10}
@@ -1921,6 +1980,11 @@ const styles = StyleSheet.create({
     color: '#D1D5DB',
     fontSize: 13,
     lineHeight: 20,
+    // Narrower than cleanHeaderContainer's 720dp cap so the synopsis wraps
+    // into more, shorter rows instead of one very wide line stretching
+    // across a big chunk of the screen -- the logo/title/badges above keep
+    // the full width, only the paragraph text itself is narrowed.
+    maxWidth: 460,
     textShadowColor: 'rgba(0, 0, 0, 0.85)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
@@ -1930,6 +1994,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     marginTop: 6,
+    maxWidth: 460,
     textShadowColor: 'rgba(0, 0, 0, 0.85)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
