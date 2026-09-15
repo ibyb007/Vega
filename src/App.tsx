@@ -13,7 +13,7 @@ import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
 import useContentStore from './lib/zustand/contentStore';
-import type { TextTracks } from './lib/providers/types';
+import type { TextTracks, SkipInterval } from './lib/providers/types';
 import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH, TVRoute } from './lib/native/NavRail';
 
 // TV Components & Screens
@@ -39,6 +39,7 @@ export interface ActiveStreamPayload {
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
   qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
+  skip?: SkipInterval[];
   headers?: Record<string, string>;
   sourceType?: string;
   subtitles?: TextTracks;
@@ -254,9 +255,14 @@ export default function App() {
                     currentEpisodeIndex={activeStream.currentEpisodeIndex}
                     servers={activeStream.servers}
                     qualities={activeStream.qualities}
+                    skip={activeStream.skip}
                     startPosition={activeStream.startPosition}
                     onSelectNextEpisode={(nextEp) => {
-                      const nextIndex = (activeStream.currentEpisodeIndex ?? 0) + 1;
+                      // `targetIndex` is set explicitly when the person
+                      // jumped to an arbitrary episode from the "Videos"
+                      // list; falls back to a plain +1 advance otherwise.
+                      const nextIndex =
+                        nextEp.targetIndex ?? (activeStream.currentEpisodeIndex ?? 0) + 1;
                       setActiveStream((prev) =>
                         prev
                           ? {
@@ -268,7 +274,9 @@ export default function App() {
                               sourceType: nextEp.sourceType,
                               subtitles: nextEp.subtitles,
                               qualities: nextEp.qualities,
+                              skip: nextEp.skip,
                               servers: undefined,
+                              startPosition: undefined,
                             }
                           : null
                       );
