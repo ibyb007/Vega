@@ -34,7 +34,12 @@ import {
   DiscoverCatalog,
   CatalogMediaItem,
 } from '../../lib/services/stremioCatalog';
-import { isStrictMatch } from '../../lib/utils/titleMatcher';
+import {
+  isStrictMatch,
+  extractExternalIds,
+  hasExternalId,
+  hasMatchingExternalId,
+} from '../../lib/utils/titleMatcher';
 import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically } from '../../lib/utils/episodeParsing';
 import {
   fetchMatchingCinemetaMeta,
@@ -116,7 +121,23 @@ interface TVDiscoverScreenProps {
 // TVHomeScreen's `lastFocusedKey`. Tracks whichever browse-mode item (the
 // "Catalogs" button, a category pill, or a poster) last had real focus, so
 // the rail's Right-key/re-select can put focus back exactly there.
-let lastFocusedDiscoverKey: string | null = null;
+//
+// This is deliberately a *separate* variable from
+// `lastFocusedDiscoverResultsKey` below rather than one shared key. They
+// used to be the same variable, which meant focusing anything in the page-2
+// results view (the "Back to Discover" button, a source card, a link...)
+// overwrote the page-1 poster key too. Pressing Back then dropped straight
+// into browse mode with a results-only key that matched none of the grid's
+// keys, so *no* grid item claimed `hasTVPreferredFocus` and Android's
+// default focus search took over -- landing wherever was nearest
+// (observed as the rail's Search button) instead of the poster the user
+// had actually left on page 1. Keeping the two keyed independently means
+// returning to browse mode always finds the real last-focused poster.
+let lastFocusedDiscoverBrowseKey: string | null = null;
+// Tracks whichever page-2 (results) item -- the Back button, a source
+// card, a link, an episode, a direct-stream button -- last had real focus,
+// independently of the page-1 browse key above.
+let lastFocusedDiscoverResultsKey: string | null = null;
 
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
   `${c.manifestUrl}::${c.type}::${c.id}`;
@@ -183,13 +204,24 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onRegisterReturnFocusTrigger,
   resetFocusOnMount,
 }) => {
+  // Kept in sync with `screenMode` state below via a plain render-time
+  // assignment (not an effect) so the mode-aware getter passed to
+  // useTVEntryFocus always reads the *current* mode at call time, even
+  // though the effect that captures this getter only fires once (see the
+  // hook's own `[onRegisterEntryHandleGetter]` dep array).
+  const screenModeRef = useRef<'browse' | 'results'>(savedDiscoverState?.screenMode || 'browse');
+
   const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
-    () => lastFocusedDiscoverKey,
+    () =>
+      screenModeRef.current === 'results'
+        ? lastFocusedDiscoverResultsKey
+        : lastFocusedDiscoverBrowseKey,
     onRegisterEntryHandleGetter,
     onRegisterReturnFocusTrigger,
     resetFocusOnMount,
     () => {
-      lastFocusedDiscoverKey = null;
+      lastFocusedDiscoverBrowseKey = null;
+      lastFocusedDiscoverResultsKey = null;
     }
   );
   const installedProviders = useContentStore((state) => state.installedProviders);
@@ -214,6 +246,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const [screenMode, setScreenMode] = useState<'browse' | 'results'>(
     savedDiscoverState?.screenMode || 'browse',
   );
+  screenModeRef.current = screenMode;
 
   const [resultsTarget, setResultsTarget] = useState<
     (CatalogMediaItem & { logo?: string; cast?: string[] }) | null
@@ -506,6 +539,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         });
       }
 
+      const targetIds = extractExternalIds(item);
+
       const matches: Post[] = [];
       await Promise.allSettled(
         installedProviders.map(async (provider) => {
@@ -518,7 +553,18 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             });
             const posts = normalizeSearchResult(data, provider.value);
             posts.forEach((post) => {
-              if (isStrictMatch(item.title, post.title, item.year, (post as any).year)) {
+              // A provider result that embeds its own IMDb/TMDB id is
+              // judged on that id alone -- it's a stronger signal than any
+              // amount of text normalization, so it overrides the text
+              // match both ways (accepts loosely-formatted titles the text
+              // matcher would miss, and rejects same-titled-but-wrong-year
+              // releases the text matcher can't tell apart). Only results
+              // with no id at all fall back to the title/year text logic.
+              const candidateIds = extractExternalIds(post);
+              const isMatch = hasExternalId(candidateIds)
+                ? hasMatchingExternalId(targetIds, candidateIds)
+                : isStrictMatch(item.title, post.title, item.year, (post as any).year);
+              if (isMatch) {
                 matches.push(post);
               }
             });
@@ -997,21 +1043,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     const isAwaitingEpisodes = isSeries && episodesLoading && episodes.length === 0;
     const logoUrl = resultsTarget?.logo || (sourceCinemetaMeta as any)?.logo;
 
-    // Page 2 (this results/detail view) previously never fed the same
-    // keyFor/setItemRef/shouldPreferFocus/lastFocusedDiscoverKey
-    // focus-memory machinery that page 1's catalog grid already uses --
-    // none of its cards ever recorded themselves as "last focused". That's
-    // why pressing Right on the rail's Discover row while viewing results
-    // always tried to hand focus back to a stale (or nonexistent) page-1
-    // grid key and went dead. This mirrors `shouldPreferFocus`, but only
-    // trusts a remembered key as an override when it actually belongs to
-    // this page (namespaced with `results:`) -- a leftover page-1 grid key
-    // must never suppress the default entry point (the Back button) the
-    // first time results are shown.
+    // Mirrors `shouldPreferFocus`, but reads its own dedicated
+    // `lastFocusedDiscoverResultsKey` variable instead of the page-1
+    // browse key, so focusing anything here (the Back button, a source
+    // card, a link...) never clobbers whichever poster the user had
+    // focused on page 1 -- and, symmetrically, a leftover page-1 grid key
+    // never suppresses the default entry point (the Back button) the
+    // first time results are shown, since the two keys can no longer
+    // collide.
     const shouldPreferResultsFocus = (key: string, defaultValue: boolean): boolean =>
-      lastFocusedDiscoverKey && lastFocusedDiscoverKey.startsWith('results:')
-        ? lastFocusedDiscoverKey === key
-        : defaultValue;
+      lastFocusedDiscoverResultsKey ? lastFocusedDiscoverResultsKey === key : defaultValue;
 
     return (
       <View style={styles.resultsRoot}>
@@ -1045,7 +1086,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             ref={(el) => setItemRef('results:back', el)}
             hasTVPreferredFocus={shouldPreferResultsFocus('results:back', true)}
             onFocus={() => {
-              lastFocusedDiscoverKey = 'results:back';
+              lastFocusedDiscoverResultsKey = 'results:back';
             }}
             scaleFocused={1.04}
             focusedBorderColor="#8A5CF6"
@@ -1128,7 +1169,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
                       onFocus={() => {
-                        lastFocusedDiscoverKey = sourceKey;
+                        lastFocusedDiscoverResultsKey = sourceKey;
                         if (isFirst) registerRailLeftEdge('discover', sourcesRowFirstRef.current);
                       }}
                       onPress={() => handleSelectSourceCard(post)}
@@ -1194,7 +1235,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             ref={(el) => setItemRef(`results:link:${idx}`, el)}
                             hasTVPreferredFocus={shouldPreferResultsFocus(`results:link:${idx}`, false)}
                             onFocus={() => {
-                              lastFocusedDiscoverKey = `results:link:${idx}`;
+                              lastFocusedDiscoverResultsKey = `results:link:${idx}`;
                             }}
                             scaleFocused={1.04}
                             focusedBorderColor="#8A5CF6"
@@ -1253,7 +1294,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                 ref={(el) => setItemRef(episodeKey, el)}
                                 hasTVPreferredFocus={shouldPreferResultsFocus(episodeKey, false)}
                                 onFocus={() => {
-                                  lastFocusedDiscoverKey = episodeKey;
+                                  lastFocusedDiscoverResultsKey = episodeKey;
                                 }}
                                 scaleFocused={1.02}
                                 focusedBorderColor="#8A5CF6"
@@ -1320,7 +1361,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             ref={(el) => setItemRef(`results:direct:${idx}`, el)}
                             hasTVPreferredFocus={shouldPreferResultsFocus(`results:direct:${idx}`, false)}
                             onFocus={() => {
-                              lastFocusedDiscoverKey = `results:direct:${idx}`;
+                              lastFocusedDiscoverResultsKey = `results:direct:${idx}`;
                             }}
                             scaleFocused={1.04}
                             focusedBorderColor="#FFFFFF"
@@ -1361,7 +1402,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       ref={(el) => setItemRef('results:direct-stream-btn', el)}
                       hasTVPreferredFocus={shouldPreferResultsFocus('results:direct-stream-btn', false)}
                       onFocus={() => {
-                        lastFocusedDiscoverKey = 'results:direct-stream-btn';
+                        lastFocusedDiscoverResultsKey = 'results:direct-stream-btn';
                       }}
                       scaleFocused={1.04}
                       focusedBorderColor="#FFFFFF"
@@ -1424,7 +1465,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
               onFocus={() => {
-                lastFocusedDiscoverKey = 'manage-btn';
+                lastFocusedDiscoverBrowseKey = 'manage-btn';
                 registerRailLeftEdge('discover', manageBtnRef.current);
               }}
               onPress={() => setManageVisible(true)}
@@ -1451,7 +1492,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   borderRadius={20}
                   onFocus={() => {
                     focusedPillRef.current = cat;
-                    lastFocusedDiscoverKey = pillKey;
+                    lastFocusedDiscoverBrowseKey = pillKey;
                   }}
                   onBlur={() => {
                     focusedPillRef.current = null;
@@ -1525,7 +1566,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   focusedBorderColor="#FFFFFF"
                   borderRadius={8}
                   onFocus={() => {
-                    lastFocusedDiscoverKey = gridKey;
+                    lastFocusedDiscoverBrowseKey = gridKey;
                     selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint);
                     if (isLeftEdge) {
                       registerRailLeftEdge('discover', gridItemRefs.current[index]);

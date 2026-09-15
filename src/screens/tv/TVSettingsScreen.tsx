@@ -163,14 +163,23 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
 
       {/* Audio Enhancement & Preamp Section */}
       <Text style={styles.sectionHeader}>Audio Preamp & Speech Clarity</Text>
-      {AUDIO_PROFILES.map((p) => {
+      {AUDIO_PROFILES.map((p, index) => {
         const isSelected = audioBoostProfile === p.id;
         const rowKey = `audio-${p.id}`;
         return (
           <TVFocusablePressable
             key={keyFor(rowKey)}
             ref={registerItem(rowKey)}
-            hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
+            // Wired the same way Discover's grid picks a default landing
+            // spot (`shouldPreferFocus(gridKey, index === 0)`): every row
+            // on this screen was passing a hardcoded `false` default, so
+            // on a fresh mount (nothing in `lastFocusedSettingsKey` yet)
+            // *no* row ever claimed preferred focus and Android had
+            // nothing to land on when the rail switched to Settings. The
+            // very first row -- this screen's natural top-left entry
+            // point -- now defaults to focused the same way page 1 of
+            // every other tab does.
+            hasTVPreferredFocus={shouldPreferFocus(rowKey, index === 0)}
             onFocus={() => (lastFocusedSettingsKey = rowKey)}
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
