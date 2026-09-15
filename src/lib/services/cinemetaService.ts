@@ -23,6 +23,7 @@ export interface CinemetaMeta {
   name: string;
   releaseInfo?: string;
   year?: string | number;
+  runtime?: string | number;
   logo?: string;
   background?: string;
   description?: string;
@@ -113,6 +114,19 @@ export const findCinemetaEpisode = (
       (v) => (v.season ?? 0) === seasonNumber && (v.episode ?? v.number ?? 0) === episodeNumber,
     ) || null
   );
+};
+
+// Cinemeta usually already returns something like "148 min", but some
+// entries (especially series) just give a bare number of minutes -- only
+// append the unit ourselves when the value has none, so callers never end
+// up displaying a doubled-up "148 min min".
+export const formatCinemetaRuntime = (
+  runtime: string | number | undefined | null,
+): string | undefined => {
+  if (runtime === undefined || runtime === null) return undefined;
+  const str = String(runtime).trim();
+  if (!str) return undefined;
+  return /^\d+$/.test(str) ? `${str} min` : str;
 };
 
 // Mirrors how Stremio formats a title under its poster/hero art
