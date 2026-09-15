@@ -230,7 +230,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   genresText: {
-    color: '#9CA3AF',
+    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '500',
   },
@@ -249,7 +249,9 @@ const styles = StyleSheet.create({
     textShadowRadius: 4,
   },
   castText: {
-    color: '#6B7280',
+    // Matches the results page's "Cast:" color so cast names read as
+    // yellow consistently across both pages of the discover screen.
+    color: '#DDE00B',
     fontSize: 12,
     fontWeight: '500',
     marginTop: 4,
