@@ -142,6 +142,48 @@ export const isStrictMatch = (
   return candidateSub.includes(targetSub) || targetSub.includes(candidateSub);
 };
 
+/**
+ * True when `isStrictMatch` would accept `candidateTitle` as the same
+ * release as `targetTitle` purely on the *permissive* branch of the
+ * year check -- i.e. the titles line up exactly, we know the target's
+ * year (from the catalog item the user actually clicked), but the
+ * candidate's own search result carries no year at all (neither an
+ * explicit year field nor one embedded in its scraped title).
+ *
+ * That's exactly the shape of bug this was added for: clicking
+ * "The Gentlemen (2024-)" (a series) matched a provider's "The Gentlemen"
+ * search hit for the unrelated 2019 movie, because that provider's search
+ * results never include a year in the title -- even though the same
+ * provider's own metadata for that specific link (what its details screen
+ * would show, once resolved) does know it's the 2019 release.
+ *
+ * Callers should treat a `true` result here as "needs verification"
+ * rather than "safe to show as a matched result": look up the candidate's
+ * own metadata (e.g. resolve its imdb/tmdb id the same way the details
+ * screen does) to see if a year turns up after all. Only fall back to
+ * treating it as a match if that metadata *also* has nothing to go on --
+ * at that point there's genuinely no year anywhere for this source to
+ * disqualify it with, which is the one case the permissive fallback
+ * should still apply to.
+ */
+export const isAmbiguousYearMatch = (
+  targetTitle: string,
+  candidateTitle: string,
+  targetYear?: string,
+  candidateYear?: string,
+): boolean => {
+  if (!targetTitle || !candidateTitle) return false;
+
+  const normTarget = cleanTitle(targetTitle);
+  const normCandidate = cleanTitle(candidateTitle);
+  if (!(normTarget.length > 0 && normTarget === normCandidate)) return false;
+
+  const resolvedTargetYear = targetYear || extractYearFromTitle(targetTitle);
+  const resolvedCandidateYear = candidateYear || extractYearFromTitle(candidateTitle);
+
+  return Boolean(resolvedTargetYear) && !resolvedCandidateYear;
+};
+
 // ---------------------------------------------------------------------------
 // External id (IMDb/TMDB) matching
 // ---------------------------------------------------------------------------
