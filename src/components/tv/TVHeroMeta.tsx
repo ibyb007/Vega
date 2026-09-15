@@ -214,7 +214,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   metaText: {
-    color: '#D1D5DB',
+    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
   },
@@ -256,5 +256,10 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginTop: 4,
     maxWidth: 460,
+    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
   },
 });
