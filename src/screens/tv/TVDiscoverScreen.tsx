@@ -36,6 +36,7 @@ import {
 } from '../../lib/services/stremioCatalog';
 import {
   isStrictMatch,
+  isAmbiguousYearMatch,
   extractExternalIds,
   hasExternalId,
   hasMatchingExternalId,
@@ -44,6 +45,7 @@ import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically } fr
 import {
   fetchMatchingCinemetaMeta,
   findCinemetaEpisode,
+  formatCinemetaRuntime,
   CinemetaMeta,
 } from '../../lib/services/cinemetaService';
 import {
@@ -103,6 +105,21 @@ const isQualityExcluded = (
     }
     const cleanNum = exLower.replace('p', '');
     return text.includes(exLower) || (cleanNum.length >= 3 && text.includes(cleanNum));
+  });
+};
+
+// Cinemeta's per-episode `released` is an ISO datetime string. Formats it
+// down to a short, locale-aware date for display on an episode card --
+// falls back to the raw string if it turns out not to be parseable rather
+// than hiding the info entirely.
+const formatEpisodeReleaseDate = (released: string | undefined | null): string | undefined => {
+  if (!released) return undefined;
+  const date = new Date(released);
+  if (isNaN(date.getTime())) return released;
+  return date.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
   });
 };
 
@@ -185,7 +202,7 @@ interface SavedDiscoverState {
   activeHero?: TVHeroMedia | null;
 
   screenMode: 'browse' | 'results';
-  resultsTarget: (CatalogMediaItem & { logo?: string; cast?: string[] }) | null;
+  resultsTarget: (CatalogMediaItem & { logo?: string; cast?: string[]; runtime?: string }) | null;
   matchedAddonPosts: Post[];
   activeSourcePost: Post | null;
   sourceInfo: Info | null;
@@ -249,7 +266,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   screenModeRef.current = screenMode;
 
   const [resultsTarget, setResultsTarget] = useState<
-    (CatalogMediaItem & { logo?: string; cast?: string[] }) | null
+    (CatalogMediaItem & { logo?: string; cast?: string[]; runtime?: string }) | null
   >(savedDiscoverState?.resultsTarget ?? null);
   const [resultsLoading, setResultsLoading] = useState(false);
   const [matchedAddonPosts, setMatchedAddonPosts] = useState<Post[]>(
@@ -330,13 +347,20 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       }
       // Same "Cast: Name1, Name2, Name3" data the results page already
       // pulls from Cinemeta, now surfaced under the page 1 browse hero's
-      // synopsis too.
+      // synopsis too. The same Cinemeta lookup also carries runtime, which
+      // catalogs themselves never include -- surfaced here so page 1's
+      // hero shows runtime consistently with page 2.
       if (metaId) {
         fetchMatchingCinemetaMeta(metaId, item.type, item.title).then((cMeta) => {
-          if (!cMeta?.cast || cMeta.cast.length === 0) return;
+          if (!cMeta) return;
+          const cast = cMeta.cast && cMeta.cast.length > 0 ? cMeta.cast.slice(0, 3) : undefined;
+          const runtime = formatCinemetaRuntime(cMeta.runtime);
+          if (!cast && !runtime) return;
           if (heroRequestIdRef.current !== requestId) return;
           setActiveHero((prev) =>
-            prev && prev.title === item.title ? { ...prev, cast: cMeta.cast!.slice(0, 3) } : prev,
+            prev && prev.title === item.title
+              ? { ...prev, cast: cast || prev.cast, runtime: runtime || prev.runtime }
+              : prev,
           );
         });
       }
@@ -523,13 +547,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           });
         }
         fetchMatchingCinemetaMeta(metaId, item.type, item.title).then((cMeta: any) => {
-          if (cMeta?.logo || (cMeta?.cast && cMeta.cast.length > 0)) {
+          const runtime = formatCinemetaRuntime(cMeta?.runtime);
+          if (cMeta?.logo || (cMeta?.cast && cMeta.cast.length > 0) || runtime) {
             setResultsTarget((prev) => {
               const next = prev
                 ? {
                     ...prev,
                     logo: cMeta.logo || (prev as any).logo,
                     cast: cMeta.cast && cMeta.cast.length > 0 ? cMeta.cast : (prev as any).cast,
+                    runtime: runtime || (prev as any).runtime,
                   }
                 : prev;
               if (savedDiscoverState) savedDiscoverState.resultsTarget = next;
@@ -552,22 +578,75 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               signal: controller.signal,
             });
             const posts = normalizeSearchResult(data, provider.value);
-            posts.forEach((post) => {
-              // A provider result that embeds its own IMDb/TMDB id is
-              // judged on that id alone -- it's a stronger signal than any
-              // amount of text normalization, so it overrides the text
-              // match both ways (accepts loosely-formatted titles the text
-              // matcher would miss, and rejects same-titled-but-wrong-year
-              // releases the text matcher can't tell apart). Only results
-              // with no id at all fall back to the title/year text logic.
-              const candidateIds = extractExternalIds(post);
-              const isMatch = hasExternalId(candidateIds)
-                ? hasMatchingExternalId(targetIds, candidateIds)
-                : isStrictMatch(item.title, post.title, item.year, (post as any).year);
-              if (isMatch) {
-                matches.push(post);
-              }
-            });
+            await Promise.allSettled(
+              posts.map(async (post) => {
+                // A provider result that embeds its own IMDb/TMDB id is
+                // judged on that id alone -- it's a stronger signal than any
+                // amount of text normalization, so it overrides the text
+                // match both ways (accepts loosely-formatted titles the text
+                // matcher would miss, and rejects same-titled-but-wrong-year
+                // releases the text matcher can't tell apart). Only results
+                // with no id at all fall back to the title/year text logic.
+                const candidateIds = extractExternalIds(post);
+                if (hasExternalId(candidateIds)) {
+                  if (hasMatchingExternalId(targetIds, candidateIds)) {
+                    matches.push(post);
+                  }
+                  return;
+                }
+
+                const postYear = (post as any).year;
+                if (isStrictMatch(item.title, post.title, item.year, postYear)) {
+                  matches.push(post);
+                  return;
+                }
+
+                // The title lines up and we know the year of the poster the
+                // user actually clicked, but this provider's search result
+                // carries no year of its own to compare it against -- e.g.
+                // clicking "The Gentlemen (2024-)" (the series) shouldn't
+                // silently absorb a provider's undated "The Gentlemen" hit
+                // for the unrelated 2019 movie just because the search
+                // result never mentions a year. Rather than guess, resolve
+                // this specific candidate's own metadata (the same
+                // imdb-based lookup its details screen would use) and only
+                // accept it if that confirms the same release -- or if the
+                // metadata *also* has no year to check, in which case
+                // there's genuinely nothing left to disqualify it with.
+                if (
+                  controller.signal.aborted ||
+                  !isAmbiguousYearMatch(item.title, post.title, item.year, postYear)
+                ) {
+                  return;
+                }
+                try {
+                  const info = await providerManager.getMetaData({
+                    link: post.link,
+                    provider: post.provider || provider.value,
+                  });
+                  if (controller.signal.aborted) return;
+                  const metaImdbId = (info as any)?.imdbId;
+                  let metaYear: string | undefined;
+                  if (metaImdbId) {
+                    const cMeta = await fetchMatchingCinemetaMeta(metaImdbId, item.type, post.title);
+                    if (cMeta?.year !== undefined && cMeta?.year !== null) {
+                      metaYear = String(cMeta.year);
+                    } else if (cMeta?.releaseInfo) {
+                      metaYear = String(cMeta.releaseInfo).match(/(19|20)\d{2}/)?.[0];
+                    }
+                  }
+                  if (controller.signal.aborted) return;
+                  if (!metaYear || isStrictMatch(item.title, post.title, item.year, metaYear)) {
+                    matches.push(post);
+                  }
+                } catch (metaErr) {
+                  // Couldn't resolve this candidate's own metadata -- fall
+                  // back to the previous permissive behaviour rather than
+                  // silently dropping a possibly-correct match.
+                  if (!controller.signal.aborted) matches.push(post);
+                }
+              }),
+            );
           } catch (e) {
             if ((e as any)?.name !== 'AbortError') {
               console.warn(`[Discover] Match error on ${provider.value}:`, e);
@@ -1121,9 +1200,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   <Text style={styles.ratingText}>★ {resultsTarget.rating}</Text>
                 </View>
               ) : null}
+              {resultsTarget?.runtime ? (
+                <Text style={styles.targetMetaText}>{resultsTarget.runtime}</Text>
+              ) : null}
               {resultsTarget?.year ? <Text style={styles.targetMetaText}>{resultsTarget.year}</Text> : null}
               {resultsTarget?.genres && resultsTarget.genres.length > 0 ? (
-                <Text style={styles.targetMetaText}>{resultsTarget.genres.join(' • ')}</Text>
+                <Text style={styles.targetGenreText}>{resultsTarget.genres.join(' • ')}</Text>
               ) : null}
             </View>
             <Text numberOfLines={5} style={styles.targetOverview}>
@@ -1287,6 +1369,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             // this episode.
                             const episodeThumb = cinemetaEp?.thumbnail || ep.image;
                             const episodeOverview = ep.description || cinemetaEp?.overview;
+                            const episodeReleaseDate = formatEpisodeReleaseDate(cinemetaEp?.released);
                             const episodeKey = `results:ep:${ep.link || idx}`;
                             return (
                               <TVFocusablePressable
@@ -1335,6 +1418,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                       <Text numberOfLines={1} style={styles.episodeText}>
                                         {ep.title || cinemetaEp?.name || cinemetaEp?.title || `Episode ${idx + 1}`}
                                       </Text>
+                                      {!!episodeReleaseDate && (
+                                        <Text numberOfLines={1} style={styles.episodeReleaseText}>
+                                          {episodeReleaseDate}
+                                        </Text>
+                                      )}
                                       {!!episodeOverview && (
                                         <Text numberOfLines={2} style={styles.episodeOverviewText}>
                                           {episodeOverview}
@@ -2017,6 +2105,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  targetGenreText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   targetOverview: {
     color: '#D1D5DB',
     fontSize: 13,
@@ -2166,6 +2259,12 @@ const styles = StyleSheet.create({
   },
   episodeTextWrap: {
     flex: 1,
+  },
+  episodeReleaseText: {
+    color: '#8A5CF6',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
   },
   episodeOverviewText: {
     color: '#9CA3AF',
