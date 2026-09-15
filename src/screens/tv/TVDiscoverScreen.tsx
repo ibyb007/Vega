@@ -924,6 +924,37 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             ? episodes
             : undefined;
 
+        // Same season/episode-number + Cinemeta synopsis/thumbnail
+        // enrichment the on-screen episode grid below already applies for
+        // display -- mirrored here so the TV player's "Videos" list and
+        // "Up Next" popup get real synopses/mini-posters too, instead of
+        // whatever bare title/link the provider returned.
+        const rawLinkListForEnrich = sourceInfo?.linkList || [];
+        const linkListForEnrich = rawLinkListForEnrich.filter(
+          (l) =>
+            !isQualityExcluded((l as any)?.quality, excludedQualities) &&
+            !isQualityExcluded((l as any)?.title, excludedQualities),
+        );
+        const usableLinkListForEnrich =
+          linkListForEnrich.length > 0 ? linkListForEnrich : rawLinkListForEnrich;
+        const activeLinkForEnrich = usableLinkListForEnrich[activeLinkIndex] || usableLinkListForEnrich[0];
+
+        const enrichedEpisodesToSend = episodesToSend
+          ? episodesToSend.map((ep, idx) => {
+              const seasonNum = parseSeasonNumber(activeLinkForEnrich?.title) ?? activeLinkIndex + 1;
+              const episodeNum = parseEpisodeNumber(ep.title) ?? idx + 1;
+              const cinemetaEp = findCinemetaEpisode(sourceCinemetaMeta, seasonNum, episodeNum);
+              return {
+                ...ep,
+                image: cinemetaEp?.thumbnail || ep.image,
+                synopsis: ep.description || cinemetaEp?.overview,
+                season: seasonNum,
+                episodeNumber: episodeNum,
+                releaseDate: formatEpisodeReleaseDate(cinemetaEp?.released),
+              };
+            })
+          : undefined;
+
         if (savedDiscoverState) {
           savedDiscoverState.screenMode = 'results';
           savedDiscoverState.resultsTarget = resultsTarget;
@@ -943,9 +974,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           episodeId: canonicalKey,
           startPosition: resumePos,
           providerValue,
-          episodes: episodesToSend,
+          episodes: enrichedEpisodesToSend,
           currentEpisodeIndex: episodeIdx,
           qualities,
+          skip: best.skip,
           headers: best.headers,
           sourceType: best.type,
           subtitles: best.subtitles,
@@ -967,6 +999,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       matchedAddonPosts,
       activeLinkIndex,
       excludedQualities,
+      sourceCinemetaMeta,
       getSavedResumePosition,
     ],
   );
