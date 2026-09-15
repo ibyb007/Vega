@@ -123,7 +123,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
           ) : null}
         </View>
 
-        <Text numberOfLines={3} style={styles.overview}>
+        <Text numberOfLines={4} style={styles.overview}>
           {media?.overview || ''}
         </Text>
 
@@ -238,6 +238,12 @@ const styles = StyleSheet.create({
     color: '#D1D5DB',
     fontSize: 13,
     lineHeight: 18,
+    // Narrower than the 620dp `contentWrapper` cap so the synopsis wraps
+    // into more, shorter rows instead of stretching a single very wide
+    // line across a big chunk of the screen -- the title/badges above can
+    // still use the full contentWrapper width, only the paragraph text
+    // itself is narrowed.
+    maxWidth: 460,
     textShadowColor: 'rgba(0, 0, 0, 0.9)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
@@ -247,5 +253,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     marginTop: 4,
+    maxWidth: 460,
   },
 });
