@@ -44,6 +44,29 @@ const normalizeTitle = (t: string | undefined | null): string =>
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
+// A row's *identity* -- not its current array position. Continue Watching
+// gaining its first-ever poster, or losing its last one, inserts/removes a
+// whole row and shifts every later row's index; keying off index alone (the
+// old behaviour) made every later row's wrapper -- and every card's focus
+// key inside it -- change identity too, on every such shift. `sourceLabel`
+// disambiguates the same catalog `filter`/`title` fetched from two
+// different providers (primary vs. the secondary provider row).
+const getRowId = (row: any): string =>
+  `${row?.sourceLabel || (row?.isHistory ? 'continue-watching' : 'primary')}::${row?.filter || row?.title || 'row'}`;
+
+// A card's *identity* -- the actual title/link, not its row+column
+// position. Removing one poster (or all of them) from Continue Watching
+// used to change every remaining poster's key too (since it embedded its
+// own array index), so the item that still had real Android focus either
+// vanished outright or silently swapped identity with its neighbour.
+// Keying off the item's own id means a poster that's still on screen after
+// a removal keeps the exact same key it always had, and only the poster
+// that was actually deleted can ever stop matching `lastFocusedKey`.
+const buildItemKey = (row: any, item: any, pIndex: number = 0): string => {
+  const itemId = item?.infoUrl || item?.link || item?.id;
+  return `${getRowId(row)}::${itemId || `idx-${pIndex}`}`;
+};
+
 const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Promise<any | null> => {
   if (!imdbId || !imdbId.startsWith('tt')) return null;
 
@@ -260,6 +283,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         let rating: string | null = null;
         let year: string | null = null;
         let genres: string[] = [];
+        let cast: string[] = [];
 
         try {
           const info = await getOrFetchMetadata(targetUrl, targetProvider);
@@ -290,13 +314,17 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   year = String(cineMeta.releaseInfo || cineMeta.year);
                 }
                 if (cineMeta.genres?.length) genres = cineMeta.genres;
+                // Same "Cast: Name1, Name2, Name3" data the Discover
+                // screen's pages already pull from Cinemeta, now surfaced
+                // under the Home hero's synopsis too.
+                if (cineMeta.cast?.length && titleMatches) cast = cineMeta.cast.slice(0, 3);
               }
             }
           }
         } catch {}
 
         if (requestId !== heroRequestIdRef.current) return;
-        if (!backdrop && !description && !rating && !year && genres.length === 0) return;
+        if (!backdrop && !description && !rating && !year && genres.length === 0 && cast.length === 0) return;
 
         setActiveHero((prev) =>
           prev
@@ -309,6 +337,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                 rating: rating || prev.rating,
                 year: year || prev.year,
                 genres: genres.length > 0 ? genres : prev.genres,
+                cast: cast.length > 0 ? cast : prev.cast,
               }
             : prev
         );
@@ -387,6 +416,40 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     },
     [translateY, updateHeroWithBestMetadata, provider?.value]
   );
+
+  // Continue Watching can change shape while Home is already mounted and
+  // focused: gaining its first-ever poster shifts every later row down by
+  // one, and removing a poster -- or the whole row via "Remove"/"Remove
+  // All" -- can delete the exact card that currently holds real Android
+  // focus. Once that happens Android has no focused view left to search
+  // from, so D-pad navigation goes dead until the tab is left and
+  // re-entered. Whenever the visible rows change, check whether whatever
+  // was last focused still actually exists among them; if not, re-target
+  // focus at the first poster of the new first row (Continue Watching's
+  // first poster if it still exists, otherwise the first row's first
+  // poster -- the same "relaunch" default a fresh mount uses) and force a
+  // real focus() via the same remount-nonce trick the nav rail's return
+  // trigger uses.
+  useEffect(() => {
+    if (!lastFocusedKey) return;
+
+    const stillExists = displayRows.some((row: any) =>
+      (row.Posts || []).some((item: any, pIndex: number) => buildItemKey(row, item, pIndex) === lastFocusedKey)
+    );
+    if (stillExists) return;
+
+    const fallbackRow = displayRows[0];
+    const fallbackItem = fallbackRow?.Posts?.[0];
+    if (!fallbackItem) return;
+
+    const fallbackKey = buildItemKey(fallbackRow, fallbackItem, 0);
+    lastFocusedKey = fallbackKey;
+    lastFocusedRowIndex = 0;
+    setActiveRowIndex(0);
+    translateY.value = withTiming(0, { duration: 160, easing: Easing.out(Easing.quad) });
+    refocusRef.current = { key: fallbackKey, nonce: refocusRef.current.nonce + 1 };
+    forceRerenderForRefocus();
+  }, [displayRows, translateY]);
 
   useEffect(() => {
     const KEYCODE_DPAD_CENTER = 23;
@@ -478,7 +541,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             const isHistoryRow = Boolean(row.isHistory);
 
             return (
-              <View key={`${row.filter || row.title}-${rowIndex}`} style={styles.rowContainer}>
+              <View key={getRowId(row)} style={styles.rowContainer}>
                 <View style={styles.rowTitleWrap}>
                   <Text style={styles.rowCategoryTitle}>{row.title}</Text>
                   {row.sourceLabel ? (
@@ -496,7 +559,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                   scrollEventThrottle={16}
                 >
                   {rowPosts.map((item: any, pIndex: number) => {
-                    const itemKey = `${item.infoUrl || item.link || item.id}-${rowIndex}-${pIndex}`;
+                    const itemKey = buildItemKey(row, item, pIndex);
                     const isFirstInRow = pIndex === 0;
 
                     // Fresh launch/relaunch: Explicitly defaults to row 0, card 0 (1st Continue Watching poster if exists, else 1st provider card)
