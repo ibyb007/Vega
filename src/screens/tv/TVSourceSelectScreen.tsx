@@ -1,8 +1,9 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, Dimensions, findNodeHandle } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { NavRail } from '../../lib/native/NavRail';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import useContentStore from '../../lib/zustand/contentStore';
 import { Provider } from '../../lib/providers/types';
@@ -71,6 +72,30 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   // mount-only registration isn't enough for this particular button.
   const manageAddonsNodeRef = useRef<unknown>(null);
 
+  // Defensive second attempt at regaining real Android focus on this
+  // button specifically. `useTVEntryFocus`'s generic remount trick (the
+  // same one every other left-edge item on this screen relies on) already
+  // fires an *immediate* remount the instant the rail's Right key event
+  // comes back from native -- but this button, unlike the provider grid
+  // and the chip row, isn't inside the ScrollView: it sits in a flex
+  // header row that can still be settling its own layout pass at that
+  // exact moment, and `hasTVPreferredFocus` silently does nothing if it
+  // fires before the new view is actually laid out/attached. Re-running
+  // the same remount one frame later is a no-op if the first attempt
+  // already landed, and recovers it if it didn't.
+  const [addonsBtnRetryNonce, setAddonsBtnRetryNonce] = useState(0);
+  useEffect(() => {
+    const sub = NavRail.onRouteReselected((route) => {
+      if (route !== 'sources' || lastFocusedSourcesKey !== 'manage-addons-btn') return;
+      requestAnimationFrame(() => {
+        if (lastFocusedSourcesKey === 'manage-addons-btn') {
+          setAddonsBtnRetryNonce((n) => n + 1);
+        }
+      });
+    });
+    return () => sub?.remove();
+  }, []);
+
   // No local back-stack on this screen — Back is handled centrally by
   // App.tsx, which moves focus to the Sources button on the rail.
 
@@ -102,7 +127,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
 
         {onNavigateAddons && (
           <TVFocusablePressable
-            key={keyFor('manage-addons-btn')}
+            key={`${keyFor('manage-addons-btn')}-x${addonsBtnRetryNonce}`}
             ref={(el) => {
               setItemRef('manage-addons-btn', el);
               manageAddonsNodeRef.current = el;
