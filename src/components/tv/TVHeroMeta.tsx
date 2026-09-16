@@ -235,7 +235,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   overview: {
-    color: '#D1D5DB',
+    color: '#FFFFFF',
     fontSize: 13,
     lineHeight: 18,
     // Narrower than the 620dp `contentWrapper` cap so the synopsis wraps
@@ -244,22 +244,18 @@ const styles = StyleSheet.create({
     // still use the full contentWrapper width, only the paragraph text
     // itself is narrowed.
     maxWidth: 460,
-    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
   castText: {
-    // Matches the results page's "Cast:" color so cast names read as
-    // yellow consistently across both pages of the discover screen.
     color: '#DDE00B',
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '600',
     marginTop: 4,
     maxWidth: 460,
-    backgroundColor: 'rgba(255, 255, 255, 0.4)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
-    alignSelf: 'flex-start',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
 });
