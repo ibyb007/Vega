@@ -23,7 +23,7 @@ import {
 } from '../../lib/services/cinemetaService';
 import { settingsStorage } from '../../lib/storage';
 import { launchVideo, PlayerChoice } from '../../lib/services/PlayerLauncher';
-import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically } from '../../lib/utils/episodeParsing';
+import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import type { Info, Link, EpisodeLink, TextTracks } from '../../lib/providers/types';
 
 // The TV settings screen's 'exo' | 'vlc' | 'system' options map onto
@@ -632,7 +632,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                       )}
                       <View style={styles.episodeTextWrap}>
                         <Text numberOfLines={1} style={styles.episodeTitle}>
-                          {cinemetaEp?.name || cinemetaEp?.title || ep.title || `Episode ${index + 1}`}
+                          {formatEpisodeLabel(
+                            seasonNum,
+                            episodeNum,
+                            cinemetaEp?.name || cinemetaEp?.title || ep.title,
+                            `Episode ${index + 1}`
+                          )}
                         </Text>
                         {!!episodeOverview && (
                           <Text numberOfLines={2} style={styles.episodeDesc}>
@@ -735,7 +740,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                           <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
                         </View>
                         <Text numberOfLines={1} style={styles.episodeTitle}>
-                          {directCinemetaEp?.name || directCinemetaEp?.title || d.title}
+                          {directItemsAreEpisodes
+                            ? formatEpisodeLabel(
+                                seasonNum,
+                                episodeNum,
+                                directCinemetaEp?.name || directCinemetaEp?.title || d.title,
+                                `Episode ${index + 1}`
+                              )
+                            : directCinemetaEp?.name || directCinemetaEp?.title || d.title}
                         </Text>
                         {isResumeTarget && resumeHint?.position ? (
                           <Text style={styles.resumeBadge}>
