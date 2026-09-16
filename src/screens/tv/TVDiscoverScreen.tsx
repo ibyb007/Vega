@@ -41,7 +41,7 @@ import {
   hasExternalId,
   hasMatchingExternalId,
 } from '../../lib/utils/titleMatcher';
-import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically } from '../../lib/utils/episodeParsing';
+import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import {
   fetchMatchingCinemetaMeta,
   findCinemetaEpisode,
@@ -211,6 +211,23 @@ interface SavedDiscoverState {
 }
 
 let savedDiscoverState: SavedDiscoverState | null = null;
+
+// Set by another screen (Home's Continue Watching row) right before
+// navigating here, when the tapped item's continue-watching entry
+// originated from a Discover catalog poster rather than a provider's own
+// listing -- consumed once on mount below to jump straight into this
+// item's page-2 "results" inspector via the exact same lookup path a
+// fresh poster tap uses (see handleItemPress), instead of restoring
+// whatever browse/results state this screen had last.
+let pendingDiscoverOpenItem:
+  | (CatalogMediaItem & { logo?: string; cast?: string[]; runtime?: string })
+  | null = null;
+
+export const openDiscoverResultFor = (
+  item: CatalogMediaItem & { logo?: string; cast?: string[]; runtime?: string },
+) => {
+  pendingDiscoverOpenItem = item;
+};
 
 export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onSelectItem,
@@ -664,6 +681,22 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     [installedProviders, selectedCatalog, catalogs, items, skip, hasMore, activeHero],
   );
 
+  // Consumes a pending "open this item's results view" request set by
+  // Home's Continue Watching card (see openDiscoverResultFor above), once,
+  // right after mount -- reusing the exact same matching flow a fresh
+  // page-1 poster tap goes through, rather than restoring the browse/
+  // results state this screen had left off with.
+  const pendingDiscoverOpenConsumedRef = useRef(false);
+  useEffect(() => {
+    if (pendingDiscoverOpenConsumedRef.current) return;
+    pendingDiscoverOpenConsumedRef.current = true;
+    if (pendingDiscoverOpenItem) {
+      const item = pendingDiscoverOpenItem;
+      pendingDiscoverOpenItem = null;
+      handleItemPress(item);
+    }
+  }, [handleItemPress]);
+
   const handleSelectSourceCard = useCallback(async (sourcePost: Post) => {
     setActiveSourcePost(sourcePost);
     setSourceInfo(null);
@@ -986,6 +1019,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           headers: best.headers,
           sourceType: best.type,
           subtitles: best.subtitles,
+          // Marks any Continue Watching entry this session produces as
+          // having come from this Discover results view, so Home's card
+          // press handler can reopen this same page-2 inspector instead of
+          // the regular details screen. See openDiscoverResultFor below.
+          discoverSource: resultsTarget || undefined,
         });
       } catch (err: any) {
         console.warn('[Discover] getStream error:', err);
@@ -1454,7 +1492,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                     )}
                                     <View style={styles.episodeTextWrap}>
                                       <Text numberOfLines={1} style={styles.episodeText}>
-                                        {cinemetaEp?.name || cinemetaEp?.title || ep.title || `Episode ${idx + 1}`}
+                                        {formatEpisodeLabel(
+                                          seasonNum,
+                                          episodeNum,
+                                          cinemetaEp?.name || cinemetaEp?.title || ep.title,
+                                          `Episode ${idx + 1}`
+                                        )}
                                       </Text>
                                       {!!episodeReleaseDate && (
                                         <Text numberOfLines={1} style={styles.episodeReleaseText}>
