@@ -223,10 +223,28 @@ let pendingDiscoverOpenItem:
   | (CatalogMediaItem & { logo?: string; cast?: string[]; runtime?: string })
   | null = null;
 
+// Resume context carried alongside `pendingDiscoverOpenItem` -- the
+// originating Continue Watching entry's provider/episode identity and saved
+// position, so this screen's results view can land on the same addon
+// source and episode it was originally played from and pass the right
+// `startPosition` through to onPlayStream, instead of opening a blank
+// results browser with no memory of where playback left off.
+export interface DiscoverResumeHint {
+  providerValue?: string;
+  infoUrl?: string;
+  episodeKey?: string;
+  episodeLink?: string;
+  position?: number;
+}
+
+let pendingDiscoverResumeHint: DiscoverResumeHint | null = null;
+
 export const openDiscoverResultFor = (
   item: CatalogMediaItem & { logo?: string; cast?: string[]; runtime?: string },
+  resumeHint?: DiscoverResumeHint,
 ) => {
   pendingDiscoverOpenItem = item;
+  pendingDiscoverResumeHint = resumeHint || null;
 };
 
 export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
@@ -308,6 +326,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
   const [sourceCinemetaMeta, setSourceCinemetaMeta] = useState<CinemetaMeta | null>(null);
   const [extractingLink, setExtractingLink] = useState(false);
+
+  // Resume context handed off by Home's Continue Watching card (see
+  // `openDiscoverResultFor`/`pendingDiscoverResumeHint` above), consumed
+  // once on mount alongside `pendingDiscoverOpenItem` below.
+  const [resumeHint, setResumeHint] = useState<DiscoverResumeHint | null>(null);
+  const autoSelectedResumeSourceRef = useRef(false);
 
   const [manageVisible, setManageVisible] = useState(false);
   const [manifestInput, setManifestInput] = useState('');
@@ -693,6 +717,9 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     if (pendingDiscoverOpenItem) {
       const item = pendingDiscoverOpenItem;
       pendingDiscoverOpenItem = null;
+      const hint = pendingDiscoverResumeHint;
+      pendingDiscoverResumeHint = null;
+      if (hint) setResumeHint(hint);
       handleItemPress(item);
     }
   }, [handleItemPress]);
@@ -726,6 +753,28 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       setLoadingSourceInfo(false);
     }
   }, []);
+
+  // Once the matching addon sources finish loading for a resumed item,
+  // jump straight to the same source it was originally played from
+  // (matched on the source's own info-page link, falling back to just the
+  // provider) instead of leaving the person to re-pick a source card from
+  // scratch every time they tap a Discover-sourced Continue Watching card.
+  // Runs once per mount -- if the person picks a different source
+  // manually, that choice is left alone.
+  useEffect(() => {
+    if (autoSelectedResumeSourceRef.current) return;
+    if (!resumeHint || activeSourcePost || matchedAddonPosts.length === 0) return;
+    autoSelectedResumeSourceRef.current = true;
+    const match =
+      (resumeHint.infoUrl &&
+        matchedAddonPosts.find((p) => p.link === resumeHint.infoUrl)) ||
+      (resumeHint.providerValue &&
+        matchedAddonPosts.find((p) => p.provider === resumeHint.providerValue)) ||
+      null;
+    if (match) {
+      handleSelectSourceCard(match);
+    }
+  }, [resumeHint, activeSourcePost, matchedAddonPosts, handleSelectSourceCard]);
 
   const handleBackToSources = useCallback(() => {
     setActiveSourcePost(null);
@@ -1004,7 +1053,28 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         }
 
         const canonicalKey = episodeKey || link || activeSourcePost?.link;
-        const resumePos = getSavedResumePosition(canonicalKey);
+
+        // Resume matching: prefer the resume hint carried straight from the
+        // Continue Watching entry itself (see resumeHint state above) --
+        // it's a direct, positive signal of exactly which title/episode
+        // this position belongs to, rather than a guess based on whichever
+        // link string this particular re-fetch happened to resolve to. A
+        // series episode only takes the hint's position if its own stable
+        // season/episode key (or, for older entries, its raw episode link)
+        // matches; a movie has nothing else to disambiguate, so any
+        // resumeHint position applies. Falls back to the raw canonical-key
+        // lookup for anything not opened via a Continue Watching card.
+        const isSeriesPlay = type === 'series';
+        const resumeHintPosition = resumeHint
+          ? isSeriesPlay
+            ? resumeHint.episodeKey && resumeHint.episodeKey === episodeKey
+              ? resumeHint.position
+              : resumeHint.episodeLink && resumeHint.episodeLink === link
+              ? resumeHint.position
+              : undefined
+            : resumeHint.position
+          : undefined;
+        const resumePos = resumeHintPosition ?? getSavedResumePosition(canonicalKey);
 
         onPlayStream(best.link, title, {
           posterUrl: sourceInfo?.image || sourceInfo?.poster || activeSourcePost?.image || resultsTarget?.poster,
@@ -1044,6 +1114,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       excludedQualities,
       sourceCinemetaMeta,
       getSavedResumePosition,
+      resumeHint,
     ],
   );
 
@@ -1315,6 +1386,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   const isSelected = activeSourcePost?.link === post.link;
                   const isFirst = idx === 0;
                   const sourceKey = `results:source:${post.link}:${idx}`;
+                  const isResumeSource =
+                    !!resumeHint &&
+                    ((resumeHint.infoUrl && post.link === resumeHint.infoUrl) ||
+                      (!resumeHint.infoUrl && resumeHint.providerValue === post.provider));
                   return (
                     <TVFocusablePressable
                       key={keyFor(sourceKey)}
@@ -1322,7 +1397,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         setItemRef(sourceKey, el);
                         if (isFirst) sourcesRowFirstRef.current = el;
                       }}
-                      hasTVPreferredFocus={shouldPreferResultsFocus(sourceKey, false)}
+                      hasTVPreferredFocus={
+                        resumeHint
+                          ? shouldPreferResultsFocus(sourceKey, isResumeSource)
+                          : shouldPreferResultsFocus(sourceKey, false)
+                      }
                       scaleFocused={1.04}
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
@@ -1342,6 +1421,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             style={styles.sourcePoster}
                             resizeMode="cover"
                           />
+                          {isResumeSource && (
+                            <View style={styles.sourceResumeBadge}>
+                              <Text style={styles.sourceResumeBadgeText}>Resume</Text>
+                            </View>
+                          )}
                           <View style={styles.sourceBadge}>
                             <Text numberOfLines={1} style={styles.sourceBadgeText}>
                               {post.provider}
@@ -1447,11 +1531,29 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             const episodeOverview = ep.description || cinemetaEp?.overview;
                             const episodeReleaseDate = formatEpisodeReleaseDate(cinemetaEp?.released);
                             const episodeKey = `results:ep:${ep.link || idx}`;
+                            // Stable per-episode identity (matches the
+                            // `episodeKey` format ContinueWatchingItem and
+                            // TVDetailsScreen use) -- passed through to
+                            // handleResolveAndPlay as its own `episodeKey`
+                            // resume-matching parameter, distinct from the
+                            // `episodeKey` above which is only this card's
+                            // UI focus-tracking key. Raw provider links
+                            // aren't reliable for this (they can differ
+                            // across quality picks or separate fetches),
+                            // but the parsed season/episode numbers are.
+                            const stableEpisodeKey = `S${seasonNum}E${episodeNum}`;
+                            const isResumeTarget = resumeHint?.episodeKey
+                              ? resumeHint.episodeKey === stableEpisodeKey
+                              : !!resumeHint?.episodeLink && ep.link === resumeHint.episodeLink;
                             return (
                               <TVFocusablePressable
                                 key={keyFor(episodeKey)}
                                 ref={(el) => setItemRef(episodeKey, el)}
-                                hasTVPreferredFocus={shouldPreferResultsFocus(episodeKey, false)}
+                                hasTVPreferredFocus={
+                                  resumeHint?.episodeKey || resumeHint?.episodeLink
+                                    ? shouldPreferResultsFocus(episodeKey, isResumeTarget)
+                                    : shouldPreferResultsFocus(episodeKey, false)
+                                }
                                 onFocus={() => {
                                   lastFocusedDiscoverResultsKey = episodeKey;
                                 }}
@@ -1469,7 +1571,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                     'series',
                                     idx,
                                     episodes,
-                                    ep.link || `ep-${idx + 1}`,
+                                    stableEpisodeKey,
                                   )
                                 }
                                 style={styles.episodeCard}
@@ -1510,6 +1612,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                         </Text>
                                       )}
                                     </View>
+                                    {isResumeTarget && resumeHint?.position ? (
+                                      <Text style={styles.resumeBadge}>
+                                        Resume {Math.floor(resumeHint.position / 60)}:
+                                        {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+                                      </Text>
+                                    ) : null}
                                   </View>
                                 )}
                               </TVFocusablePressable>
@@ -1566,36 +1674,61 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       </View>
                     </View>
                   ) : (
-                    <TVFocusablePressable
-                      key={keyFor('results:direct-stream-btn')}
-                      ref={(el) => setItemRef('results:direct-stream-btn', el)}
-                      hasTVPreferredFocus={shouldPreferResultsFocus('results:direct-stream-btn', false)}
-                      onFocus={() => {
-                        lastFocusedDiscoverResultsKey = 'results:direct-stream-btn';
-                      }}
-                      scaleFocused={1.04}
-                      focusedBorderColor="#FFFFFF"
-                      borderRadius={10}
-                      onPress={() =>
-                        activeSourcePost &&
-                        handleResolveAndPlay(
-                          activeSourcePost.link,
-                          activeSourcePost.title,
-                          'movie',
-                          0,
-                          undefined,
-                          activeSourcePost.link,
-                        )
-                      }
-                      style={styles.directStreamBtn}
-                    >
-                      {() => (
-                        <View style={styles.directBtnInner}>
-                          <MaterialCommunityIcons name="play" size={24} color="#FFFFFF" />
-                          <Text style={styles.directBtnText}>Start Playback</Text>
-                        </View>
-                      )}
-                    </TVFocusablePressable>
+                    (() => {
+                      // A movie CW entry has no episodeKey/episodeLink to
+                      // disambiguate (see ContinueWatchingItem) -- their
+                      // absence alongside a saved position is exactly what
+                      // marks this resumeHint as belonging to this single
+                      // movie stream, same as TVDetailsScreen's "Resume
+                      // Movie / Stream" button label.
+                      const isMovieResume =
+                        !!resumeHint &&
+                        !resumeHint.episodeKey &&
+                        !resumeHint.episodeLink &&
+                        !!resumeHint.position;
+                      return (
+                        <TVFocusablePressable
+                          key={keyFor('results:direct-stream-btn')}
+                          ref={(el) => setItemRef('results:direct-stream-btn', el)}
+                          hasTVPreferredFocus={
+                            resumeHint
+                              ? shouldPreferResultsFocus('results:direct-stream-btn', isMovieResume)
+                              : shouldPreferResultsFocus('results:direct-stream-btn', false)
+                          }
+                          onFocus={() => {
+                            lastFocusedDiscoverResultsKey = 'results:direct-stream-btn';
+                          }}
+                          scaleFocused={1.04}
+                          focusedBorderColor="#FFFFFF"
+                          borderRadius={10}
+                          onPress={() =>
+                            activeSourcePost &&
+                            handleResolveAndPlay(
+                              activeSourcePost.link,
+                              activeSourcePost.title,
+                              'movie',
+                              0,
+                              undefined,
+                              activeSourcePost.link,
+                            )
+                          }
+                          style={styles.directStreamBtn}
+                        >
+                          {() => (
+                            <View style={styles.directBtnInner}>
+                              <MaterialCommunityIcons name="play" size={24} color="#FFFFFF" />
+                              <Text style={styles.directBtnText}>
+                                {isMovieResume
+                                  ? `Resume ${Math.floor((resumeHint!.position || 0) / 60)}:${String(
+                                      Math.floor((resumeHint!.position || 0) % 60),
+                                    ).padStart(2, '0')}`
+                                  : 'Start Playback'}
+                              </Text>
+                            </View>
+                          )}
+                        </TVFocusablePressable>
+                      );
+                    })()
                   )}
                 </View>
               )}
@@ -2383,6 +2516,30 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     fontSize: 11,
     marginTop: 2,
+  },
+  resumeBadge: {
+    color: '#A78BFA',
+    fontSize: 12,
+    fontWeight: '700',
+    backgroundColor: 'rgba(138, 92, 246, 0.18)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  sourceResumeBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: 'rgba(138, 92, 246, 0.92)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  sourceResumeBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
   },
   episodeThumbWrap: {
     width: 120,
