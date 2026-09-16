@@ -1,6 +1,7 @@
 import {create} from 'zustand';
 import {createJSONStorage, persist} from 'zustand/middleware';
 import type {EpisodeLink} from '../providers/types';
+import type {CatalogMediaItem} from '../services/stremioCatalog';
 import {createZustandStorage} from '../storage/StorageService';
 
 export interface ContinueWatchingItem {
@@ -26,6 +27,13 @@ export interface ContinueWatchingItem {
   position: number;
   duration: number;
   updatedAt: number;
+  // Set only when this entry's original stream was played from the
+  // Discover screen's page-2 (results) inspector rather than from this
+  // title's own provider listing (Home row / Search / a normal details
+  // page). Lets the Home screen's Continue Watching card reopen the same
+  // Discover results view it was played from instead of the regular
+  // details screen -- see TVHomeScreen's history card press handler.
+  discoverSource?: CatalogMediaItem & {logo?: string; cast?: string[]; runtime?: string};
 }
 
 interface ContinueWatchingState {
