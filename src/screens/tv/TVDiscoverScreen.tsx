@@ -2178,7 +2178,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   targetOverview: {
-    color: '#D1D5DB',
+    color: '#FFFFFF',
     fontSize: 13,
     lineHeight: 20,
     // Narrower than cleanHeaderContainer's 720dp cap so the synopsis wraps
@@ -2186,7 +2186,7 @@ const styles = StyleSheet.create({
     // across a big chunk of the screen -- the logo/title/badges above keep
     // the full width, only the paragraph text itself is narrowed.
     maxWidth: 460,
-    textShadowColor: 'rgba(0, 0, 0, 0.85)',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
