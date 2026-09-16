@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Image, Dimensions } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 
@@ -19,20 +19,83 @@ export interface TVHeroMedia {
   genres?: string[];
   cast?: string[];
   hasLandscapeBackdrop?: boolean;
+  // Explicitly flags that no genuine landscape backdrop is known yet, so
+  // the 3-layer blurred-poster canvas should render instead of the
+  // full-bleed image. Not part of the aspect-ratio probing below -- kept
+  // for API compatibility with callers that already set it.
+  isPosterFallback?: boolean;
 }
 
 interface TVHeroMetaProps {
   media: TVHeroMedia | null;
 }
 
+// Caches image width/height ratios we've already resolved (by URL) so the
+// same artwork never triggers a second network probe across re-renders,
+// card-to-card focus changes, or remounts within a session.
+const probedAspectRatioCache = new Map<string, number>();
+// A ratio at or above this is treated as a genuine 16:9-ish landscape
+// backdrop rather than a portrait/near-square poster.
+const LANDSCAPE_ASPECT_THRESHOLD = 1.3;
+
 export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
-  // Determine if we have a real 16:9 landscape backdrop
-  const isLandscape = Boolean(
+  // Many providers only ever return a single image per title, and for a lot
+  // of catalogs that single image is itself already a landscape banner --
+  // not a true portrait poster -- even though nothing in the data explicitly
+  // flags it as a "backdrop". Trusting `hasLandscapeBackdrop` alone in that
+  // case makes the hero fall back to the blurred-poster canvas and shrink a
+  // perfectly good 16:9 image down into a small centered box. To catch this,
+  // whenever the data doesn't already claim a landscape backdrop, probe the
+  // actual image dimensions and promote it to the full-bleed layout if it
+  // turns out to be landscape-shaped after all.
+  const explicitLandscape = Boolean(
     media?.hasLandscapeBackdrop ??
     (media?.backdropUrl && media?.backdropUrl !== media?.posterUrl)
   );
+  const probeCandidate = !explicitLandscape ? media?.backdropUrl || media?.posterUrl : undefined;
 
-  const backdropSource = media?.backdropUrl;
+  const [probedLandscapeSource, setProbedLandscapeSource] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!probeCandidate) {
+      setProbedLandscapeSource(null);
+      return;
+    }
+
+    const cachedRatio = probedAspectRatioCache.get(probeCandidate);
+    if (cachedRatio !== undefined) {
+      setProbedLandscapeSource(cachedRatio >= LANDSCAPE_ASPECT_THRESHOLD ? probeCandidate : null);
+      return;
+    }
+
+    let cancelled = false;
+    setProbedLandscapeSource(null);
+    Image.getSize(
+      probeCandidate,
+      (w, h) => {
+        if (cancelled) return;
+        const ratio = h > 0 ? w / h : 0;
+        probedAspectRatioCache.set(probeCandidate, ratio);
+        setProbedLandscapeSource(ratio >= LANDSCAPE_ASPECT_THRESHOLD ? probeCandidate : null);
+      },
+      () => {
+        if (!cancelled) probedAspectRatioCache.set(probeCandidate, 0);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [probeCandidate]);
+
+  // Determine if we have a real 16:9 landscape backdrop -- either the data
+  // already told us so, or the probe above confirmed it.
+  const isLandscape = explicitLandscape || Boolean(probedLandscapeSource);
+
+  // When the probe is what promoted us to landscape, the image that turned
+  // out to be landscape-shaped is whichever of backdropUrl/posterUrl we
+  // actually measured (probeCandidate) -- use that as the full-bleed source.
+  const backdropSource = media?.backdropUrl || (probedLandscapeSource ? media?.posterUrl : undefined);
   const posterSource = media?.posterUrl || media?.backdropUrl;
 
   return (
