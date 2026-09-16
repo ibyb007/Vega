@@ -251,7 +251,16 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       const targetUrl = item.infoUrl || item.link;
       const targetProvider = item.providerValue || item.provider || provider?.value;
 
-      const sourceBackdrop = item.background || item.backdrop || item.banner || null;
+      // For Continue Watching entries resumed via the Discover screen's
+      // results inspector, the real 16:9 image lives on the attached
+      // `discoverSource` catalog item's own `banner` field (see
+      // CatalogMediaItem) -- not on the history entry's top-level
+      // background/backdrop fields, which are only ever populated for
+      // entries that went through Home's own Cinemeta enrichment. Without
+      // this fallback those entries always looked like they had no
+      // backdrop at all, even though one was sitting right there.
+      const sourceBackdrop =
+        item.background || item.backdrop || item.banner || item.discoverSource?.banner || null;
       const hasSourceBackdrop = Boolean(sourceBackdrop);
 
       const progressPercent =
