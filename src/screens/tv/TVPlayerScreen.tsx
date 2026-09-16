@@ -14,6 +14,7 @@ import {
 import Video, { VideoRef, SelectedTrackType, ResizeMode, BufferingStrategyType } from 'react-native-video';
 import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import Svg, { Path } from 'react-native-svg';
 import KeyEvent from 'react-native-keyevent';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
@@ -132,6 +133,24 @@ const describeTrackCompact = (trk: any, fallbackLabel: string): string => {
 
   return fallbackLabel;
 };
+
+// Stremio's "episodes" control-bar icon (stacked video strips behind a
+// play triangle) -- swapped in for the generic "view-list" glyph so the
+// Episodes button reads the same as Stremio's own TV player.
+const EpisodesIcon: React.FC<{ size: number; color: string }> = ({ size, color }) => (
+  <Svg width={size} height={size} viewBox="0 0 512 512">
+    <Path
+      d="M498.9 158.06V89c.2-6.28-1.4-12.49-4.6-17.78-2.8-4.73-6.7-8.6-11.4-11.21-4.6-2.61-9.9-3.87-15.3-3.64h-.1c-36 .09-72.1.09-108.2 0H247.6c-26.5 0-53 0-79.6-.12-2 .1-4 .36-6 .77-4.7.87-9.1 2.97-12.9 6.1-3.8 3.14-6.7 7.2-8.6 11.84-.7 1.69-1.3 3.45-1.7 5.24-.7 2.66-1.1 5.4-1.2 8.15v33.23h-31.2c-2 .05-4.1.27-6 .65-4.8.87-9.2 2.98-13 6.1-3.7 3.14-6.7 7.2-8.6 11.84-.7 1.69-1.2 3.46-1.7 5.26-.7 2.66-1.1 5.39-1.2 8.15v32.71H42.8c-2 .01-4 .18-6 .5-4.8.87-9.2 2.97-13 6.1-3.7 3.13-6.7 7.19-8.7 11.82-.7 1.71-1.2 3.47-1.7 5.27-.6 2.66-1 5.4-1.1 8.16v194.91c-.2 6.29 1.4 12.5 4.8 17.8 2.7 4.69 6.6 8.54 11.2 11.15 4.7 2.61 9.9 3.88 15.1 3.7h.1c36.4-.12 72.7-.12 109 0h144.6c15.3 0 30.7 0 46 .15 2-.05 4-.26 6-.65 4.8-.9 9.2-2.99 13-6.12s6.7-7.19 8.6-11.82c.7-1.7 1.3-3.46 1.7-5.27l.1-.39c.6-2.55 1-5.18 1-7.82v-32.75c11.1 0 22.1.03 33.1.09 2.1-.04 4.2-.26 6.2-.65 4.7-.87 9.1-2.98 12.9-6.11 3.7-3.12 6.7-7.19 8.6-11.82.7-1.7 1.2-3.47 1.7-5.26l.1-.39c.6-2.57.9-5.19 1-7.83v-33.39c10.4 0 20.8 0 31.2.1 2-.05 4.1-.27 6.1-.66 4.7-.88 9.2-2.97 12.9-6.11 3.8-3.12 6.7-7.18 8.6-11.81.7-1.71 1.3-3.47 1.7-5.27l.1-.41c.6-2.56 1-5.19 1-7.83V158.06zM335.4 289.75v111.06c.2 3.76.3 8.43-5 9.14H57.6c-1 .15-2 .09-3-.19s-1.9-.77-2.7-1.44c-.6-.81-1.1-1.76-1.3-2.78-.3-1.02-.4-2.09-.2-3.14l.2-18.91v-53.34l.1-3.74v-95.1c-.2-4.22-.4-8.92 5-9.61.7-.07 1.3-.1 1.9-.09h270.8q1.5-.24 3 .18c1 .28 1.9.77 2.7 1.45.6.82 1 1.76 1.3 2.78.3 1.03.3 2.08.1 3.12l-.2 18.91v14.77zm63.6-64.68v43.3l.1 67.44v.3c.1 3.77.3 8.45-5.1 9.15-.5 0-1.3 0-2 .1h-18.4v-126.6c.1-4.32-.7-8.61-2.2-12.61s-3.8-7.63-6.7-10.68a30.5 30.5 0 0 0-10.2-7.04c-3.8-1.61-8-2.38-12.1-2.28h-.1c-36.1.11-72.1 0-108.2 0H114.3v-7.63c0-3.95 0-7.91-.1-11.86-.2-4.21-.4-8.91 5-9.59.5 0 1.2 0 1.9-.11H392c1-.15 2-.09 3 .19.9.29 1.8.78 2.6 1.45.7.82 1.1 1.76 1.4 2.77.3 1.02.3 2.09.2 3.13l-.3 18.91v14.77zm61.7-65.05v43.29l.1 67.44v.32c.1 3.77.3 8.45-5.1 9.14-.5 0-1.3 0-2 .11h-16.5V154.05c.1-4.31-.7-8.59-2.2-12.6-1.6-4-3.9-7.63-6.8-10.68-2.9-3.04-6.3-5.44-10.1-7.04-3.8-1.61-7.9-2.38-12.1-2.29h-.1c-36.1.11-72.1.11-108.2 0h-37.4l-74.4.14h-10v-8.15c0-3.97 0-7.93-.1-11.86-.1-4.24-.3-8.91 5.1-9.62.5 0 1.2 0 1.9-.09h271c.9-.16 2-.09 2.9.18 1 .28 1.9.78 2.7 1.45.6.82 1.1 1.77 1.3 2.79.3 1.01.3 2.07.1 3.11l-.2 18.93v14.78z"
+      fill={color}
+    />
+    <Path
+      d="m253.8 311.24-81.7 49.65c-.8.51-1.7.78-2.7.78-.9.01-2-.25-2.8-.74-.8-.5-1.5-1.21-2-2.08-.5-.86-.8-1.84-.8-2.85v-99.38c0-1.01.3-1.99.8-2.86.5-.86 1.2-1.57 2-2.07.8-.49 1.9-.76 2.8-.74 1 0 1.9.27 2.7.77l81.7 49.56c.8.51 1.5 1.23 2 2.1.5.88.7 1.87.7 2.88s-.2 2.01-.7 2.88-1.2 1.6-2 2.1"
+      fill={color}
+      fillRule="evenodd"
+      clipRule="evenodd"
+    />
+  </Svg>
+);
 
 interface EpisodeItem {
   id?: string | number;
@@ -286,6 +305,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const nextUpTriggeredRef = useRef(false);
 
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
+
+  // Kept in sync on every render (not just in an effect) so the
+  // already-scheduled hide-controls timeout below always sees the latest
+  // open/closed state of any dropdown/pop-up (episodes, subtitles, audio,
+  // server, quality) even though its callback closure was created earlier.
+  const overlayOpenRef = useRef(false);
+  overlayOpenRef.current = Boolean(activeDialog) || showEpisodesList;
 
   const excludedQualities = useMemo(
     () => settingsStorage.getExcludedQualities() || [],
@@ -496,10 +522,18 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
     setShowControls(true);
     hideControlsTimer.current = setTimeout(() => {
-      setShowControls((prev) => (activeDialog ? true : false));
+      // A dropdown/pop-up (episodes, subtitles, audio, server, quality) is
+      // open -- leave the control bar showing and don't re-arm the timer;
+      // whatever closes the overlay calls resetInactivityTimer() again to
+      // restart the normal 3.5s countdown.
+      if (overlayOpenRef.current) {
+        setShowControls(true);
+        return;
+      }
+      setShowControls(false);
       setIsSeekbarFocused(false);
     }, 3500);
-  }, [activeDialog]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1265,7 +1299,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   }}
                   style={styles.controlBtn}
                 >
-                  {() => <MaterialCommunityIcons name="view-list" size={22} color="#FFFFFF" />}
+                  {() => <EpisodesIcon size={22} color="#FFFFFF" />}
                 </TVFocusablePressable>
               )}
 
@@ -1892,33 +1926,37 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.4)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 90,
-    paddingBottom: 150,
+    paddingTop: 64,
+    paddingBottom: 100,
   },
+  // Sized to match Stremio's own "Videos" pop-up (a wide, near-full-height
+  // sheet with large 16:9 thumbnails) so more episodes are visible at once
+  // instead of the previous narrower/shorter card.
   episodesCard: {
-    width: 860,
-    maxWidth: '62%',
+    width: 1040,
+    maxWidth: '76%',
     flex: 1,
     alignSelf: 'center',
     backgroundColor: 'rgba(15, 15, 19, 0.96)',
-    borderRadius: 20,
-    padding: 24,
+    borderRadius: 18,
+    padding: 28,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   episodesTitle: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 26,
     fontWeight: '800',
-    marginBottom: 14,
+    marginBottom: 16,
   },
   episodesListContent: {
-    gap: 10,
+    gap: 14,
     paddingBottom: 10,
   },
   episodeListRow: {
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    padding: 10,
+    borderRadius: 12,
+    padding: 14,
   },
   episodeListRowActive: {
     backgroundColor: 'rgba(255, 255, 255, 0.92)',
@@ -1926,12 +1964,12 @@ const styles = StyleSheet.create({
   episodeListRowInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 18,
   },
   episodeListThumb: {
-    width: 120,
-    height: 68,
-    borderRadius: 6,
+    width: 220,
+    height: 124,
+    borderRadius: 8,
     backgroundColor: '#1E1E28',
   },
   episodeListThumbFallback: {
@@ -1946,12 +1984,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   episodeListName: {
     flex: 1,
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 18,
     fontWeight: '800',
   },
   episodeListNameActive: {
@@ -1959,7 +1997,7 @@ const styles = StyleSheet.create({
   },
   episodeListDate: {
     color: '#9CA3AF',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
   episodeListDateActive: {
@@ -1967,8 +2005,8 @@ const styles = StyleSheet.create({
   },
   episodeListSynopsis: {
     color: '#9CA3AF',
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 20,
   },
   episodeListSynopsisActive: {
     color: '#3F3F46',
