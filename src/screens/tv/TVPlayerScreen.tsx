@@ -412,7 +412,15 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               : undefined,
           type: 'series',
           poster: posterUrl,
-          background: posterUrl,
+          // Deliberately NOT set to posterUrl: posterUrl is a portrait
+          // poster image (especially for entries sourced from Discover,
+          // where it falls back to the catalog's own `poster` field), and
+          // stretching a portrait image across the Home hero's landscape
+          // backdrop area is what produces the "zoomed in poster" look.
+          // Leaving this unset lets TVHomeScreen's own Cinemeta enrichment
+          // (see updateHeroWithBestMetadata) fetch and fill in the real
+          // landscape backdrop for this entry, same as any other row item.
+          background: undefined,
           providerValue: providerValue || useContentStore.getState().provider?.value || '',
           infoUrl: itemLink || continueWatchingId,
           discoverSource,
@@ -443,7 +451,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         episodeKey: isSeries ? episodeId || undefined : undefined,
         type: isSeries ? 'series' : 'movie',
         poster: posterUrl,
-        background: posterUrl,
+        // See the comment on the other upsertContinueWatching call above --
+        // left unset on purpose so Home's Cinemeta enrichment supplies the
+        // real backdrop instead of a stretched poster.
+        background: undefined,
         providerValue: providerValue || useContentStore.getState().provider?.value || '',
         infoUrl: itemLink || continueWatchingId,
         discoverSource,
