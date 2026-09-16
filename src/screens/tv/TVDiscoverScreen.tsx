@@ -61,7 +61,14 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 // the rail's collapsed width (72dp), so this only needs to be a small
 // breathing margin on top of that, not a near-duplicate of the rail's width.
 const CONTAINER_PADDING_LEFT = 20;
-const CONTAINER_PADDING_RIGHT = 40;
+// Was 40 -- too tight a buffer for focused-card growth. Full-width elements
+// on the results (page 2) screen -- episode cards, quality/season chips --
+// are laid out flush against this padding with nothing else reserved for
+// their `scaleFocused` transform, so focusing the rightmost one grew it a
+// few dp past the edge of this padding and off the visible screen. The
+// extra headroom here (plus the matching inset on episodesGrid/chipsRow
+// below) keeps that growth inside the screen.
+const CONTAINER_PADDING_RIGHT = 56;
 const GRID_GAP = 14;
 const GRID_COLUMNS = 6;
 // This screen's content sits inside App.tsx's shared viewport wrapper,
@@ -1305,7 +1312,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           contentContainerStyle={styles.resultsScrollContent}
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={16}
-          removeClippedSubviews={true}
+          // `removeClippedSubviews` culls offscreen views using each view's
+          // pre-transform layout frame -- it doesn't account for the
+          // `scaleFocused` transform TVFocusablePressable applies on focus,
+          // so a full-width episode/quality card sitting right at the edge
+          // of this scroll view could get judged "offscreen" and clipped
+          // the moment it grew on focus. This screen's results list is
+          // small, so there's no meaningful perf cost to leaving it on.
+          removeClippedSubviews={false}
         >
           <TVFocusablePressable
             key={keyFor('results:back')}
@@ -2406,6 +2420,11 @@ const styles = StyleSheet.create({
   sourcesRow: {
     gap: 14,
     paddingVertical: 4,
+    // Was missing trailing padding entirely, unlike Home's equivalent
+    // horizontal rows (see horizontalRowScroll) -- the last source card
+    // ended exactly at the scroll content's edge, so focusing it and
+    // triggering its scaleFocused growth pushed it straight off-screen.
+    paddingRight: 40,
   },
   sourceCard: {
     width: 125,
@@ -2457,6 +2476,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
+    // Small right inset so a chip that lands flush against the row's edge
+    // still has headroom for its focus scale-up instead of growing past
+    // the edge of the screen.
+    paddingRight: 10,
   },
   qualityChip: {
     backgroundColor: 'rgba(22, 22, 30, 0.6)',
@@ -2483,6 +2506,11 @@ const styles = StyleSheet.create({
   episodesGrid: {
     flexDirection: 'column',
     gap: 10,
+    // Small right inset so each full-width episode card below has headroom
+    // for its focus scale-up (see episodeCard's width: '100%') instead of
+    // growing past the edge of the screen when the rightmost pixel of the
+    // row is already flush with the container's edge.
+    paddingRight: 10,
   },
   episodeCard: {
     backgroundColor: 'rgba(22, 22, 30, 0.6)',
