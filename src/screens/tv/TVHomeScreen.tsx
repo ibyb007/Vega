@@ -91,7 +91,16 @@ const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Prom
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
   onResumeItem?: (item: any) => void;
-  onOpenDiscoverItem?: (item: any) => void;
+  onOpenDiscoverItem?: (
+    item: any,
+    resumeHint?: {
+      providerValue?: string;
+      infoUrl?: string;
+      episodeKey?: string;
+      episodeLink?: string;
+      position?: number;
+    },
+  ) => void;
   onNavigateRoute?: (route: TVRoute) => void;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
@@ -656,7 +665,18 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
                           if (isHistoryRow) {
                             if (item.discoverSource && onOpenDiscoverItem) {
-                              onOpenDiscoverItem(item.discoverSource);
+                              // Thread the resume position/episode identity
+                              // along with the discoverSource payload so the
+                              // Discover results view can land on the same
+                              // source/episode and actually resume playback
+                              // instead of opening a blank results browser.
+                              onOpenDiscoverItem(item.discoverSource, {
+                                providerValue: item.providerValue,
+                                infoUrl: item.infoUrl,
+                                episodeKey: item.episodeKey,
+                                episodeLink: item.episode?.link,
+                                position: item.position,
+                              });
                               return;
                             }
                             onSelectItem({
