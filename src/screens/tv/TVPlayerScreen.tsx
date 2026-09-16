@@ -1926,37 +1926,38 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.4)',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 64,
-    paddingBottom: 100,
+    paddingTop: 40,
+    paddingBottom: 64,
   },
-  // Sized to match Stremio's own "Videos" pop-up (a wide, near-full-height
-  // sheet with large 16:9 thumbnails) so more episodes are visible at once
-  // instead of the previous narrower/shorter card.
+  // Narrower and taller than a first pass at this -- a compact row height
+  // (small thumbnail, tight padding) is what actually gets several
+  // episodes on screen at once, matching Stremio's own compact "Videos"
+  // list rather than a couple of oversized cards.
   episodesCard: {
-    width: 1040,
-    maxWidth: '76%',
+    width: 720,
+    maxWidth: '56%',
     flex: 1,
     alignSelf: 'center',
     backgroundColor: 'rgba(15, 15, 19, 0.96)',
-    borderRadius: 18,
-    padding: 28,
+    borderRadius: 16,
+    padding: 22,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   episodesTitle: {
     color: '#FFFFFF',
-    fontSize: 26,
+    fontSize: 20,
     fontWeight: '800',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   episodesListContent: {
-    gap: 14,
+    gap: 8,
     paddingBottom: 10,
   },
   episodeListRow: {
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 10,
+    padding: 10,
   },
   episodeListRowActive: {
     backgroundColor: 'rgba(255, 255, 255, 0.92)',
@@ -1964,12 +1965,12 @@ const styles = StyleSheet.create({
   episodeListRowInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 18,
+    gap: 12,
   },
   episodeListThumb: {
-    width: 220,
-    height: 124,
-    borderRadius: 8,
+    width: 140,
+    height: 79,
+    borderRadius: 6,
     backgroundColor: '#1E1E28',
   },
   episodeListThumbFallback: {
@@ -1983,13 +1984,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
-    marginBottom: 6,
+    gap: 8,
+    marginBottom: 3,
   },
   episodeListName: {
     flex: 1,
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '800',
   },
   episodeListNameActive: {
@@ -1997,7 +1998,7 @@ const styles = StyleSheet.create({
   },
   episodeListDate: {
     color: '#9CA3AF',
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '600',
   },
   episodeListDateActive: {
@@ -2005,8 +2006,8 @@ const styles = StyleSheet.create({
   },
   episodeListSynopsis: {
     color: '#9CA3AF',
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 12,
+    lineHeight: 16,
   },
   episodeListSynopsisActive: {
     color: '#3F3F46',
