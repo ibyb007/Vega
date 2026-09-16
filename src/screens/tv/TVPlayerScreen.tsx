@@ -22,7 +22,14 @@ import useSettingsStore, { AudioBoostProfile } from '../../lib/zustand/settingsS
 import { providerManager } from '../../lib/services/ProviderManager';
 import { launchVideo } from '../../lib/services/PlayerLauncher';
 import { settingsStorage } from '../../lib/storage';
+import { formatEpisodeLabel as formatSeasonEpisodeLabel } from '../../lib/utils/episodeParsing';
 import type { EpisodeLink, TextTracks, SkipInterval } from '../../lib/providers/types';
+
+// A title/episode is treated as "100% watched" for Continue Watching
+// purposes once this many seconds or less remain -- matches the common
+// "mark as watched near the credits" behaviour instead of only counting an
+// exact onEnd fire (which streaks/seeking/IO recovery can skip past).
+const NEARLY_COMPLETE_THRESHOLD_SECONDS = 200;
 
 // Android hardware key codes used by the global listener below.
 // (react-native-keyevent reports raw Android KeyEvent.KEYCODE_* values.)
@@ -177,6 +184,12 @@ interface TVPlayerScreenProps {
   // fallback.
   skip?: SkipInterval[];
   startPosition?: number;
+  // Present only when this stream was launched from the Discover screen's
+  // page-2 results inspector -- threaded straight through to whatever
+  // Continue Watching entry this session upserts so Home can reopen the
+  // same Discover results view later instead of the regular details
+  // screen. Opaque here; see ContinueWatchingItem.discoverSource.
+  discoverSource?: any;
   onSelectNextEpisode?: (nextEpisode: ResolvedNextEpisode) => void;
   onSelectServer?: (serverUrl: string) => void;
   onSelectQuality?: (qualityUrl: string) => void;
@@ -202,6 +215,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   qualities = [],
   skip,
   startPosition,
+  discoverSource,
   onSelectNextEpisode,
   onSelectServer,
   onSelectQuality,
@@ -349,6 +363,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const userChoseSubtitleRef = useRef(false);
 
   const upsertContinueWatching = useContinueWatchingStore((state) => state.upsertItem);
+  const removeContinueWatching = useContinueWatchingStore((state) => state.removeItem);
   // Row identity is always the content's own info-page link when we have
   // one -- stable no matter which quality/source/episode was actually
   // played -- so progress on the same title always updates one row instead
@@ -360,6 +375,53 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const syncProgressToStore = useCallback(
     (timeSec: number, totalDur: number) => {
       if (totalDur <= 0 || timeSec <= 0 || !continueWatchingId) return;
+
+      const isSeries = episodes.length > 0;
+      const remaining = totalDur - timeSec;
+
+      // 200 seconds or less left counts as "100% watched": a movie drops
+      // off the row entirely, a series episode hands the row over to
+      // whatever's next (so Continue Watching always points at something
+      // there's actually more of to watch) -- rather than lingering on an
+      // entry the person has effectively already finished.
+      if (remaining <= NEARLY_COMPLETE_THRESHOLD_SECONDS) {
+        if (!isSeries) {
+          removeContinueWatching(continueWatchingId);
+          return;
+        }
+
+        const nextEpisode = episodes[currentEpisodeIndex + 1] as
+          | (EpisodeLink & { season?: number; episodeNumber?: number })
+          | undefined;
+        if (!nextEpisode?.link) {
+          // Last episode of the series just finished -- nothing left to
+          // resume, so drop the row same as a finished movie.
+          removeContinueWatching(continueWatchingId);
+          return;
+        }
+
+        const nextTitle = nextEpisode.title || title;
+        upsertContinueWatching({
+          id: continueWatchingId,
+          title,
+          episodeTitle: nextTitle !== title ? nextTitle : undefined,
+          episode: { ...nextEpisode, title: nextTitle },
+          episodeKey:
+            nextEpisode.season != null && nextEpisode.episodeNumber != null
+              ? `S${nextEpisode.season}E${nextEpisode.episodeNumber}`
+              : undefined,
+          type: 'series',
+          poster: posterUrl,
+          background: posterUrl,
+          providerValue: providerValue || useContentStore.getState().provider?.value || '',
+          infoUrl: itemLink || continueWatchingId,
+          discoverSource,
+          position: 0,
+          duration: 0,
+          updatedAt: Date.now(),
+        });
+        return;
+      }
 
       const currentEpisode = episodes[currentEpisodeIndex];
       const episode: EpisodeLink = currentEpisode?.link
@@ -378,18 +440,31 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         episode,
         // Only meaningful for series -- a movie has nothing to
         // disambiguate, so leave it unset rather than storing a stray key.
-        episodeKey: episodes.length > 0 ? episodeId || undefined : undefined,
-        type: episodes.length > 0 ? 'series' : 'movie',
+        episodeKey: isSeries ? episodeId || undefined : undefined,
+        type: isSeries ? 'series' : 'movie',
         poster: posterUrl,
         background: posterUrl,
         providerValue: providerValue || useContentStore.getState().provider?.value || '',
         infoUrl: itemLink || continueWatchingId,
+        discoverSource,
         position: Math.floor(timeSec),
         duration: Math.floor(totalDur),
         updatedAt: Date.now(),
       });
     },
-    [continueWatchingId, itemLink, episodeId, episodes, currentEpisodeIndex, title, posterUrl, providerValue, upsertContinueWatching]
+    [
+      continueWatchingId,
+      itemLink,
+      episodeId,
+      episodes,
+      currentEpisodeIndex,
+      title,
+      posterUrl,
+      providerValue,
+      discoverSource,
+      upsertContinueWatching,
+      removeContinueWatching,
+    ]
   );
 
   useEffect(() => {
@@ -743,15 +818,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const hasNextEpisode = episodes.length > currentEpisodeIndex + 1;
   const nextEpisodePreview = hasNextEpisode ? episodes[currentEpisodeIndex + 1] : undefined;
 
-  const formatEpisodeLabel = (ep?: EpisodeItem) => {
-    if (!ep) return '';
-    if (ep.season != null && ep.episodeNumber != null) {
-      const s = String(ep.season).padStart(2, '0');
-      const e = String(ep.episodeNumber).padStart(2, '0');
-      return `S${s}E${e}-${ep.title || 'Next Episode'}`;
-    }
-    return ep.title || 'Next Episode';
-  };
+  const formatEpisodeLabel = (ep?: EpisodeItem) =>
+    ep ? formatSeasonEpisodeLabel(ep.season, ep.episodeNumber, ep.title, 'Next Episode') : '';
 
   return (
     <View style={styles.container}>
@@ -1460,10 +1528,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             >
               {episodes.map((ep, idx) => {
                 const isCurrent = idx === currentEpisodeIndex;
-                const label =
-                  ep.episodeNumber != null
-                    ? `${ep.episodeNumber}. ${ep.title || `Episode ${idx + 1}`}`
-                    : ep.title || `Episode ${idx + 1}`;
+                const label = formatSeasonEpisodeLabel(
+                  ep.season,
+                  ep.episodeNumber,
+                  ep.title,
+                  `Episode ${idx + 1}`
+                );
                 return (
                   <TVFocusablePressable
                     key={`ep-list-${ep.id || ep.link || idx}`}
