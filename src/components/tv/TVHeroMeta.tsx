@@ -6,6 +6,10 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export interface TVHeroMedia {
   title: string;
+  // Second header line under the title -- e.g. "S01E02-Trust Fall" for a
+  // Continue Watching series entry. Omitted (movies, non-history rows)
+  // means the header stays a single line.
+  subtitle?: string;
   backdropUrl?: string;
   posterUrl?: string;
   overview?: string;
@@ -108,6 +112,12 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
           {media?.title || ''}
         </Text>
 
+        {media?.subtitle ? (
+          <Text numberOfLines={1} style={styles.subtitle}>
+            {media.subtitle}
+          </Text>
+        ) : null}
+
         <View style={styles.metaRow}>
           {media?.runtime ? <Text style={styles.metaText}>{media.runtime}</Text> : null}
           {media?.year ? <Text style={styles.metaText}>{media.year}</Text> : null}
@@ -206,6 +216,16 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
+  },
+  subtitle: {
+    color: '#D1D5DB',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: -2,
+    marginBottom: 8,
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   metaRow: {
     flexDirection: 'row',
