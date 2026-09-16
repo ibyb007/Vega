@@ -22,7 +22,7 @@ import { TVSourceSelectScreen } from './screens/tv/TVSourceSelectScreen';
 import { TVSettingsScreen } from './screens/tv/TVSettingsScreen';
 import { TVPlayerScreen } from './screens/tv/TVPlayerScreen';
 import { TVDetailsScreen } from './screens/tv/TVDetailsScreen';
-import { TVDiscoverScreen } from './screens/tv/TVDiscoverScreen';
+import { TVDiscoverScreen, openDiscoverResultFor } from './screens/tv/TVDiscoverScreen';
 import TVSearch from './screens/Search';
 import Extensions from './screens/settings/Extensions';
 
@@ -44,6 +44,9 @@ export interface ActiveStreamPayload {
   sourceType?: string;
   subtitles?: TextTracks;
   startPosition?: number;
+  // Present only when this stream was launched from the Discover screen's
+  // page-2 results inspector -- see ContinueWatchingItem.discoverSource.
+  discoverSource?: any;
 }
 
 export default function App() {
@@ -161,6 +164,21 @@ export default function App() {
     });
   }, []);
 
+  // Home's Continue Watching card calls this instead of the normal
+  // onSelectItem when the entry's own stream was originally played from
+  // Discover's page-2 results inspector (ContinueWatchingItem.discoverSource)
+  // -- hands the item off to that screen (consumed once on its next mount,
+  // see openDiscoverResultFor) and switches to the Discover tab, instead of
+  // opening the regular details screen for it.
+  const handleOpenDiscoverItem = useCallback(
+    (discoverItem: any) => {
+      if (!discoverItem) return;
+      openDiscoverResultFor(discoverItem);
+      navigateTo('discover');
+    },
+    [navigateTo]
+  );
+
   // Keep the native rail's active-route highlight (and its nextFocusRightId
   // wiring for the currently-active row) in sync with JS route state, and
   // push whatever entry-focus target the active screen has registered.
@@ -257,6 +275,7 @@ export default function App() {
                     qualities={activeStream.qualities}
                     skip={activeStream.skip}
                     startPosition={activeStream.startPosition}
+                    discoverSource={activeStream.discoverSource}
                     onSelectNextEpisode={(nextEp) => {
                       // `targetIndex` is set explicitly when the person
                       // jumped to an arbitrary episode from the "Videos"
@@ -307,6 +326,7 @@ export default function App() {
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
                           onSelectItem={(item) => setSelectedItem(item)}
+                          onOpenDiscoverItem={handleOpenDiscoverItem}
                           onRegisterBackHandler={handleRegisterBackHandler('home')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('home')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('home')}
