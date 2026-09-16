@@ -28,6 +28,7 @@ import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { getCachedMetadata, getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { providerManager } from '../../lib/services/ProviderManager';
+import { formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 
@@ -90,6 +91,7 @@ const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Prom
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
   onResumeItem?: (item: any) => void;
+  onOpenDiscoverItem?: (item: any) => void;
   onNavigateRoute?: (route: TVRoute) => void;
   onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
@@ -100,6 +102,7 @@ interface TVHomeScreenProps {
 export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   onSelectItem,
   onResumeItem,
+  onOpenDiscoverItem,
   onNavigateRoute,
   onRegisterBackHandler,
   onRegisterEntryHandleGetter,
@@ -251,17 +254,23 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         (item.episode?.title && item.episode.title !== item.title
           ? item.episode.title
           : undefined);
+      // "S01E02-Trust Fall" style second header line -- only meaningful
+      // for a series entry (episodeTitle unset for movies), using the
+      // real season/episode numbers carried on the stored episode when
+      // available.
+      const episodeLabel = episodeTitle
+        ? formatEpisodeLabel(item.episode?.season, item.episode?.episodeNumber, episodeTitle)
+        : undefined;
       // Don't show a generic "select title to browse..." placeholder before
       // the real synopsis has been fetched -- leave it blank instead and let
       // the enrichment below fill it in once actual metadata arrives.
       const baseOverview = isHistory
-        ? episodeTitle
-          ? `${episodeTitle} • Resume (${progressPercent}%)`
-          : `Resume watching (${progressPercent}%)`
+        ? `Resume watching (${progressPercent}%)`
         : item.extra || item.description || undefined;
 
       setActiveHero({
         title: item.title,
+        subtitle: isHistory ? episodeLabel : undefined,
         backdropUrl: sourceBackdrop || posterImage || undefined,
         posterUrl: posterImage,
         overview: baseOverview,
@@ -646,6 +655,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                           }
 
                           if (isHistoryRow) {
+                            if (item.discoverSource && onOpenDiscoverItem) {
+                              onOpenDiscoverItem(item.discoverSource);
+                              return;
+                            }
                             onSelectItem({
                               link: item.infoUrl || item.link,
                               provider: item.providerValue || item.provider,
