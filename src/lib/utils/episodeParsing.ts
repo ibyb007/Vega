@@ -47,6 +47,26 @@ export const parseEpisodeNumber = (label: string | undefined | null): number | n
   return null;
 };
 
+// Formats a consistent "S01E02-Title" display label out of real
+// season/episode numbers (see parseSeasonNumber/parseEpisodeNumber above)
+// plus an episode's name -- used anywhere an episode is shown by itself
+// without an already-visible season/episode grouping (the Home hero
+// header, episode list rows, the player's "Up Next" popup). Falls back to
+// just the name -- or the given placeholder -- when the season/episode
+// numbers aren't known.
+export const formatEpisodeLabel = (
+  season: number | null | undefined,
+  episodeNumber: number | null | undefined,
+  name: string | undefined | null,
+  fallback: string = 'Episode',
+): string => {
+  const displayName = name || fallback;
+  if (season == null || episodeNumber == null) return displayName;
+  const s = String(season).padStart(2, '0');
+  const e = String(episodeNumber).padStart(2, '0');
+  return `S${s}E${e}-${displayName}`;
+};
+
 // Sorts an episode list ascending by parsed episode number. Only reorders
 // when a real number can be parsed for essentially every entry (>=80%) --
 // if parsing is spotty (mixed/unnumbered titles), a partial sort would
