@@ -171,9 +171,18 @@ export default function App() {
   // see openDiscoverResultFor) and switches to the Discover tab, instead of
   // opening the regular details screen for it.
   const handleOpenDiscoverItem = useCallback(
-    (discoverItem: any) => {
+    (
+      discoverItem: any,
+      resumeHint?: {
+        providerValue?: string;
+        infoUrl?: string;
+        episodeKey?: string;
+        episodeLink?: string;
+        position?: number;
+      },
+    ) => {
       if (!discoverItem) return;
-      openDiscoverResultFor(discoverItem);
+      openDiscoverResultFor(discoverItem, resumeHint);
       navigateTo('discover');
     },
     [navigateTo]
