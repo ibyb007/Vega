@@ -86,19 +86,32 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         }
         background = background2
 
-        val header = FrameLayout(context)
+        // Built as a horizontal LinearLayout with CENTER_VERTICAL gravity --
+        // like each row below it -- instead of two independently-guessed
+        // FrameLayout margins[cite: 10]. That guessed-margin approach is what let the
+        // logo drift a few dp right of the row icons' shared centerline and
+        // let the wordmark's own font leading throw off its vertical
+        // centering against the logo[cite: 10]. Sharing the rows' exact geometry
+        // (same left inset, same iconBox size, same label gap) makes both
+        // impossible instead of re-tuning two magic numbers.
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            // Same 20dp the rows sit at: menuContainer's 8dp leftMargin +
+            // each row's 12dp start padding[cite: 10].
+            setPadding(dp(20), 0, 0, 0)
+        }
+
+        val logoBox = FrameLayout(context)
         val logo = NavIconView(context).apply {
             iconType = NavIcon.LOGO
             setColor(ACCENT)
         }
-        header.addView(logo, LayoutParams(dp(30), dp(30)).apply {
-            // 22dp lines the logo's own left edge up with the row icons'
-            // left edge: menuContainer's 8dp margin + each row's 12dp
-            // padding + the 2dp the 22dp icon is inset within its 26dp
-            // iconBox = 22dp from the rail's left edge[cite: 10].
-            leftMargin = dp(22)
-            topMargin = dp(20)
-        })
+        // Identical 26dp box (with the icon centered 22dp inside it) to
+        // every row's iconBox below, so the logo's visual center sits on
+        // exactly the same vertical line as the row icons[cite: 10].
+        logoBox.addView(logo, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
+        header.addView(logoBox, LinearLayout.LayoutParams(dp(26), dp(26)))
 
         // "VEGA TV" wordmark shown next to the logo, mirroring how the
         // row labels behave: hidden/collapsed to nothing while the rail is
@@ -114,13 +127,19 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             visibility = View.GONE
             alpha = 0f
         }
-        header.addView(wordmarkView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-            // 60dp lines the wordmark up with the row labels: 8dp
-            // menuContainer margin + 12dp row padding + 26dp iconBox + 14dp
-            // label marginStart = 60dp from the rail's left edge[cite: 10].
-            leftMargin = dp(60)
-            topMargin = dp(26)
-        })
+        header.addView(
+            wordmarkView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                // Same 14dp gap every row uses between its iconBox and
+                // label; `header`'s own CENTER_VERTICAL gravity (above)
+                // keeps this centered against the logo without needing a
+                // hand-tuned topMargin[cite: 10].
+                marginStart = dp(14)
+            }
+        )
 
         addView(header, LayoutParams(LayoutParams.MATCH_PARENT, dp(56)))
 
@@ -128,7 +147,13 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
         }
         val menuLp = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
-            topMargin = dp(76)
+            // Was dp(76) -- pushed down by one extra row's worth of space
+            // (ITEM_HEIGHT_DP + ITEM_GAP_DP = 52dp) so the whole icon list
+            // sits one slot lower, leaving a visible gap under the header
+            // instead of butting right up against it[cite: 10]. Row order, the
+            // Up/Down focus chain, and the indicator/active-route lookups
+            // are all index-driven off NAV_ITEMS and unaffected by this[cite: 10].
+            topMargin = dp(76 + ITEM_HEIGHT_DP + ITEM_GAP_DP)
             leftMargin = dp(8)
             rightMargin = dp(8)
         }
@@ -145,7 +170,11 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         // a LinearLayout child (the old bug) made it consume real layout
         // space and push every row down by one slot[cite: 10].
         val pillLp = LayoutParams(LayoutParams.MATCH_PARENT, dp(ITEM_HEIGHT_DP)).apply {
-            topMargin = dp(76)
+            // Kept identical to menuLp's new topMargin above -- the pill is
+            // a sibling of menuContainer (not its child), so it must be
+            // shifted down by the same amount to keep landing exactly on
+            // row 0 instead of one slot above it[cite: 10].
+            topMargin = dp(76 + ITEM_HEIGHT_DP + ITEM_GAP_DP)
             leftMargin = dp(8)
             rightMargin = dp(8)
         }
