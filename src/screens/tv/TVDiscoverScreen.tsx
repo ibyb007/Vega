@@ -40,6 +40,7 @@ import {
   extractExternalIds,
   hasExternalId,
   hasMatchingExternalId,
+  hasTypeMismatch,
 } from '../../lib/utils/titleMatcher';
 import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import {
@@ -644,7 +645,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 }
 
                 const postYear = (post as any).year;
-                if (isStrictMatch(item.title, post.title, item.year, postYear)) {
+                const postType = (post as any).type;
+                if (isStrictMatch(item.title, post.title, item.year, postYear, item.type, postType)) {
                   matches.push(post);
                   return;
                 }
@@ -667,6 +669,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 ) {
                   return;
                 }
+                // Even with no year on either side to compare, a
+                // season/episode marker in the search result's own title
+                // (or an explicit type field) still settles it -- no need
+                // to spend a metadata lookup on a candidate that's already
+                // provably the wrong kind of release.
+                if (hasTypeMismatch(item.title, post.title, item.type, postType)) {
+                  return;
+                }
                 try {
                   const info = await providerManager.getMetaData({
                     link: post.link,
@@ -684,13 +694,19 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     }
                   }
                   if (controller.signal.aborted) return;
-                  if (!metaYear || isStrictMatch(item.title, post.title, item.year, metaYear)) {
+                  if (
+                    !metaYear ||
+                    isStrictMatch(item.title, post.title, item.year, metaYear, item.type, postType)
+                  ) {
                     matches.push(post);
                   }
                 } catch (metaErr) {
                   // Couldn't resolve this candidate's own metadata -- fall
                   // back to the previous permissive behaviour rather than
-                  // silently dropping a possibly-correct match.
+                  // silently dropping a possibly-correct match. The type
+                  // guard above already ran, so this still can't let a
+                  // provably-wrong-kind result slip through just because
+                  // its metadata lookup happened to fail.
                   if (!controller.signal.aborted) matches.push(post);
                 }
               }),
