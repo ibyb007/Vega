@@ -1312,14 +1312,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           contentContainerStyle={styles.resultsScrollContent}
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={16}
-          // `removeClippedSubviews` culls offscreen views using each view's
-          // pre-transform layout frame -- it doesn't account for the
-          // `scaleFocused` transform TVFocusablePressable applies on focus,
-          // so a full-width episode/quality card sitting right at the edge
-          // of this scroll view could get judged "offscreen" and clipped
-          // the moment it grew on focus. This screen's results list is
-          // small, so there's no meaningful perf cost to leaving it on.
-          removeClippedSubviews={false}
+          // NOTE: left at `true` (its original value) on purpose. Turning
+          // this off to chase the right-edge clipping issue below turned
+          // out to add just enough extra native mount/measure work during
+          // the browse<->results transition to lose the race for Android
+          // TV focus on slower devices -- focus would escape to the nav
+          // rail's Discover button while this screen was still settling,
+          // and returning from the rail would land back on the right item
+          // but with the scroll position reset to the top. The edge-
+          // clipping fix below (padding/right-inset only) doesn't need
+          // this prop changed at all.
+          removeClippedSubviews={true}
         >
           <TVFocusablePressable
             key={keyFor('results:back')}
