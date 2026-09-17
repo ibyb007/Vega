@@ -37,10 +37,10 @@ import {
 import {
   isStrictMatch,
   isAmbiguousYearMatch,
+  mediaKindsConflict,
   extractExternalIds,
   hasExternalId,
   hasMatchingExternalId,
-  hasTypeMismatch,
 } from '../../lib/utils/titleMatcher';
 import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import {
@@ -645,6 +645,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 }
 
                 const postYear = (post as any).year;
+                // Some providers embed a 'movie' | 'series' type directly on
+                // their search-result posts (see normalizeSearchResult's
+                // `...item` spread) -- when present, this is an extra,
+                // independent signal alongside title/year that a same-titled
+                // movie and series can't both satisfy.
                 const postType = (post as any).type;
                 if (isStrictMatch(item.title, post.title, item.year, postYear, item.type, postType)) {
                   matches.push(post);
@@ -665,16 +670,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 // there's genuinely nothing left to disqualify it with.
                 if (
                   controller.signal.aborted ||
-                  !isAmbiguousYearMatch(item.title, post.title, item.year, postYear)
+                  !isAmbiguousYearMatch(item.title, post.title, item.year, postYear, item.type, postType)
                 ) {
-                  return;
-                }
-                // Even with no year on either side to compare, a
-                // season/episode marker in the search result's own title
-                // (or an explicit type field) still settles it -- no need
-                // to spend a metadata lookup on a candidate that's already
-                // provably the wrong kind of release.
-                if (hasTypeMismatch(item.title, post.title, item.type, postType)) {
                   return;
                 }
                 try {
@@ -684,6 +681,20 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   });
                   if (controller.signal.aborted) return;
                   const metaImdbId = (info as any)?.imdbId;
+                  // The provider's own info page for this exact post/link is
+                  // the strongest type signal available for it -- stronger
+                  // than the search-result's `type` (if any), and it's what
+                  // actually explains the original bug: a type-scoped
+                  // Cinemeta lookup below (item.type = 'series') against a
+                  // movie's imdb id typically resolves nothing, so metaYear
+                  // stays undefined -- which the old code then treated as
+                  // "no year anywhere, nothing to disqualify with" and
+                  // accepted anyway. Checking info.type first catches that
+                  // case before it ever gets there.
+                  const metaType = (info as any)?.type;
+                  if (mediaKindsConflict(item.type, metaType)) {
+                    return;
+                  }
                   let metaYear: string | undefined;
                   if (metaImdbId) {
                     const cMeta = await fetchMatchingCinemetaMeta(metaImdbId, item.type, post.title);
@@ -696,18 +707,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   if (controller.signal.aborted) return;
                   if (
                     !metaYear ||
-                    isStrictMatch(item.title, post.title, item.year, metaYear, item.type, postType)
+                    isStrictMatch(item.title, post.title, item.year, metaYear, item.type, metaType)
                   ) {
                     matches.push(post);
                   }
                 } catch (metaErr) {
                   // Couldn't resolve this candidate's own metadata -- fall
                   // back to the previous permissive behaviour rather than
-                  // silently dropping a possibly-correct match. The type
-                  // guard above already ran, so this still can't let a
-                  // provably-wrong-kind result slip through just because
-                  // its metadata lookup happened to fail.
-                  if (!controller.signal.aborted) matches.push(post);
+                  // silently dropping a possibly-correct match, but still
+                  // honor a known type conflict from the search result
+                  // itself (postType) or the raw scraped titles, since that
+                  // much doesn't require the failed network call.
+                  if (
+                    !controller.signal.aborted &&
+                    !mediaKindsConflict(item.type, postType, item.title, post.title)
+                  ) {
+                    matches.push(post);
+                  }
                 }
               }),
             );
