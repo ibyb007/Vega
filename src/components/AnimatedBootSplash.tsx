@@ -106,7 +106,23 @@ const AnimatedBootSplash: React.FC<Props> = ({ onAnimationEnd }) => {
   }, []);
 
   return (
-    <Animated.View {...container} style={[container.style, { opacity: containerOpacity }]}>
+    // `container.style` from useHideAnimation is `flex: 1`, meant for this
+    // to BE the app's root view. In App.tsx it's instead rendered as one
+    // sibling among several inside a flex column that already has another
+    // `flex: 1` child (the real screens) -- so without overriding this,
+    // React Native splits the available height between the two, and the
+    // splash only ever gets squeezed into a fraction of the screen (the
+    // bottom half, since it renders last) instead of covering it. That's
+    // also what breaks the wordmark reveal: its position/timing assume a
+    // full-height container, so the animation stalls and the fail-safe
+    // timeout is what actually closes it a few seconds late, not the real
+    // sequence completing. `styles.fullScreenOverlay` below pulls this
+    // completely out of the flex flow so it can no longer be squeezed by
+    // any sibling, regardless of where it's mounted in App.tsx.
+    <Animated.View
+      {...container}
+      style={[container.style, styles.fullScreenOverlay, { opacity: containerOpacity }]}
+    >
       <Animated.Image
         {...logo}
         style={[
@@ -163,6 +179,19 @@ const AnimatedBootSplash: React.FC<Props> = ({ onAnimationEnd }) => {
 };
 
 const styles = StyleSheet.create({
+  fullScreenOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    // Belt-and-suspenders for Android's paint order: normally the last
+    // sibling in App.tsx paints on top regardless, but pinning this above
+    // everything explicitly means it stays correct even if this component
+    // ever gets moved earlier in the tree later.
+    elevation: 999,
+    zIndex: 999,
+  },
   wordmarkRow: {
     position: 'absolute',
     left: 0,
