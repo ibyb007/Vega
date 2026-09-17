@@ -7,6 +7,63 @@ const BRACKETED = /\[[^\]]*\]|\([^)]*\)|\{[^}]*\}/g;
 const NON_WORD = /[^\w\s]/gi;
 const WHITESPACE = /\s+/g;
 
+// Unambiguous season/episode markers in a raw (un-truncated) title --
+// "S01E04", "S01", "Season 2", "Complete Series", "Episode 5". Deliberately
+// narrow: this is only ever used to *disqualify* a match, so it must never
+// fire on a plain movie title. It does not try to detect "this is a movie"
+// the same way -- absence of a marker proves nothing, since plenty of
+// legitimate movie and series titles alike carry neither.
+const SERIES_MARKER =
+  /\b(s\d{1,2}e\d{1,3}|s\d{1,2}(?![a-z\d])|season\s*\d+|complete\s*(series|season)|all\s*episodes?|episodes?\s*\d+)\b/i;
+
+/** True when raw title text itself unambiguously reads as series/episode content. */
+export const isSeriesTitle = (raw?: string): boolean => SERIES_MARKER.test(raw || '');
+
+type ReleaseKind = 'series' | 'movie' | 'unknown';
+
+/**
+ * Classifies a side of a match as 'series', 'movie', or 'unknown' -- an
+ * explicit `type` field (from the catalog item or a provider result that
+ * happens to carry one) is trusted first; only when that's absent does raw
+ * title text get a chance, and only to detect 'series' (see SERIES_MARKER
+ * above). Everything else stays 'unknown' rather than being guessed at,
+ * since a false 'movie' classification would wrongly veto a real match.
+ */
+const classifyReleaseKind = (explicitType: string | undefined, title: string): ReleaseKind => {
+  if (explicitType === 'series' || explicitType === 'tv') return 'series';
+  if (explicitType === 'movie') return 'movie';
+  return isSeriesTitle(title) ? 'series' : 'unknown';
+};
+
+/**
+ * True only when there's confident, independent evidence the two sides are
+ * different kinds of release (a movie result under a series target, or vice
+ * versa) -- an explicit `type` field disagreeing, or one side's raw title
+ * carrying an unambiguous season/episode marker the other side's classified
+ * kind contradicts. This never asserts a match on its own, only a veto: if
+ * either side can't be classified, it returns false and leaves the
+ * decision to the rest of the title/year logic.
+ *
+ * This exists as its own export (not folded silently into `isStrictMatch`)
+ * because it's also the right guard for the *permissive* fallback paths
+ * that accept a candidate specifically because the year couldn't be
+ * resolved (an ambiguous-year match with no per-candidate metadata, or a
+ * metadata lookup that errored out) -- exactly the case a type mismatch
+ * needs to still be able to veto, since those paths have nothing else left
+ * to disqualify with.
+ */
+export const hasTypeMismatch = (
+  targetTitle: string,
+  candidateTitle: string,
+  targetType?: string,
+  candidateType?: string,
+): boolean => {
+  const targetKind = classifyReleaseKind(targetType, targetTitle);
+  const candidateKind = classifyReleaseKind(candidateType, candidateTitle);
+  if (targetKind === 'unknown' || candidateKind === 'unknown') return false;
+  return targetKind !== candidateKind;
+};
+
 // Marks where release/scene metadata starts in a scraped addon title
 // Everything from the first match onward is truncated rather than just
 // stripped in place, since addons chain an open-ended, unpredictable list
@@ -92,8 +149,19 @@ export const isStrictMatch = (
   candidateTitle: string,
   targetYear?: string,
   candidateYear?: string,
+  targetType?: string,
+  candidateType?: string,
 ): boolean => {
   if (!targetTitle || !candidateTitle) return false;
+
+  // A confidently-known type mismatch (movie vs series) is an instant veto,
+  // ahead of everything else -- title/year normalization alone can't tell
+  // "The Gentlemen (2019)" the movie from "The Gentlemen" the running
+  // series when a provider's search result happens to omit a usable year,
+  // but a season/episode marker or an explicit type field settles it.
+  if (hasTypeMismatch(targetTitle, candidateTitle, targetType, candidateType)) {
+    return false;
+  }
 
   const normTarget = cleanTitle(targetTitle);
   const normCandidate = cleanTitle(candidateTitle);
