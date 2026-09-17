@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, StyleSheet, StatusBar, Dimensions, BackHandler } from 'react-native';
-import BootSplash from 'react-native-bootsplash';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/client';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -10,6 +9,7 @@ import GlobalErrorBoundary from './components/GlobalErrorBoundary';
 import WafWebViewDialog from './components/WafWebViewDialog';
 import ProviderSandboxHost from './components/ProviderSandboxHost';
 import AppDialogHost from './components/AppDialogHost';
+import AnimatedBootSplash from './components/AnimatedBootSplash';
 import { syncDohSettings } from './lib/services/dohService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
 import useContentStore from './lib/zustand/contentStore';
@@ -67,6 +67,11 @@ export default function App() {
   // no stray-focus-grab-during-teardown window to guard against.
   const screenBackHandlersRef = useRef<Partial<Record<TVRoute, () => boolean>>>({});
   const currentProvider = useContentStore((state) => state.provider);
+  // Drives the animated "VEGA TV" boot splash handoff (see
+  // AnimatedBootSplash) -- true until its one-shot reveal/fade-out
+  // animation finishes, at which point it unmounts and reveals the app
+  // underneath, which has been mounting and fetching this entire time.
+  const [showBootAnim, setShowBootAnim] = useState(true);
 
   // Marks a tab "dirty" the moment the user actually navigates away from it
   // to a *different* rail tab. The next time that tab is shown again, its
@@ -135,7 +140,11 @@ export default function App() {
   );
 
   useEffect(() => {
-    BootSplash.hide({ fade: false }).catch(() => {});
+    // No BootSplash.hide() call here anymore -- AnimatedBootSplash (see
+    // render below) owns hiding the native splash itself, the instant it
+    // mounts, via useHideAnimation. Everything else in this effect keeps
+    // running immediately and concurrently regardless, exactly as before:
+    // none of it is gated on the splash animation finishing.
     syncDohSettings().catch((e) => console.warn('[DoH] Startup error:', e));
     try {
       updateProvidersService.startAutomaticUpdateCheck();
@@ -409,6 +418,10 @@ export default function App() {
 
                 <WafWebViewDialog />
                 <ProviderSandboxHost />
+
+                {showBootAnim && (
+                  <AnimatedBootSplash onAnimationEnd={() => setShowBootAnim(false)} />
+                )}
               </View>
             </QueryClientProvider>
           </GlobalErrorBoundary>
