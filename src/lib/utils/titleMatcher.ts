@@ -7,63 +7,6 @@ const BRACKETED = /\[[^\]]*\]|\([^)]*\)|\{[^}]*\}/g;
 const NON_WORD = /[^\w\s]/gi;
 const WHITESPACE = /\s+/g;
 
-// Unambiguous season/episode markers in a raw (un-truncated) title --
-// "S01E04", "S01", "Season 2", "Complete Series", "Episode 5". Deliberately
-// narrow: this is only ever used to *disqualify* a match, so it must never
-// fire on a plain movie title. It does not try to detect "this is a movie"
-// the same way -- absence of a marker proves nothing, since plenty of
-// legitimate movie and series titles alike carry neither.
-const SERIES_MARKER =
-  /\b(s\d{1,2}e\d{1,3}|s\d{1,2}(?![a-z\d])|season\s*\d+|complete\s*(series|season)|all\s*episodes?|episodes?\s*\d+)\b/i;
-
-/** True when raw title text itself unambiguously reads as series/episode content. */
-export const isSeriesTitle = (raw?: string): boolean => SERIES_MARKER.test(raw || '');
-
-type ReleaseKind = 'series' | 'movie' | 'unknown';
-
-/**
- * Classifies a side of a match as 'series', 'movie', or 'unknown' -- an
- * explicit `type` field (from the catalog item or a provider result that
- * happens to carry one) is trusted first; only when that's absent does raw
- * title text get a chance, and only to detect 'series' (see SERIES_MARKER
- * above). Everything else stays 'unknown' rather than being guessed at,
- * since a false 'movie' classification would wrongly veto a real match.
- */
-const classifyReleaseKind = (explicitType: string | undefined, title: string): ReleaseKind => {
-  if (explicitType === 'series' || explicitType === 'tv') return 'series';
-  if (explicitType === 'movie') return 'movie';
-  return isSeriesTitle(title) ? 'series' : 'unknown';
-};
-
-/**
- * True only when there's confident, independent evidence the two sides are
- * different kinds of release (a movie result under a series target, or vice
- * versa) -- an explicit `type` field disagreeing, or one side's raw title
- * carrying an unambiguous season/episode marker the other side's classified
- * kind contradicts. This never asserts a match on its own, only a veto: if
- * either side can't be classified, it returns false and leaves the
- * decision to the rest of the title/year logic.
- *
- * This exists as its own export (not folded silently into `isStrictMatch`)
- * because it's also the right guard for the *permissive* fallback paths
- * that accept a candidate specifically because the year couldn't be
- * resolved (an ambiguous-year match with no per-candidate metadata, or a
- * metadata lookup that errored out) -- exactly the case a type mismatch
- * needs to still be able to veto, since those paths have nothing else left
- * to disqualify with.
- */
-export const hasTypeMismatch = (
-  targetTitle: string,
-  candidateTitle: string,
-  targetType?: string,
-  candidateType?: string,
-): boolean => {
-  const targetKind = classifyReleaseKind(targetType, targetTitle);
-  const candidateKind = classifyReleaseKind(candidateType, candidateTitle);
-  if (targetKind === 'unknown' || candidateKind === 'unknown') return false;
-  return targetKind !== candidateKind;
-};
-
 // Marks where release/scene metadata starts in a scraped addon title
 // Everything from the first match onward is truncated rather than just
 // stripped in place, since addons chain an open-ended, unpredictable list
@@ -140,9 +83,80 @@ const yearsAreCompatible = (targetYear?: string, candidateYear?: string): boolea
   return Math.abs(tY - cY) <= YEAR_TOLERANCE;
 };
 
+// ---------------------------------------------------------------------------
+// Media kind (movie vs series) matching
+// ---------------------------------------------------------------------------
+// Year tolerance alone doesn't disambiguate a movie and a series that happen
+// to share a title and land within YEAR_TOLERANCE of each other (or where
+// one side's year is simply missing) -- e.g. the 2019 "The Gentlemen" movie
+// vs. the 2024- "The Gentlemen" series. Where the kind of release is actually
+// known (from the catalog item's own `type`, a provider's resolved metadata,
+// or season/episode markers in the scraped title itself), that's used as an
+// extra, independent veto alongside the year check.
+
+const SERIES_TITLE_MARKER =
+  /\b(s\d{1,2}e\d{1,3}|s\d{1,2}(?!\w)|season\s*\d*|complete\s*series|all\s*episodes?|episodes?\s*\d+)\b/i;
+
+/** True when the raw scraped title itself carries a season/episode marker. */
+export const isSeriesTitle = (raw: string): boolean => SERIES_TITLE_MARKER.test(raw || '');
+
+/**
+ * Folds the various spellings addons/Cinemeta use for content kind
+ * ('series', 'tv', 'tvSeries', 'show', 'movie', 'film', ...) down to the two
+ * kinds this app cares about. Returns undefined for anything unrecognized --
+ * callers treat "unrecognized" the same as "unknown", never as a guessed
+ * movie.
+ */
+export const normalizeMediaKind = (raw?: string | null): 'movie' | 'series' | undefined => {
+  if (!raw) return undefined;
+  const v = String(raw).trim().toLowerCase();
+  if (['series', 'tv', 'tvseries', 'tv_series', 'show', 'tvshow', 'tv_show'].includes(v)) return 'series';
+  if (['movie', 'film'].includes(v)) return 'movie';
+  return undefined;
+};
+
+/**
+ * Best-effort "is this a series?" read on one side of a match. Prefers an
+ * explicit type field (e.g. the catalog item's `type`, or a provider's own
+ * resolved metadata `type`) and only falls back to scanning the title text
+ * for season/episode markers when no type field is available. Returns
+ * undefined -- not `false` -- when there's genuinely no signal either way:
+ * the *absence* of "Season"/"S01" in a title is not proof a release is a
+ * movie, since plenty of legitimate series posts carry no season tag at all.
+ */
+export const inferMediaKind = (type?: string | null, title?: string): 'movie' | 'series' | undefined => {
+  const fromType = normalizeMediaKind(type);
+  if (fromType) return fromType;
+  if (title && isSeriesTitle(title)) return 'series';
+  return undefined;
+};
+
+/**
+ * True only when both sides have a *confident* kind and they disagree. Never
+ * trips on missing/unknown data on either side -- this is a veto for a known
+ * conflict, not a requirement that both sides be classified, so it can't
+ * turn into a new source of false negatives when a provider simply doesn't
+ * report a type.
+ */
+export const mediaKindsConflict = (
+  targetType?: string | null,
+  candidateType?: string | null,
+  targetTitle?: string,
+  candidateTitle?: string,
+): boolean => {
+  const targetKind = inferMediaKind(targetType, targetTitle);
+  const candidateKind = inferMediaKind(candidateType, candidateTitle);
+  if (!targetKind || !candidateKind) return false;
+  return targetKind !== candidateKind;
+};
+
 /**
  * True when `candidateTitle` should be treated as the same release as
- * `targetTitle` (the poster the user clicked).
+ * `targetTitle` (the poster the user clicked). `targetType`/`candidateType`
+ * are optional -- pass them whenever a `'movie' | 'series'` type is known
+ * (catalog item type, provider search-result type, resolved metadata type)
+ * so an exact-title-and-compatible-year match can still be vetoed when the
+ * two sides are confidently different kinds of release.
  */
 export const isStrictMatch = (
   targetTitle: string,
@@ -154,12 +168,7 @@ export const isStrictMatch = (
 ): boolean => {
   if (!targetTitle || !candidateTitle) return false;
 
-  // A confidently-known type mismatch (movie vs series) is an instant veto,
-  // ahead of everything else -- title/year normalization alone can't tell
-  // "The Gentlemen (2019)" the movie from "The Gentlemen" the running
-  // series when a provider's search result happens to omit a usable year,
-  // but a season/episode marker or an explicit type field settles it.
-  if (hasTypeMismatch(targetTitle, candidateTitle, targetType, candidateType)) {
+  if (mediaKindsConflict(targetType, candidateType, targetTitle, candidateTitle)) {
     return false;
   }
 
@@ -233,14 +242,25 @@ export const isStrictMatch = (
  * at that point there's genuinely no year anywhere for this source to
  * disqualify it with, which is the one case the permissive fallback
  * should still apply to.
+ *
+ * `targetType`/`candidateType` follow the same contract as in
+ * `isStrictMatch`: when both sides confidently resolve to different kinds of
+ * release, this returns false outright -- there's no ambiguity left to
+ * verify, the candidate is simply the wrong kind.
  */
 export const isAmbiguousYearMatch = (
   targetTitle: string,
   candidateTitle: string,
   targetYear?: string,
   candidateYear?: string,
+  targetType?: string,
+  candidateType?: string,
 ): boolean => {
   if (!targetTitle || !candidateTitle) return false;
+
+  if (mediaKindsConflict(targetType, candidateType, targetTitle, candidateTitle)) {
+    return false;
+  }
 
   const normTarget = cleanTitle(targetTitle);
   const normCandidate = cleanTitle(candidateTitle);
