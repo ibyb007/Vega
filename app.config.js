@@ -40,6 +40,7 @@ module.exports = () => {
         },
       },
     ],
+    './plugins/with-android-video-nocompress.js',
     'react-native-edge-to-edge',
     './plugins/with-dynamic-launcher-splash.js',
     [
