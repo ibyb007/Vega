@@ -18,9 +18,9 @@ import BootSplash from 'react-native-bootsplash';
 const splashSource = require('../../assets/bootsplash/splash.mp4');
 
 // Buffer above splash.mp4's real (sub-2s) length. Same purpose as the old
-// component's fail-safe timeout: if `onEnd`/`onError` never fire for
-// whatever reason (a codec hiccup, a fast-refresh remount mid-playback in
-// dev), don't leave this covering the app forever.
+// component's fail-safe timeout: if `onEnd` never fires for whatever
+// reason (a codec hiccup, a fast-refresh remount mid-playback in dev),
+// don't leave this covering the app forever.
 const FAIL_SAFE_MS = 4000;
 
 type Props = {
@@ -36,29 +36,40 @@ type Props = {
 const AnimatedBootSplash: React.FC<Props> = ({ onAnimationEnd }) => {
   const videoRef = useRef<VideoRef>(null);
   const finishedRef = useRef(false);
+  const hiddenRef = useRef(false);
 
-  const finish = useCallback(() => {
-    if (finishedRef.current) return;
-    finishedRef.current = true;
-    onAnimationEnd();
-  }, [onAnimationEnd]);
-
-  // Deliberately NOT called on mount. Mounting this component doesn't
-  // mean the video decoder has produced a visible frame yet -- hiding the
-  // native splash before that would show a black flash in the gap between
-  // "native splash gone" and "video actually painting". `onReadyForDisplay`
-  // is react-native-video's callback for "first frame is on screen now",
-  // which is the actual moment the handoff is safe.
-  const handleReadyForDisplay = useCallback(() => {
+  // Idempotent by design (react-native-bootsplash no-ops if already
+  // hidden), so every path below -- mount, ready, error, fail-safe -- can
+  // safely call this without worrying about double-hiding.
+  const hideNativeSplash = useCallback(() => {
+    if (hiddenRef.current) return;
+    hiddenRef.current = true;
     BootSplash.hide({ fade: false }).catch(() => {});
   }, []);
 
-  // If the video source fails to load entirely, still get the native
-  // splash off screen (don't leave the user stuck on it) and close out.
-  const handleError = useCallback(() => {
-    BootSplash.hide({ fade: false }).catch(() => {});
-    finish();
-  }, [finish]);
+  const finish = useCallback(() => {
+    // Always hide the native splash on the way out, no matter which path
+    // got us here -- this was the actual bug last time: the fail-safe
+    // path called onAnimationEnd() but never hide(), so if the video
+    // never fired a ready callback, the native splash silently stayed on
+    // screen forever (above this component, so its own video was never
+    // even visible, just hidden underneath it).
+    hideNativeSplash();
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    onAnimationEnd();
+  }, [hideNativeSplash, onAnimationEnd]);
+
+  // Called on mount rather than waiting on a video callback. This IS the
+  // fix: `onReadyForDisplay` wasn't firing reliably here, and since this
+  // overlay's own background (below) already matches the native splash's
+  // background color 1:1, there's nothing to gain by waiting for it --
+  // worst case is a solid black frame for a few ms before the video's
+  // first frame paints, which is visually identical to the native splash
+  // that was already showing.
+  useEffect(() => {
+    hideNativeSplash();
+  }, [hideNativeSplash]);
 
   useEffect(() => {
     const failSafe = setTimeout(finish, FAIL_SAFE_MS);
@@ -70,8 +81,10 @@ const AnimatedBootSplash: React.FC<Props> = ({ onAnimationEnd }) => {
     // true full-screen overlay regardless of where it's mounted in
     // App.tsx's flex tree -- without it this becomes a flex sibling again
     // and gets squeezed by whatever else is in that column, which is
-    // exactly what caused the last two bugs. elevation/zIndex are a
+    // exactly what caused an earlier bug. elevation/zIndex are a
     // belt-and-suspenders on top of that for Android's paint order.
+    // backgroundColor matches manifest.json's "background": "#000000" so
+    // any gap before the video's first frame paints is invisible.
     <Video
       ref={videoRef}
       source={splashSource}
@@ -81,9 +94,8 @@ const AnimatedBootSplash: React.FC<Props> = ({ onAnimationEnd }) => {
       repeat={false}
       paused={false}
       controls={false}
-      onReadyForDisplay={handleReadyForDisplay}
       onEnd={finish}
-      onError={handleError}
+      onError={finish}
     />
   );
 };
