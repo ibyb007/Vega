@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { StyleSheet } from 'react-native';
-import Video, { ResizeMode, VideoRef, VideoViewType } from 'react-native-video';
+import Video, { ResizeMode, VideoRef } from 'react-native-video';
 import BootSplash from 'react-native-bootsplash';
 
 // This is the one thing that has to line up: splash.mp4's own FIRST FRAME
@@ -90,22 +90,12 @@ const AnimatedBootSplash: React.FC<Props> = ({ onAnimationEnd }) => {
       source={splashSource}
       style={[StyleSheet.absoluteFillObject, styles.overlay]}
       resizeMode={ResizeMode.COVER}
-      // Force TextureView to allow standard view layer stacking on Android TV
-      viewType={VideoViewType.TEXTURE}
-      useTextureView={true}
-      muted={true}
-      volume={0}
+      muted
       repeat={false}
       paused={false}
       controls={false}
-      ignoreSilentSwitch="ignore"
-      mixWithOthers="mix"
-      playInBackground={false}
       onEnd={finish}
-      onError={(e) => {
-        console.warn('[AnimatedBootSplash] Video playback error:', e);
-        finish();
-      }}
+      onError={finish}
     />
   );
 };
