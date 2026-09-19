@@ -312,6 +312,25 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // button as each one appears; see shouldPreferResultsFocus.
   const resumeFocusPendingRef = useRef(false);
 
+  // Shared fallback used both by the rail's Right-key recovery below and by
+  // the post-mount focus safety-net further down: if the item we think was
+  // last focused (`lastFocusedDiscoverResultsKey`) is missing or has no live
+  // native view right now, there's nothing for a bare focus() to land on --
+  // reroute to the always-present Back button (scrolled into view) instead
+  // of silently doing nothing. `invoke` is whatever actually issues the real
+  // focus request (the rail's returned trigger, or this screen's own
+  // `requestRefocus`) -- both behave identically, so this can drive either.
+  const reclaimResultsFocusOrFallback = useCallback((invoke: () => void) => {
+    const key = lastFocusedDiscoverResultsKey;
+    if (!key || !mountedResultsKeysRef.current.has(key)) {
+      lastFocusedDiscoverResultsKey = 'results:back';
+      resultsScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+      setTimeout(invoke, 50);
+      return;
+    }
+    invoke();
+  }, []);
+
   // The rail's Right key asks the screen to re-focus whatever it last had
   // focused. If that item is no longer there (episode list changed, source
   // deselected...) or has been scrolled out of the viewport, the request
@@ -327,18 +346,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       }
       onRegisterReturnFocusTrigger(() => {
         if (screenModeRef.current === 'results') {
-          const key = lastFocusedDiscoverResultsKey;
-          if (!key || !mountedResultsKeysRef.current.has(key)) {
-            lastFocusedDiscoverResultsKey = 'results:back';
-            resultsScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
-            setTimeout(trigger, 50);
-            return;
-          }
+          reclaimResultsFocusOrFallback(trigger);
+          return;
         }
         trigger();
       });
     },
-    [onRegisterReturnFocusTrigger],
+    [onRegisterReturnFocusTrigger, reclaimResultsFocusOrFallback],
   );
 
   const {
@@ -392,18 +406,47 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     Boolean(restoredState?.activeSourcePost && restoredState.episodes && restoredState.episodes.length > 0),
   );
 
+  // Belt-and-suspenders for landing directly in results on mount -- either
+  // resuming an existing page-2 session (most commonly: Back from the
+  // player) or opening straight into one from Home's Continue Watching card
+  // (see `startInResults`/`pendingDiscoverOpenItem` above). The scroll-
+  // restore path right below already re-issues a real focus request when
+  // the last-focused item was scrolled out of view, but plenty of sessions
+  // never scrolled at all (`lastResultsScrollY` stays 0) -- e.g. hitting
+  // Play without scrolling past the first source. Those still race the
+  // exact same native focus hazard on the way back from the player: the
+  // nav rail is transitioning from hidden to visible again at the same
+  // moment this whole screen is remounting from scratch, and if Android's
+  // default focus search resolves before this screen's own
+  // `hasTVPreferredFocus` request wins, it lands on the rail (observed as
+  // its "Search" row) instead -- with nothing below re-claiming it, since
+  // the scroll-restore branch only ever fires when there's an offset to
+  // restore. This flag makes the same one-time, post-layout re-assertion
+  // fire for every direct-to-results mount, not just the scrolled ones.
+  const resultsFocusSafetyNeededRef = useRef<boolean>(screenModeRef.current === 'results');
+
   const handleResultsContentSizeChange = useCallback(() => {
     const y = restoreScrollYRef.current;
-    if (y === null) return;
-    restoreScrollYRef.current = null;
-    const key = lastFocusedDiscoverResultsKey;
-    const resolvable = !!key && mountedResultsKeysRef.current.has(key);
-    resultsScrollRef.current?.scrollTo({ x: 0, y: resolvable ? y : 0, animated: false });
-    // Give the scroll a beat to update which children are attached, then
-    // re-issue the real focus request for the item the person left off on
-    // (or the Back button if that item is gone).
-    setTimeout(() => requestRefocus(), 60);
-  }, [requestRefocus]);
+    if (y !== null) {
+      restoreScrollYRef.current = null;
+      resultsFocusSafetyNeededRef.current = false;
+      const key = lastFocusedDiscoverResultsKey;
+      const resolvable = !!key && mountedResultsKeysRef.current.has(key);
+      resultsScrollRef.current?.scrollTo({ x: 0, y: resolvable ? y : 0, animated: false });
+      // Give the scroll a beat to update which children are attached, then
+      // re-issue the real focus request for the item the person left off on
+      // (or the Back button if that item is gone).
+      setTimeout(() => requestRefocus(), 60);
+      return;
+    }
+    if (resultsFocusSafetyNeededRef.current) {
+      resultsFocusSafetyNeededRef.current = false;
+      // No scroll to restore, but still worth one re-assertion in case the
+      // rail won the initial focus race -- a no-op if it didn't, since this
+      // just re-requests focus on the same item that should already have it.
+      reclaimResultsFocusOrFallback(() => requestRefocus());
+    }
+  }, [requestRefocus, reclaimResultsFocusOrFallback]);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
   const [catalogs, setCatalogs] = useState<DiscoverCatalog[]>(savedDiscoverState?.catalogs || []);
