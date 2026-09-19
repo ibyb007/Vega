@@ -1,8 +1,22 @@
 import {useEffect} from 'react';
+import {InteractionManager} from 'react-native';
 import {useQuery} from '@tanstack/react-query';
 import {getHomePageData, HomePageData} from '../getHomepagedata';
 import {Content} from '../zustand/contentStore';
 import {cacheStorage} from '../storage';
+
+// How long a fetched home page counts as fresh. Home unmounts every time the
+// user opens Details / the player / another rail tab, so with the old
+// `staleTime: 0` + `refetchOnMount: 'always'` every single return to Home
+// re-fetched *every catalog of every active source* (twice the work once a
+// second source is enabled) and re-serialised the results, right while the
+// user was trying to navigate. Cached rows still show instantly either way;
+// this only controls how often they are silently revalidated.
+const HOME_STALE_TIME_MS = 5 * 60 * 1000;
+
+// Last data reference written to MMKV per cache key, so re-mounting Home
+// with unchanged data doesn't JSON.stringify a multi-hundred-KB payload again.
+const persistedSnapshots = new Map<string, unknown>();
 
 interface UseHomePageDataOptions {
   provider: Content['provider'];
@@ -22,7 +36,7 @@ export const useHomePageData = ({
       return data;
     },
     enabled: enabled && !!provider?.value,
-    staleTime: 0, // Mark stale immediately so it revalidates in the background
+    staleTime: HOME_STALE_TIME_MS,
     gcTime: 60 * 60 * 1000, // 1 hour
     retry: (failureCount, error) => {
       if (error.name === 'AbortError') {
@@ -43,17 +57,39 @@ export const useHomePageData = ({
       }
       return undefined;
     },
+    // Cache-seeded data is treated as already stale (updatedAt 0), so the
+    // first mount of a session always revalidates it in the background.
     initialDataUpdatedAt: 0,
-    refetchOnMount: 'always',
+    // Refetch on mount only when the data is actually stale (see above).
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: 'always',
   });
 
   useEffect(() => {
-    if (query.data && query.data.length > 0 && provider?.value) {
-      cacheStorage.setString(cacheKey, JSON.stringify(query.data));
+    const data = query.data;
+    if (!data || data.length === 0 || !provider?.value) {
+      return;
     }
-  }, [cacheKey, provider?.value, query.data]);
+    // dataUpdatedAt === 0 means this data *came from* the MMKV cache
+    // (initialData) -- writing it straight back is wasted work.
+    if (query.dataUpdatedAt === 0) {
+      return;
+    }
+    if (persistedSnapshots.get(cacheKey) === data) {
+      return;
+    }
+    persistedSnapshots.set(cacheKey, data);
+    // Serialising + writing a full home page is synchronous JS-thread work;
+    // do it once navigation/animations have settled instead of mid-input.
+    InteractionManager.runAfterInteractions(() => {
+      try {
+        cacheStorage.setString(cacheKey, JSON.stringify(data));
+      } catch {
+        // Cache write is best-effort.
+      }
+    });
+  }, [cacheKey, provider?.value, query.data, query.dataUpdatedAt]);
 
   return query;
 };
