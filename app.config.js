@@ -40,7 +40,11 @@ module.exports = () => {
         },
       },
     ],
-    './plugins/with-android-video-nocompress.js',
+    // with-android-video-nocompress.js removed: it only existed to make a
+    // *bundled local* splash.mp4 play from a release APK. Back on a fully
+    // static native splash now (see assets/bootsplash), so there's no
+    // local video asset left that needs it. react-native-video itself
+    // stays configured above -- still used for actual playback elsewhere.
     'react-native-edge-to-edge',
     './plugins/with-dynamic-launcher-splash.js',
     [
