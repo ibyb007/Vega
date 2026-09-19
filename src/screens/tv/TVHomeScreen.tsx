@@ -1,4 +1,13 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  useReducer,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import {
   View,
   Text,
@@ -26,14 +35,39 @@ import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
-import { getCachedMetadata, getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
-import { providerManager } from '../../lib/services/ProviderManager';
+import { getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 
 const ROW_HEIGHT = 235;
 const imdbMetaCache = new Map<string, any>();
+
+// ---------------------------------------------------------------------------
+// Performance tuning knobs (see the notes on HomeRow / HomeCard below).
+// ---------------------------------------------------------------------------
+// Stable empty fallback. `data: homeData = []` handed back a *new* array on
+// every render while a query had no data yet, which made every `useMemo`
+// downstream of it recompute on every render.
+const EMPTY_ROWS: any[] = [];
+// Cards mounted per row up front. More are appended as focus nears the end
+// of what is mounted, so a 40-poster row only pays for ~12 posters (views +
+// decoded bitmaps) until the user actually scrolls into it.
+const INITIAL_CARDS_PER_ROW = 12;
+const CARDS_PAGE = 10;
+const CARDS_LOOKAHEAD = 5;
+// Same idea vertically: rows are mounted up to this many rows below the row
+// that currently holds focus, and more are appended as focus moves down.
+// Rows are never unmounted again, so scroll offsets / focus memory of rows
+// already visited behave exactly as before.
+const ROW_LOOKAHEAD = 3;
+// Quick D-pad presses only update the hero once focus has rested for a
+// moment; each hero change swaps up to three (blurred) full-screen images.
+const HERO_APPLY_DELAY_MS = 80;
+const PREFETCH_DELAY_MS = 300;
+// The secondary source's fetch waits for the primary's to finish (so two
+// sources never hammer the provider sandbox at once) but never longer than this.
+const SECONDARY_FETCH_MAX_DELAY_MS = 4000;
 
 let lastFocusedKey: string | null = null;
 let lastFocusedRowIndex = 0;
@@ -88,6 +122,295 @@ const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Prom
   return null;
 };
 
+const tagRowsWithProvider = (rows: any[], providerValue?: string) =>
+  rows.map((row) => ({
+    ...row,
+    Posts: (row.Posts || []).map((post: any) => ({
+      ...post,
+      provider: post.provider || providerValue,
+    })),
+  }));
+
+// ---------------------------------------------------------------------------
+// Hero host
+//
+// The hero (backdrop + title/synopsis) used to live in TVHomeScreen's own
+// state, so *every* D-pad move -> setActiveHero -> re-rendered the whole
+// screen: every row, every card. With a second source active that is twice
+// as many rows. The hero state now lives here instead and TVHomeScreen
+// drives it imperatively, so a focus change only re-renders this component.
+// ---------------------------------------------------------------------------
+type HeroSetter = React.Dispatch<React.SetStateAction<TVHeroMedia | null>>;
+interface HeroHostHandle {
+  set: HeroSetter;
+}
+
+const HeroHost = React.memo(
+  forwardRef<HeroHostHandle>((_props, ref) => {
+    const [media, setMedia] = useState<TVHeroMedia | null>(null);
+    useImperativeHandle(ref, () => ({ set: setMedia }), []);
+    return <TVHeroMeta media={media} />;
+  })
+);
+
+// ---------------------------------------------------------------------------
+// HomeCard / HomeRow
+//
+// Both are memoised and receive only stable callbacks, so moving focus
+// between posters no longer re-renders (or re-runs ref callbacks for) every
+// poster on screen -- only the two posters whose own focus state changed.
+// Everything focus-related (keys, hasTVPreferredFocus, the row-0 nextFocusUp
+// pin, rail left-edge registration, refocus remount nonce) is the same logic
+// as before, just evaluated per card instead of inline in one giant map().
+// ---------------------------------------------------------------------------
+interface HomeCardProps {
+  item: any;
+  itemKey: string;
+  rowIndex: number;
+  pIndex: number;
+  isHistoryRow: boolean;
+  // Non-null only for the card that is the current "refocus" target; bumping
+  // it remounts the card so Android hands it real focus again.
+  refocusNonce: number | null;
+  onCardFocus: (
+    rowIndex: number,
+    item: any,
+    itemKey: string,
+    isHistory: boolean,
+    pIndex: number,
+  ) => void;
+  onCardPress: (rowIndex: number, item: any, itemKey: string, isHistory: boolean) => void;
+  onCardLongPress: (item: any, isHistory: boolean) => void;
+  registerItemRef: (itemKey: string, el: View | null) => void;
+}
+
+const HomeCard = React.memo(function HomeCard({
+  item,
+  itemKey,
+  rowIndex,
+  pIndex,
+  isHistoryRow,
+  refocusNonce,
+  onCardFocus,
+  onCardPress,
+  onCardLongPress,
+  registerItemRef,
+}: HomeCardProps) {
+  const isFirstInRow = pIndex === 0;
+  const isTopRow = rowIndex === 0;
+  const nodeRef = useRef<View | null>(null);
+
+  // Fresh launch/relaunch: Explicitly defaults to row 0, card 0 (1st Continue Watching poster if exists, else 1st provider card)
+  const shouldFocus = lastFocusedKey ? lastFocusedKey === itemKey : isTopRow && isFirstInRow;
+
+  const posterImage = item.poster || item.background || item.image;
+  const progressPercent =
+    item.duration && item.position
+      ? Math.min(100, Math.round((item.position / item.duration) * 100))
+      : 0;
+
+  // Stable per card (only changes if the card's identity/position does), so
+  // React no longer detaches/re-attaches it -- and re-fires its native
+  // bridge calls -- on every render of the screen.
+  const setRef = useCallback(
+    (el: View | null) => {
+      nodeRef.current = el;
+      registerItemRef(itemKey, el);
+      if (!el) return;
+      // Register as soon as this row mounts, not just on focus --
+      // registerRailLeftEdge's bridge call to the native rail is async
+      // (posts to the UI thread), so relying on onFocus alone leaves a real
+      // window where the user can press Left before that write lands.
+      if (isFirstInRow) {
+        registerRailLeftEdge('home', el);
+      }
+      // The topmost row has nothing above it, but Android's default
+      // geometric focus search doesn't know that. Pointing `nextFocusUp`
+      // at the card's own handle makes Up a no-op for row 0 without
+      // touching Left/Right/Down, which are wired separately.
+      if (isTopRow) {
+        const selfHandle = findNodeHandle(el);
+        if (selfHandle != null) {
+          (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+        }
+      }
+    },
+    [registerItemRef, itemKey, isFirstInRow, isTopRow]
+  );
+
+  const handleFocus = useCallback(() => {
+    onCardFocus(rowIndex, item, itemKey, isHistoryRow, pIndex);
+    // Only the first card of a row sits at the screen's left edge --
+    // re-register it every time it's focused so Left always reaches the
+    // Home rail button, from whichever row the user is on.
+    if (isFirstInRow) {
+      registerRailLeftEdge('home', nodeRef.current);
+    }
+    // Same re-assertion as in setRef, in case this card was focused (e.g.
+    // via the refocus remount path) before the ref callback's write landed.
+    if (isTopRow) {
+      const node = nodeRef.current as any;
+      const selfHandle = node ? findNodeHandle(node) : null;
+      if (selfHandle != null) {
+        node.setNativeProps?.({ nextFocusUp: selfHandle });
+      }
+    }
+  }, [onCardFocus, rowIndex, item, itemKey, isHistoryRow, pIndex, isFirstInRow, isTopRow]);
+
+  const handlePress = useCallback(
+    () => onCardPress(rowIndex, item, itemKey, isHistoryRow),
+    [onCardPress, rowIndex, item, itemKey, isHistoryRow]
+  );
+
+  const handleLongPress = useCallback(
+    () => onCardLongPress(item, isHistoryRow),
+    [onCardLongPress, item, isHistoryRow]
+  );
+
+  return (
+    <TVFocusablePressable
+      key={refocusNonce != null ? `${itemKey}-r${refocusNonce}` : itemKey}
+      ref={setRef}
+      hasTVPreferredFocus={shouldFocus}
+      scaleFocused={1.05}
+      focusedBorderColor="#FFFFFF"
+      borderRadius={8}
+      delayLongPress={350}
+      onFocus={handleFocus}
+      onPress={handlePress}
+      onLongPress={handleLongPress}
+      style={[styles.card, isHistoryRow && styles.cardCompact]}
+    >
+      {({ focused }) => (
+        <View style={styles.cardInner}>
+          <Image
+            source={{
+              uri: posterImage || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+            }}
+            style={styles.cardPoster}
+            resizeMode="cover"
+            // Remote images are otherwise decoded at their full source
+            // resolution on Android; posters are ~130x190dp, so have Fresco
+            // downsample them to the view size. This is a large memory (and
+            // GC-pause) saver once a second source doubles the poster count.
+            resizeMethod="resize"
+          />
+
+          {isHistoryRow && progressPercent > 0 && (
+            <View style={styles.historyMetaOverlay}>
+              <Text style={styles.historyPercentText}>{progressPercent}%</Text>
+              <View style={styles.progressBarTrack}>
+                <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
+              </View>
+            </View>
+          )}
+
+          {focused && <View style={styles.focusBorderGlow} />}
+        </View>
+      )}
+    </TVFocusablePressable>
+  );
+});
+
+interface HomeRowProps {
+  row: any;
+  rowIndex: number;
+  // Only set for the row that contains the refocus target (see the refocus
+  // trigger in TVHomeScreen), so other rows aren't re-rendered by it.
+  refocusKey: string | null;
+  refocusNonce: number;
+  onCardFocus: HomeCardProps['onCardFocus'];
+  onCardPress: HomeCardProps['onCardPress'];
+  onCardLongPress: HomeCardProps['onCardLongPress'];
+  registerItemRef: HomeCardProps['registerItemRef'];
+}
+
+const HomeRow = React.memo(function HomeRow({
+  row,
+  rowIndex,
+  refocusKey,
+  refocusNonce,
+  onCardFocus,
+  onCardPress,
+  onCardLongPress,
+  registerItemRef,
+}: HomeRowProps) {
+  const rowPosts: any[] = row.Posts || [];
+  const isHistoryRow = Boolean(row.isHistory);
+  const rowId = getRowId(row);
+
+  const [mountedCount, setMountedCount] = useState(INITIAL_CARDS_PER_ROW);
+  const totalRef = useRef(rowPosts.length);
+  totalRef.current = rowPosts.length;
+
+  // Whatever card holds (or last held) focus in this row must always be
+  // mounted -- e.g. coming back from Details to a poster that is well past
+  // the first screenful, or a refetch that reorders the row.
+  let focusedIdx = -1;
+  if (lastFocusedKey && lastFocusedKey.startsWith(`${rowId}::`)) {
+    for (let i = 0; i < rowPosts.length; i++) {
+      if (buildItemKey(row, rowPosts[i], i) === lastFocusedKey) {
+        focusedIdx = i;
+        break;
+      }
+    }
+  }
+  const renderCount = Math.min(
+    rowPosts.length,
+    Math.max(mountedCount, focusedIdx >= 0 ? focusedIdx + CARDS_PAGE : 0)
+  );
+
+  const handleCardFocus = useCallback<HomeCardProps['onCardFocus']>(
+    (rIdx, item, itemKey, isHistory, pIndex) => {
+      onCardFocus(rIdx, item, itemKey, isHistory, pIndex);
+      // Mount the next page of posters before focus can run off the end.
+      setMountedCount((c) =>
+        c < totalRef.current && pIndex >= c - CARDS_LOOKAHEAD ? c + CARDS_PAGE : c
+      );
+    },
+    [onCardFocus]
+  );
+
+  return (
+    <View style={styles.rowContainer}>
+      <View style={styles.rowTitleWrap}>
+        <Text style={styles.rowCategoryTitle}>{row.title}</Text>
+        {row.sourceLabel ? (
+          <Text style={styles.rowSourceLabel} numberOfLines={1}>
+            {row.sourceLabel}
+          </Text>
+        ) : null}
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.horizontalRowScroll}
+        removeClippedSubviews={false}
+      >
+        {rowPosts.slice(0, renderCount).map((item: any, pIndex: number) => {
+          const itemKey = buildItemKey(row, item, pIndex);
+          return (
+            <HomeCard
+              key={itemKey}
+              item={item}
+              itemKey={itemKey}
+              rowIndex={rowIndex}
+              pIndex={pIndex}
+              isHistoryRow={isHistoryRow}
+              refocusNonce={refocusKey === itemKey ? refocusNonce : null}
+              onCardFocus={handleCardFocus}
+              onCardPress={onCardPress}
+              onCardLongPress={onCardLongPress}
+              registerItemRef={registerItemRef}
+            />
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+});
+
 interface TVHomeScreenProps {
   onSelectItem: (item: any) => void;
   onResumeItem?: (item: any) => void;
@@ -136,19 +459,32 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const provider = useContentStore((state) => state.provider);
   const secondaryProvider = useContentStore((state) => state.secondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders);
-  const continueWatchingItems = useContinueWatchingStore((state) => state.items) || [];
+  const continueWatchingItems = useContinueWatchingStore((state) => state.items) || EMPTY_ROWS;
   const removeItemFromHistory = useContinueWatchingStore((state) => state.removeItem);
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
 
-  const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(null);
-  const [activeRowIndex, setActiveRowIndex] = useState<number>(lastFocusedRowIndex);
   const [itemToDelete, setItemToDelete] = useState<any | null>(null);
   const [confirmingRemoveAll, setConfirmingRemoveAll] = useState(false);
+  // How many rows are mounted (see ROW_LOOKAHEAD). Starts just far enough
+  // below wherever focus will be restored to.
+  const [visibleRowCount, setVisibleRowCount] = useState<number>(
+    () => lastFocusedRowIndex + ROW_LOOKAHEAD + 1
+  );
 
   const translateY = useSharedValue(-lastFocusedRowIndex * ROW_HEIGHT);
 
+  const heroHostRef = useRef<HeroHostHandle>(null);
+  const heroInitializedRef = useRef(false);
   const heroRequestIdRef = useRef(0);
+  const heroApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heroEnrichTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The screen's callbacks come from App.tsx as fresh inline arrows on every
+  // App render; read them through a ref so the memoised cards below never
+  // see a changed handler because of that.
+  const propsRef = useRef({ onSelectItem, onOpenDiscoverItem });
+  propsRef.current = { onSelectItem, onOpenDiscoverItem };
 
   const hasProviders = Boolean(
     installedProviders && installedProviders.length > 0 && provider?.value
@@ -159,15 +495,29 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       installedProviders?.some((p) => p.value === secondaryProvider.value)
   );
 
-  const { data: homeData = [], isLoading } = useHomePageData({
+  const primaryQuery = useHomePageData({
     provider,
     enabled: hasProviders,
   });
+  const homeData: any[] = primaryQuery.data ?? EMPTY_ROWS;
+  const isLoading = primaryQuery.isLoading;
 
-  const { data: secondaryHomeData = [], isLoading: isSecondaryLoading } = useHomePageData({
+  // Let the primary source finish its (re)fetch before the secondary one
+  // starts its own; both go through the same single provider-sandbox
+  // WebView, and hitting it with two full home-page fetches at once is what
+  // froze input. Cached rows for the secondary source still show instantly.
+  const [secondaryDelayElapsed, setSecondaryDelayElapsed] = useState(false);
+  useEffect(() => {
+    if (!hasSecondaryProvider) return;
+    const timer = setTimeout(() => setSecondaryDelayElapsed(true), SECONDARY_FETCH_MAX_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [hasSecondaryProvider]);
+
+  const secondaryQuery = useHomePageData({
     provider: secondaryProvider || provider,
-    enabled: hasSecondaryProvider,
+    enabled: hasSecondaryProvider && (!primaryQuery.isFetching || secondaryDelayElapsed),
   });
+  const secondaryHomeData: any[] = secondaryQuery.data ?? EMPTY_ROWS;
 
   // Hardware remote BACK: only handle this screen's own back-stack (the
   // remove/confirm dialog). If there's nothing local to close, report
@@ -192,56 +542,60 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }, [continueWatchingItems]);
 
-  const tagRowsWithProvider = (rows: any[], providerValue?: string) =>
-    rows.map((row) => ({
+  // Each source's rows are built in their own memo so a change to one of
+  // them (Continue Watching updating, the secondary source finishing its
+  // refetch) doesn't rebuild -- and hand new object identities to -- the
+  // others. That is what lets the memoised rows below skip re-rendering.
+  const historyRow = useMemo(
+    () =>
+      watchHistory.length > 0
+        ? {
+            title: 'Continue Watching',
+            filter: 'continue-watching',
+            Posts: watchHistory,
+            isHistory: true,
+          }
+        : null,
+    [watchHistory]
+  );
+
+  const primaryRows = useMemo(
+    () =>
+      tagRowsWithProvider(
+        homeData.filter((r) => r.Posts && r.Posts.length > 0),
+        provider?.value
+      ),
+    [homeData, provider?.value]
+  );
+
+  const secondaryProviderValue = secondaryProvider?.value;
+  const secondaryProviderName = secondaryProvider?.display_name;
+  const secondaryRows = useMemo(() => {
+    if (!hasSecondaryProvider) return EMPTY_ROWS;
+    return tagRowsWithProvider(
+      secondaryHomeData.filter((r) => r.Posts && r.Posts.length > 0),
+      secondaryProviderValue
+    ).map((row) => ({
       ...row,
-      Posts: (row.Posts || []).map((post: any) => ({
-        ...post,
-        provider: post.provider || providerValue,
-      })),
+      sourceLabel: secondaryProviderName,
     }));
+  }, [hasSecondaryProvider, secondaryHomeData, secondaryProviderValue, secondaryProviderName]);
 
   const displayRows = useMemo(() => {
     const rows: any[] = [];
-    if (watchHistory.length > 0) {
-      rows.push({
-        title: 'Continue Watching',
-        filter: 'continue-watching',
-        Posts: watchHistory,
-        isHistory: true,
-      });
-    }
-
-    const primaryRows = tagRowsWithProvider(
-      homeData.filter((r) => r.Posts && r.Posts.length > 0),
-      provider?.value,
-    );
+    if (historyRow) rows.push(historyRow);
     rows.push(...primaryRows);
-
-    if (hasSecondaryProvider) {
-      const secondaryRows = tagRowsWithProvider(
-        secondaryHomeData.filter((r) => r.Posts && r.Posts.length > 0),
-        secondaryProvider!.value,
-      ).map((row) => ({
-        ...row,
-        sourceLabel: secondaryProvider!.display_name,
-      }));
-      rows.push(...secondaryRows);
-    }
-
+    rows.push(...secondaryRows);
     return rows;
-  }, [
-    watchHistory,
-    homeData,
-    provider?.value,
-    hasSecondaryProvider,
-    secondaryHomeData,
-    secondaryProvider,
-  ]);
+  }, [historyRow, primaryRows, secondaryRows]);
 
   const updateHeroWithBestMetadata = useCallback(
-    (item: any, isHistory: boolean = false) => {
+    (item: any, isHistory: boolean = false, immediate: boolean = false) => {
       const requestId = ++heroRequestIdRef.current;
+      if (heroApplyTimerRef.current) {
+        clearTimeout(heroApplyTimerRef.current);
+        heroApplyTimerRef.current = null;
+      }
       if (heroEnrichTimerRef.current) {
         clearTimeout(heroEnrichTimerRef.current);
         heroEnrichTimerRef.current = null;
@@ -286,7 +640,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         ? `Resume watching (${progressPercent}%)`
         : item.extra || item.description || undefined;
 
-      setActiveHero({
+      const baseHero: TVHeroMedia = {
         title: item.title,
         subtitle: isHistory ? episodeLabel : undefined,
         backdropUrl: sourceBackdrop || posterImage || undefined,
@@ -298,7 +652,19 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         genres: item.genres?.length ? item.genres : undefined,
         hasLandscapeBackdrop: hasSourceBackdrop,
         isPosterFallback: !hasSourceBackdrop,
-      });
+      };
+
+      const applyBaseHero = () => {
+        heroApplyTimerRef.current = null;
+        if (requestId !== heroRequestIdRef.current) return;
+        heroHostRef.current?.set(baseHero);
+      };
+
+      if (immediate) {
+        applyBaseHero();
+      } else {
+        heroApplyTimerRef.current = setTimeout(applyBaseHero, HERO_APPLY_DELAY_MS);
+      }
 
       if (hasSourceBackdrop || !targetUrl || !targetProvider) return;
 
@@ -353,7 +719,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         if (requestId !== heroRequestIdRef.current) return;
         if (!backdrop && !description && !rating && !year && genres.length === 0 && cast.length === 0) return;
 
-        setActiveHero((prev) =>
+        heroHostRef.current?.set((prev) =>
           prev
             ? {
                 ...prev,
@@ -374,20 +740,32 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   );
 
   useEffect(() => {
-    if (!activeHero && displayRows.length > 0) {
+    // The hero host only exists once the real screen (not the loading /
+    // no-provider fallback) is on screen; wait for it before seeding.
+    if (heroInitializedRef.current || !heroHostRef.current) return;
+    if (displayRows.length > 0) {
       const firstRow = displayRows[0];
       if (firstRow?.Posts?.length > 0) {
-        updateHeroWithBestMetadata(firstRow.Posts[0], Boolean(firstRow.isHistory));
+        heroInitializedRef.current = true;
+        updateHeroWithBestMetadata(firstRow.Posts[0], Boolean(firstRow.isHistory), true);
       }
     }
-  }, [displayRows, activeHero, updateHeroWithBestMetadata]);
+  }, [displayRows, updateHeroWithBestMetadata, hasProviders, isLoading]);
 
   useEffect(() => {
     return () => {
       heroRequestIdRef.current += 1;
+      if (heroApplyTimerRef.current) {
+        clearTimeout(heroApplyTimerRef.current);
+        heroApplyTimerRef.current = null;
+      }
       if (heroEnrichTimerRef.current) {
         clearTimeout(heroEnrichTimerRef.current);
         heroEnrichTimerRef.current = null;
+      }
+      if (prefetchTimerRef.current) {
+        clearTimeout(prefetchTimerRef.current);
+        prefetchTimerRef.current = null;
       }
     };
   }, []);
@@ -397,6 +775,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const selectHoldTriggeredRef = useRef(false);
   const lastSelectKeyTimeRef = useRef(0);
   const itemRefsRef = useRef<Record<string, View | null>>({});
+
+  const registerItemRef = useCallback((itemKey: string, el: View | null) => {
+    itemRefsRef.current[itemKey] = el;
+  }, []);
 
   useEffect(() => {
     onRegisterEntryHandleGetter?.(() => {
@@ -422,7 +804,12 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     (rowIndex: number, item: any, itemKey: string, isHistory: boolean = false) => {
       lastFocusedKey = itemKey;
       lastFocusedRowIndex = rowIndex;
-      setActiveRowIndex(rowIndex);
+
+      // Mount more rows below before focus can reach the last mounted one.
+      // Bails out (no re-render) unless focus actually moved near the end.
+      setVisibleRowCount((count) =>
+        rowIndex + ROW_LOOKAHEAD + 1 > count ? rowIndex + ROW_LOOKAHEAD + 1 : count
+      );
 
       focusedHistoryItemRef.current = isHistory ? item : null;
       selectHoldStreakRef.current = 0;
@@ -435,14 +822,78 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
       updateHeroWithBestMetadata(item, isHistory);
 
+      // Warm the details cache only once focus has settled -- firing a
+      // provider sandbox call for every poster a held D-pad key sweeps
+      // across is pure overhead.
+      if (prefetchTimerRef.current) {
+        clearTimeout(prefetchTimerRef.current);
+        prefetchTimerRef.current = null;
+      }
       const targetUrl = item.infoUrl || item.link;
       const targetProvider = item.providerValue || item.provider || provider?.value;
       if (targetUrl && targetProvider) {
-        prefetchMetadata(targetUrl, targetProvider);
+        prefetchTimerRef.current = setTimeout(() => {
+          prefetchTimerRef.current = null;
+          prefetchMetadata(targetUrl, targetProvider);
+        }, PREFETCH_DELAY_MS);
       }
     },
     [translateY, updateHeroWithBestMetadata, provider?.value]
   );
+
+  const handleCardPress = useCallback(
+    (rowIndex: number, item: any, itemKey: string, isHistoryRow: boolean) => {
+      lastFocusedKey = itemKey;
+      lastFocusedRowIndex = rowIndex;
+
+      if (selectHoldTriggeredRef.current) {
+        selectHoldTriggeredRef.current = false;
+        return;
+      }
+
+      const { onSelectItem: selectItem, onOpenDiscoverItem: openDiscoverItem } = propsRef.current;
+      const posterImage = item.poster || item.background || item.image;
+
+      if (isHistoryRow) {
+        if (item.discoverSource && openDiscoverItem) {
+          // Thread the resume position/episode identity
+          // along with the discoverSource payload so the
+          // Discover results view can land on the same
+          // source/episode and actually resume playback
+          // instead of opening a blank results browser.
+          openDiscoverItem(item.discoverSource, {
+            providerValue: item.providerValue,
+            infoUrl: item.infoUrl,
+            episodeKey: item.episodeKey,
+            episodeLink: item.episode?.link,
+            position: item.position,
+          });
+          return;
+        }
+        selectItem({
+          link: item.infoUrl || item.link,
+          provider: item.providerValue || item.provider,
+          image: posterImage,
+          title: item.title,
+          resumeHint: {
+            episodeLink: item.episode?.link,
+            episodeKey: item.episodeKey,
+            position: item.position,
+          },
+        });
+      } else {
+        selectItem(item);
+      }
+    },
+    []
+  );
+
+  const handleCardLongPress = useCallback((item: any, isHistoryRow: boolean) => {
+    if (isHistoryRow) {
+      setConfirmingRemoveAll(false);
+      setItemToDelete(item);
+    }
+  }, []);
 
   // Continue Watching can change shape while Home is already mounted and
   // focused: gaining its first-ever poster shifts every later row down by
@@ -472,7 +923,6 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     const fallbackKey = buildItemKey(fallbackRow, fallbackItem, 0);
     lastFocusedKey = fallbackKey;
     lastFocusedRowIndex = 0;
-    setActiveRowIndex(0);
     translateY.value = withTiming(0, { duration: 160, easing: Easing.out(Easing.quad) });
     refocusRef.current = { key: fallbackKey, nonce: refocusRef.current.nonce + 1 };
     forceRerenderForRefocus();
@@ -554,197 +1004,37 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     );
   }
 
+  const refocusKey = refocusRef.current.key;
+  const refocusNonce = refocusRef.current.nonce;
+  const renderedRows =
+    displayRows.length > visibleRowCount ? displayRows.slice(0, visibleRowCount) : displayRows;
+
   return (
     <View style={styles.container}>
       <View style={[styles.fixedHeroContainer, { width: SCREEN_WIDTH, height: SCREEN_HEIGHT }]}>
-        <TVHeroMeta media={activeHero} />
+        <HeroHost ref={heroHostRef} />
       </View>
 
       <View style={styles.stageViewport}>
         <Animated.View style={[styles.slidingRowsContainer, animatedRowsStyle]}>
-          {displayRows.map((row: any, rowIndex: number) => {
-            const rowPosts = row.Posts || [];
-            if (rowPosts.length === 0) return null;
-            const isHistoryRow = Boolean(row.isHistory);
+          {renderedRows.map((row: any, rowIndex: number) => {
+            if (!row.Posts || row.Posts.length === 0) return null;
+            const rowId = getRowId(row);
+            const rowRefocusKey =
+              refocusKey && refocusKey.startsWith(`${rowId}::`) ? refocusKey : null;
 
             return (
-              <View key={getRowId(row)} style={styles.rowContainer}>
-                <View style={styles.rowTitleWrap}>
-                  <Text style={styles.rowCategoryTitle}>{row.title}</Text>
-                  {row.sourceLabel ? (
-                    <Text style={styles.rowSourceLabel} numberOfLines={1}>
-                      {row.sourceLabel}
-                    </Text>
-                  ) : null}
-                </View>
-
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.horizontalRowScroll}
-                  removeClippedSubviews={false}
-                  scrollEventThrottle={16}
-                >
-                  {rowPosts.map((item: any, pIndex: number) => {
-                    const itemKey = buildItemKey(row, item, pIndex);
-                    const isFirstInRow = pIndex === 0;
-
-                    // Fresh launch/relaunch: Explicitly defaults to row 0, card 0 (1st Continue Watching poster if exists, else 1st provider card)
-                    const shouldFocus = lastFocusedKey
-                      ? lastFocusedKey === itemKey
-                      : rowIndex === 0 && isFirstInRow;
-
-                    const posterImage = item.poster || item.background || item.image;
-                    const progressPercent =
-                      item.duration && item.position
-                        ? Math.min(100, Math.round((item.position / item.duration) * 100))
-                        : 0;
-
-                    return (
-                      <TVFocusablePressable
-                        key={refocusRef.current.key === itemKey ? `${itemKey}-r${refocusRef.current.nonce}` : itemKey}
-                        ref={(el) => {
-                          itemRefsRef.current[itemKey] = el;
-                          // Register as soon as this row mounts, not just on
-                          // focus -- registerRailLeftEdge's bridge call to the
-                          // native rail is async (posts to the UI thread), so
-                          // relying on onFocus alone leaves a real window
-                          // where the user can press Left before that write
-                          // lands, and Left falls through to Android's raw
-                          // geometric search instead (landing on whichever
-                          // rail row happens to be nearest, not necessarily
-                          // Home). Registering here too means the link is
-                          // already in place well before the item could ever
-                          // receive focus.
-                          if (isFirstInRow && el) {
-                            registerRailLeftEdge('home', el);
-                          }
-                          // The topmost row (Continue Watching when present,
-                          // otherwise whichever row loads first) has nothing
-                          // above it, but Android's default geometric focus
-                          // search doesn't know that -- the rail is a single
-                          // absolutely-positioned column spanning the full
-                          // screen height, so pressing Up from here lands on
-                          // whichever rail button happens to sit nearest
-                          // vertically (usually "Sources"), not on nothing.
-                          // Pointing `nextFocusUp` at the card's own handle
-                          // makes Up a no-op for row 0 without touching
-                          // Left/Right/Down, which are wired separately.
-                          if (rowIndex === 0 && el) {
-                            const selfHandle = findNodeHandle(el);
-                            if (selfHandle != null) {
-                              (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
-                            }
-                          }
-                        }}
-                        hasTVPreferredFocus={shouldFocus}
-                        scaleFocused={1.05}
-                        focusedBorderColor="#FFFFFF"
-                        borderRadius={8}
-                        delayLongPress={350}
-                        onFocus={() => {
-                          handleCardFocus(rowIndex, item, itemKey, isHistoryRow);
-                          // Only the first card of a row sits at the screen's
-                          // left edge -- re-register it every time it's
-                          // focused so Left always reaches the Home rail
-                          // button, from whichever row the user is on.
-                          if (isFirstInRow) {
-                            registerRailLeftEdge('home', itemRefsRef.current[itemKey]);
-                          }
-                          // Same re-assertion as the ref callback above, in
-                          // case this card was focused (e.g. via the refocus
-                          // remount path) before the ref callback's write had
-                          // landed.
-                          if (rowIndex === 0) {
-                            const node = itemRefsRef.current[itemKey] as any;
-                            const selfHandle = node ? findNodeHandle(node) : null;
-                            if (selfHandle != null) {
-                              node.setNativeProps?.({ nextFocusUp: selfHandle });
-                            }
-                          }
-                        }}
-                        onPress={() => {
-                          lastFocusedKey = itemKey;
-                          lastFocusedRowIndex = rowIndex;
-
-                          if (selectHoldTriggeredRef.current) {
-                            selectHoldTriggeredRef.current = false;
-                            return;
-                          }
-
-                          if (isHistoryRow) {
-                            if (item.discoverSource && onOpenDiscoverItem) {
-                              // Thread the resume position/episode identity
-                              // along with the discoverSource payload so the
-                              // Discover results view can land on the same
-                              // source/episode and actually resume playback
-                              // instead of opening a blank results browser.
-                              onOpenDiscoverItem(item.discoverSource, {
-                                providerValue: item.providerValue,
-                                infoUrl: item.infoUrl,
-                                episodeKey: item.episodeKey,
-                                episodeLink: item.episode?.link,
-                                position: item.position,
-                              });
-                              return;
-                            }
-                            onSelectItem({
-                              link: item.infoUrl || item.link,
-                              provider: item.providerValue || item.provider,
-                              image: posterImage,
-                              title: item.title,
-                              resumeHint: {
-                                episodeLink: item.episode?.link,
-                                episodeKey: item.episodeKey,
-                                position: item.position,
-                              },
-                            });
-                          } else {
-                            onSelectItem(item);
-                          }
-                        }}
-                        onLongPress={() => {
-                          if (isHistoryRow) {
-                            setConfirmingRemoveAll(false);
-                            setItemToDelete(item);
-                          }
-                        }}
-                        style={[styles.card, isHistoryRow && styles.cardCompact]}
-                      >
-                        {({ focused }) => (
-                          <View style={styles.cardInner}>
-                            <Image
-                              source={{
-                                uri:
-                                  posterImage ||
-                                  'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                              }}
-                              style={styles.cardPoster}
-                              resizeMode="cover"
-                            />
-
-                            {isHistoryRow && progressPercent > 0 && (
-                              <View style={styles.historyMetaOverlay}>
-                                <Text style={styles.historyPercentText}>{progressPercent}%</Text>
-                                <View style={styles.progressBarTrack}>
-                                  <View
-                                    style={[
-                                      styles.progressBarFill,
-                                      { width: `${progressPercent}%` },
-                                    ]}
-                                  />
-                                </View>
-                              </View>
-                            )}
-
-                            {focused && <View style={styles.focusBorderGlow} />}
-                          </View>
-                        )}
-                      </TVFocusablePressable>
-                    );
-                  })}
-                </ScrollView>
-              </View>
+              <HomeRow
+                key={rowId}
+                row={row}
+                rowIndex={rowIndex}
+                refocusKey={rowRefocusKey}
+                refocusNonce={rowRefocusKey ? refocusNonce : 0}
+                onCardFocus={handleCardFocus}
+                onCardPress={handleCardPress}
+                onCardLongPress={handleCardLongPress}
+                registerItemRef={registerItemRef}
+              />
             );
           })}
         </Animated.View>
