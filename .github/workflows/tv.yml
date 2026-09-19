@@ -1,13 +1,15 @@
 name: Build Android TV Release APK
 
+# Controls how each run is labeled in the Actions run list (not just the
+# static workflow name above) -- a canary dispatch shows up as its own
+# "Build Canary APK" run instead of blending in with stable release runs.
+run-name: ${{ inputs.channel == 'canary' && 'Build Canary APK' || 'Build Android TV Release APK' }}
+
 on:
-  push:
-    branches:
-      - canary
   workflow_dispatch:
     inputs:
       channel:
-        description: 'Release channel (leave as stable for a normal manual run; a push to the canary branch always builds canary regardless of this input)'
+        description: 'Release channel'
         type: choice
         options:
           - stable
@@ -17,7 +19,7 @@ on:
 permissions:
   contents: write
 
-# Avoid two canary pushes racing to publish/overwrite releases out of order.
+# Avoid two manual runs racing to publish/overwrite releases out of order.
 concurrency:
   group: build-tv-${{ github.ref_name }}
   cancel-in-progress: false
@@ -60,20 +62,10 @@ jobs:
           VERSION_CODE=$((100 + ${{ github.run_number }}))
           RUN_ATTEMPT=${{ github.run_attempt }}
 
-          # A push to `canary` always builds canary. Manual runs default to
-          # stable and only build canary if the channel input is explicitly
-          # switched -- workflow_dispatch always fills in the input's
-          # default, so an empty value here means this run wasn't a manual
-          # dispatch (i.e. it's the push trigger above) and we fall back to
-          # branch detection instead.
-          CHANNEL="${{ github.event.inputs.channel }}"
-          if [ -z "$CHANNEL" ]; then
-            if [ "${{ github.ref_name }}" = "canary" ]; then
-              CHANNEL="canary"
-            else
-              CHANNEL="stable"
-            fi
-          fi
+          # Only trigger left is workflow_dispatch, so the channel input is
+          # always present -- "stable" unless explicitly switched to
+          # "canary" in the run dialog.
+          CHANNEL="${{ inputs.channel }}"
 
           # Ensure unique tag name across runs and re-run attempts.
           # "-kotlin" sits right next to the version so it's visible on the
@@ -190,7 +182,7 @@ jobs:
           make_latest: ${{ steps.release_meta.outputs.make_latest }}
           prerelease: ${{ steps.release_meta.outputs.prerelease }}
           body: |
-            ${{ steps.release_meta.outputs.channel == 'canary' && '> ⚠️ **Canary build** -- built straight off the `canary` branch for testing. May be unstable; not shown as the repo''s Latest release.' || '' }}
+            ${{ steps.release_meta.outputs.channel == 'canary' && '> ⚠️ **Canary build** -- a manually-triggered test build. May be unstable; not shown as the repo''s Latest release.' || '' }}
 
             ## What's Changed
             ${{ steps.release_meta.outputs.changelog }}
