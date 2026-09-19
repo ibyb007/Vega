@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// The splash icon is a fixed brand mark (purple circle + play triangle) now
-// rather than something that should retint per the user's chosen launcher
-// icon color -- so this script no longer recolors anything. It exists only
+// The splash art is a fixed brand mark (purple circle + play triangle,
+// plus the VEGA TV wordmark) rather than something that should retint per
+// the user's chosen launcher icon color -- so this script no longer
+// recolors anything. It exists only
 // to keep the 5 named variant files (which the native BootTheme.* styles
 // each point at -- see plugins/with-dynamic-launcher-splash.js) all showing
 // that same identical mark, so changing your launcher icon color never
