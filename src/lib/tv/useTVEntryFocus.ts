@@ -77,6 +77,20 @@ export function useTVEntryFocus(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onRegisterReturnFocusTrigger]);
 
+  /**
+   * Imperative version of the return trigger above, for a screen that needs
+   * to re-issue "put real focus back on the last-focused item" itself --
+   * e.g. after it has restored a scroll position that had left that item
+   * outside the viewport (and therefore not focusable) at mount time.
+   */
+  const requestRefocus = useCallback(() => {
+    const key = getLastFocusedKey();
+    if (!key) return;
+    refocusRef.current = { key, nonce: refocusRef.current.nonce + 1 };
+    forceRerenderForRefocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const setItemRef = useCallback((key: string, node: any) => {
     itemRefsRef.current[key] = node ?? undefined;
   }, []);
@@ -95,5 +109,5 @@ export function useTVEntryFocus(
     [getLastFocusedKey]
   );
 
-  return { setItemRef, keyFor, shouldPreferFocus };
+  return { setItemRef, keyFor, shouldPreferFocus, requestRefocus };
 }
