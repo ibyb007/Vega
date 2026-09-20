@@ -131,6 +131,36 @@ const formatEpisodeReleaseDate = (released: string | undefined | null): string |
   });
 };
 
+// Some providers attach a human-readable release/file size to each episode
+// they return from `getEpisodes` -- there's no shared field for this across
+// providers (seen as `size`, `fileSize`, `filesize`, or `file_size`
+// depending on the addon), so it isn't part of the shared `EpisodeLink`
+// type. Read it the same loose, best-effort way `isQualityExcluded` already
+// reads `ep?.quality` off these same objects elsewhere in this screen, and
+// simply show nothing for providers that never send one.
+const getEpisodeFileSize = (ep: any): string | undefined => {
+  const raw = ep?.size ?? ep?.fileSize ?? ep?.filesize ?? ep?.file_size;
+  if (raw === undefined || raw === null) return undefined;
+  const text = String(raw).trim();
+  return text.length > 0 ? text : undefined;
+};
+
+// A movie's "Play" chip is meant to tell the two apart when a source offers
+// more than one, or otherwise just confirm what you're about to start --
+// but several providers set every direct-play entry's own `title` to a bare
+// restatement of the media kind itself ("Movie", "Series", "Video"...)
+// rather than anything descriptive. That's useless sitting directly under a
+// "Play" heading, so those get swapped out for the actual quality/source
+// description already selected up in "Seasons & Quality" instead (see
+// `resolvePlayChipLabel` below) rather than shown as-is.
+const GENERIC_PLAY_LABELS = new Set([
+  'movie', 'series', 'tv', 'show', 'video', 'stream', 'source', 'episode', 'play', 'watch',
+]);
+const isGenericPlayLabel = (label: string | undefined | null): boolean => {
+  const text = (label || '').trim().toLowerCase();
+  return !text || GENERIC_PLAY_LABELS.has(text);
+};
+
 interface TVDiscoverScreenProps {
   onSelectItem: (item: Post) => void;
   onNavigateRoute?: (route: TVRoute) => void;
@@ -427,6 +457,22 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
   const handleResultsContentSizeChange = useCallback(() => {
     const y = restoreScrollYRef.current;
+    // The nav rail returning to visible when the player/details screen
+    // closes is a separate native transition from this screen's own React
+    // mount -- on some devices/frames it lands measurably *after* this
+    // screen has already settled and reclaimed focus once, and (see
+    // NavRailManager.setVisible) becoming visible again is itself enough to
+    // pull focus back onto the rail if that transition's timing loses the
+    // race. A single reclaim attempt right after mount can therefore win
+    // and then silently lose it again a moment later, which is exactly
+    // what made this look unfixed even after the first attempt was added.
+    // A second, later attempt costs nothing if the first one already stuck
+    // -- it just re-requests focus on the same target -- but reliably wins
+    // back anything the rail's delayed transition took in between.
+    const scheduleReclaim = (invoke: () => void) => {
+      setTimeout(invoke, 60);
+      setTimeout(invoke, 350);
+    };
     if (y !== null) {
       restoreScrollYRef.current = null;
       resultsFocusSafetyNeededRef.current = false;
@@ -436,15 +482,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       // Give the scroll a beat to update which children are attached, then
       // re-issue the real focus request for the item the person left off on
       // (or the Back button if that item is gone).
-      setTimeout(() => requestRefocus(), 60);
+      scheduleReclaim(() => requestRefocus());
       return;
     }
     if (resultsFocusSafetyNeededRef.current) {
       resultsFocusSafetyNeededRef.current = false;
-      // No scroll to restore, but still worth one re-assertion in case the
-      // rail won the initial focus race -- a no-op if it didn't, since this
-      // just re-requests focus on the same item that should already have it.
-      reclaimResultsFocusOrFallback(() => requestRefocus());
+      // No scroll to restore, but still worth re-asserting in case the rail
+      // won the initial focus race -- a no-op if it didn't, since this just
+      // re-requests focus on the same item that should already have it.
+      scheduleReclaim(() => reclaimResultsFocusOrFallback(() => requestRefocus()));
     }
   }, [requestRefocus, reclaimResultsFocusOrFallback]);
   const installedProviders = useContentStore((state) => state.installedProviders);
