@@ -54,6 +54,14 @@ export default function App() {
   const [routeHistory, setRouteHistory] = useState<TVRoute[]>(['home']);
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [activeStream, setActiveStream] = useState<ActiveStreamPayload | null>(null);
+  // True while Discover is showing its page-2 results view. Lives here (not
+  // inside TVDiscoverScreen) on purpose: starting playback unmounts the
+  // Discover screen, and this flag has to survive that round trip exactly
+  // like `selectedItem` does for the details screen. Page 2 hides the native
+  // rail the same way details/player do, so when the player closes there is
+  // no focusable rail sitting there for Android to dump focus onto while
+  // the screen is still remounting.
+  const [discoverPage2Open, setDiscoverPage2Open] = useState(false);
   // Mirrors the old navExpandedRef -- kept as a JS-side fallback for the
   // "rail focused -> Back exits app" rule. In normal operation
   // MainActivity's native dispatchKeyEvent (see NavRailManager.shouldExitOnBack)
@@ -187,6 +195,9 @@ export default function App() {
     ) => {
       if (!discoverItem) return;
       openDiscoverResultFor(discoverItem, resumeHint);
+      // Known before Discover even mounts -- hide the rail from the first
+      // frame instead of waiting for the screen's own effect to report it.
+      setDiscoverPage2Open(true);
       navigateTo('discover');
     },
     [navigateTo]
@@ -213,11 +224,23 @@ export default function App() {
     return () => subs.forEach((s) => s?.remove());
   }, [navigateTo, handleRequestContentFocus]);
 
-  // Hide the native rail entirely behind fullscreen player/details, exactly
-  // like the old JS conditionally unmounting <TVNavigationRail>.
+  // Discover's page 2 is treated like the details screen: full-bleed, no rail.
+  // Only counts while Discover is the active route, so a stale flag can never
+  // hide the rail on another tab.
+  const onDiscoverPage2 = currentRoute === 'discover' && discoverPage2Open;
+
+  // Hide the native rail entirely behind fullscreen player/details/page 2,
+  // exactly like the old JS conditionally unmounting <TVNavigationRail>.
+  //
+  // Deliberately ONE derived boolean as the only dependency: going from
+  // page 2 -> player -> page 2 keeps it `true` the whole time, so the rail is
+  // never flipped GONE -> VISIBLE while Discover is remounting. That flip was
+  // what let Android's default focus search land on the rail (Search row)
+  // and left page 2 with no focus.
+  const railHidden = !!activeStream || !!selectedItem || onDiscoverPage2;
   useEffect(() => {
-    NavRail.setVisible(!activeStream && !selectedItem);
-  }, [activeStream, selectedItem]);
+    NavRail.setVisible(!railHidden);
+  }, [railHidden]);
 
   useEffect(() => {
     const handleBackPress = () => {
@@ -334,7 +357,7 @@ export default function App() {
                   />
                 ) : (
                   <View style={styles.layout}>
-                    <View style={styles.viewport}>
+                    <View style={[styles.viewport, onDiscoverPage2 && styles.viewportNoRail]}>
                       {currentRoute === 'home' && (
                         <TVHomeScreen
                           onNavigateRoute={navigateTo}
@@ -369,6 +392,7 @@ export default function App() {
                               ...extraMeta,
                             });
                           }}
+                          onResultsModeChange={setDiscoverPage2Open}
                           onRegisterBackHandler={handleRegisterBackHandler('discover')}
                           onRegisterEntryHandleGetter={handleRegisterEntryHandleGetter('discover')}
                           onRegisterReturnFocusTrigger={handleRegisterReturnFocusTrigger('discover')}
@@ -445,5 +469,9 @@ const styles = StyleSheet.create({
     // underneath that permanent 72dp-wide strip; it must stay equal to
     // TVNavRailView.COLLAPSED_WIDTH_DP (see NATIVE_RAIL_COLLAPSED_WIDTH).
     paddingLeft: NATIVE_RAIL_COLLAPSED_WIDTH,
+  },
+  // Discover page 2 hides the rail, so it no longer needs the strip reserved.
+  viewportNoRail: {
+    paddingLeft: 0,
   },
 });
