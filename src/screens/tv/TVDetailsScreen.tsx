@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -104,6 +104,39 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [seasonIndex, setSeasonIndex] = useState(0);
   const [rawEpisodes, setEpisodes] = useState<EpisodeLink[]>([]);
   const [episodesLoading, setEpisodesLoading] = useState(false);
+
+  // This whole screen is one flat ScrollView (no separate "page 2" like
+  // Discover's results view), so picking a season/quality chip that's
+  // scrolled below the fold doesn't remount anything -- but the episode
+  // section briefly collapses to a small spinner while the new list
+  // fetches (see `stillResolving` below), shrinking the page's content
+  // height. Android clamps the ScrollView's offset to the new (shorter)
+  // max scroll range when that happens, which yanks the view back toward
+  // the top and, since the just-pressed chip can end up scrolled off
+  // screen by that clamp, drops real focus along with it. And because
+  // `hasTVPreferredFocus` only fires a real focus() the moment an item
+  // first *mounts*, a quality switch that happens to return the exact
+  // same episode list (same ids/links, just a different source) never
+  // remounts anything either -- so nothing re-asserts focus at all.
+  // `scrollRef` + `episodeFocusNonce` below explicitly drive both the
+  // scroll position and a forced refocus once the new list is actually
+  // ready, instead of relying on incidental remounts.
+  const scrollRef = useRef<ScrollView | null>(null);
+  // y-offset (within the ScrollView's content) of the section holding the
+  // episode/source list -- captured via that section's `onLayout` below.
+  // Stable across the spinner <-> loaded-list swap since it only depends
+  // on the (unchanged) siblings above it, not on the section's own height.
+  const listSectionYRef = useRef(0);
+  // Armed by a season/quality chip press; consumed the next time loading
+  // finishes (see the effect below), so an ordinary initial page load
+  // (nothing pressed) never triggers an unwanted scroll/refocus.
+  const pendingEpisodeFocusRef = useRef(false);
+  // Bumped to force exactly the target episode/source row (index 0, or
+  // the resume target) to remount -- same "nonce in the key" trick used
+  // for programmatic focus elsewhere in this app (TVNavigationRail,
+  // TVDiscoverScreen), since plain React Native doesn't wire up a real
+  // `ref.focus()` for arbitrary Views on Android.
+  const [episodeFocusNonce, setEpisodeFocusNonce] = useState(0);
 
   // Cinemeta enrichment -- canonical title/year formatting plus, for
   // series, per-episode stills & synopses (the provider's own `episodes`
@@ -278,6 +311,21 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // real episode list a moment later.
   const isAwaitingEpisodes = hasEpisodesLink && episodes.length === 0 && !error;
   const stillResolving = loading || isAwaitingEpisodes || episodesLoading || extractingStreams;
+
+  // Consumes the flag a season/quality chip press armed, once the new
+  // list has actually finished loading (`stillResolving` back to false):
+  // scroll the (now correctly laid out) episode/source section into view,
+  // then force a real refocus onto its target row a beat later. Both
+  // steps happen every time a chip is pressed, not just when a scroll or
+  // a fresh mount would have handled it on their own -- see the comment
+  // by `scrollRef` above for why neither can be relied on alone.
+  useEffect(() => {
+    if (stillResolving) return;
+    if (!pendingEpisodeFocusRef.current) return;
+    pendingEpisodeFocusRef.current = false;
+    scrollRef.current?.scrollTo({ x: 0, y: Math.max(listSectionYRef.current - 16, 0), animated: false });
+    setTimeout(() => setEpisodeFocusNonce((n) => n + 1), 60);
+  }, [stillResolving]);
 
   // Episode payload actually handed to TVPlayerScreen -- same list as
   // `episodes` above, but enriched with each episode's real season/episode
@@ -482,6 +530,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       </View>
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scrollArea}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -537,7 +586,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 scaleFocused={1.05}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
-                onPress={() => setSeasonIndex(idx)}
+                onPress={() => {
+                  pendingEpisodeFocusRef.current = true;
+                  setSeasonIndex(idx);
+                }}
                 style={[styles.seasonChip, idx === seasonIndex && styles.seasonChipActive]}
               >
                 {() => (
@@ -556,7 +608,15 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
 
         {/* Episode / Source list -- full-width rows stacked vertically so
             the whole page (not a cramped inner row) scrolls to reveal
-            all of them, over the fixed backdrop above. */}
+            all of them, over the fixed backdrop above. Wrapped so its
+            layout position (constant across the spinner/loaded swap,
+            since only what's above it affects that) can be captured for
+            the scroll-restore in the effect above. */}
+        <View
+          onLayout={(e) => {
+            listSectionYRef.current = e.nativeEvent.layout.y;
+          }}
+        >
         {stillResolving ? (
           <View style={styles.centerInline}>
             <ActivityIndicator size="large" color="#8A5CF6" />
@@ -590,14 +650,18 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNum, episodeNum);
               const episodeThumb = ep.image || cinemetaEp?.thumbnail;
               const episodeOverview = ep.description || cinemetaEp?.overview;
+              const isFocusTarget =
+                resumeHint?.episodeKey || resumeHint?.episodeLink
+                  ? isResumeTarget
+                  : index === 0;
               return (
                 <TVFocusablePressable
-                  key={`ep-${ep.id || ep.link || index}`}
-                  hasTVPreferredFocus={
-                    resumeHint?.episodeKey || resumeHint?.episodeLink
-                      ? isResumeTarget
-                      : index === 0
-                  }
+                  // Nonce suffix only on the target row -- forces just
+                  // that one to remount (and re-fire `hasTVPreferredFocus`)
+                  // when a season/quality switch needs a forced refocus,
+                  // without touching every other row's identity.
+                  key={`ep-${ep.id || ep.link || index}${isFocusTarget ? `-f${episodeFocusNonce}` : ''}`}
+                  hasTVPreferredFocus={isFocusTarget}
                   scaleFocused={1.02}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={10}
@@ -711,14 +775,15 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                     ? resumeHint.episodeKey === directEpisodeKey
                     : !!resumeHint?.episodeLink && d.link === resumeHint.episodeLink
                   : true;
+                const isFocusTarget =
+                  directItemsAreEpisodes && (resumeHint?.episodeKey || resumeHint?.episodeLink)
+                    ? isResumeTarget
+                    : index === 0;
                 return (
                   <TVFocusablePressable
-                    key={`direct-${d.link}-${index}`}
-                    hasTVPreferredFocus={
-                      directItemsAreEpisodes && (resumeHint?.episodeKey || resumeHint?.episodeLink)
-                        ? isResumeTarget
-                        : index === 0
-                    }
+                    // Same forced-remount nonce as the episode list above.
+                    key={`direct-${d.link}-${index}${isFocusTarget ? `-f${episodeFocusNonce}` : ''}`}
+                    hasTVPreferredFocus={isFocusTarget}
                     scaleFocused={1.02}
                     focusedBorderColor="#8A5CF6"
                     borderRadius={10}
@@ -789,6 +854,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             </TVFocusablePressable>
           </View>
         )}
+        </View>
 
         <View style={{ height: 60 }} />
       </ScrollView>
