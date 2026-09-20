@@ -105,31 +105,28 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [rawEpisodes, setEpisodes] = useState<EpisodeLink[]>([]);
   const [episodesLoading, setEpisodesLoading] = useState(false);
 
-  // This whole screen is one flat ScrollView (no separate "page 2" like
-  // Discover's results view), so picking a season/quality chip that's
-  // scrolled below the fold doesn't remount anything -- but the episode
-  // section briefly collapses to a small spinner while the new list
-  // fetches (see `stillResolving` below), shrinking the page's content
-  // height. Android clamps the ScrollView's offset to the new (shorter)
-  // max scroll range when that happens, which yanks the view back toward
-  // the top and, since the just-pressed chip can end up scrolled off
-  // screen by that clamp, drops real focus along with it. And because
-  // `hasTVPreferredFocus` only fires a real focus() the moment an item
-  // first *mounts*, a quality switch that happens to return the exact
-  // same episode list (same ids/links, just a different source) never
-  // remounts anything either -- so nothing re-asserts focus at all.
-  // `scrollRef` + `episodeFocusNonce` below explicitly drive both the
-  // scroll position and a forced refocus once the new list is actually
-  // ready, instead of relying on incidental remounts.
+  // This whole screen is one flat ScrollView, and the season/quality
+  // picker now lives in its own Modal (see `seasonPickerVisible` below)
+  // instead of an inline chip row -- so the picker itself is never
+  // scrolled off-screen mid-press. Picking an option there still swaps
+  // out the episode list underneath, though, and that section briefly
+  // collapses to a small spinner while the new list fetches (see
+  // `stillResolving` below). `scrollRef` + `episodeFocusNonce` explicitly
+  // scroll the (now-reloaded) episode section into view and force a real
+  // refocus onto its first/resume row once it's ready, rather than
+  // relying on the page's incidental scroll position or on
+  // `hasTVPreferredFocus`'s "only fires on a fresh mount" behavior (which
+  // a quality switch returning the exact same episode ids/links would
+  // never trigger on its own).
   const scrollRef = useRef<ScrollView | null>(null);
   // y-offset (within the ScrollView's content) of the section holding the
   // episode/source list -- captured via that section's `onLayout` below.
   // Stable across the spinner <-> loaded-list swap since it only depends
   // on the (unchanged) siblings above it, not on the section's own height.
   const listSectionYRef = useRef(0);
-  // Armed by a season/quality chip press; consumed the next time loading
-  // finishes (see the effect below), so an ordinary initial page load
-  // (nothing pressed) never triggers an unwanted scroll/refocus.
+  // Armed by a season/quality pick in the modal; consumed the next time
+  // loading finishes (see the effect below), so an ordinary initial page
+  // load (nothing picked) never triggers an unwanted scroll/refocus.
   const pendingEpisodeFocusRef = useRef(false);
   // Bumped to force exactly the target episode/source row (index 0, or
   // the resume target) to remount -- same "nonce in the key" trick used
@@ -137,6 +134,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // TVDiscoverScreen), since plain React Native doesn't wire up a real
   // `ref.focus()` for arbitrary Views on Android.
   const [episodeFocusNonce, setEpisodeFocusNonce] = useState(0);
+  // Controls the season/quality picker modal.
+  const [seasonPickerVisible, setSeasonPickerVisible] = useState(false);
 
   // Cinemeta enrichment -- canonical title/year formatting plus, for
   // series, per-episode stills & synopses (the provider's own `episodes`
@@ -577,33 +576,31 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           </Text>
         </View>
 
-        {/* Season / Quality Selector */}
+        {/* Season / Quality Selector -- a single button opening a picker
+            modal instead of an inline (and, with many options, multi-row)
+            chip list. Keeps the picker fully reachable regardless of how
+            many seasons/qualities there are, and keeps this ScrollView's
+            own layout stable while picking (see the comment by
+            `scrollRef` above for why that mattered). */}
         {linkList.length > 1 && (
-          <View style={styles.seasonRow}>
-            {linkList.map((l, idx) => (
-              <TVFocusablePressable
-                key={`${l.title}-${idx}`}
-                scaleFocused={1.05}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={() => {
-                  pendingEpisodeFocusRef.current = true;
-                  setSeasonIndex(idx);
-                }}
-                style={[styles.seasonChip, idx === seasonIndex && styles.seasonChipActive]}
-              >
-                {() => (
-                  <Text
-                    numberOfLines={1}
-                    style={[styles.seasonChipText, idx === seasonIndex && styles.seasonChipTextActive]}
-                  >
-                    {l.title}
-                    {l.quality ? ` • ${l.quality}` : ''}
-                  </Text>
-                )}
-              </TVFocusablePressable>
-            ))}
-          </View>
+          <TVFocusablePressable
+            scaleFocused={1.03}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={10}
+            onPress={() => setSeasonPickerVisible(true)}
+            style={styles.seasonPickerBtn}
+          >
+            {() => (
+              <View style={styles.seasonPickerBtnInner}>
+                <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
+                <Text style={styles.seasonPickerBtnText} numberOfLines={1}>
+                  {activeLink?.title || 'Select'}
+                  {activeLink?.quality ? ` • ${activeLink.quality}` : ''}
+                </Text>
+                <MaterialCommunityIcons name="chevron-down" size={20} color="#9CA3AF" />
+              </View>
+            )}
+          </TVFocusablePressable>
         )}
 
         {/* Episode / Source list -- full-width rows stacked vertically so
@@ -899,6 +896,78 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={seasonPickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSeasonPickerVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Select Season / Quality</Text>
+            <Text style={styles.modalSubtitle}>Choose which source to load episodes from.</Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {linkList.map((l, idx) => {
+                const isActive = idx === seasonIndex;
+                return (
+                  <TVFocusablePressable
+                    key={`season-opt-${l.title}-${idx}`}
+                    hasTVPreferredFocus={isActive}
+                    scaleFocused={1.03}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={8}
+                    onPress={() => {
+                      // Only arms the forced scroll/refocus below when this
+                      // pick will actually trigger an async episode fetch
+                      // (`stillResolving` toggling true→false) -- otherwise
+                      // (a plain quality/direct-link swap with no
+                      // episodesLink) the content updates synchronously in
+                      // this same render and the normal fresh-mount
+                      // `hasTVPreferredFocus` already handles it, so
+                      // leaving the flag armed would just misfire on some
+                      // unrelated later loading state (e.g. pressing Play).
+                      if (l?.episodesLink) {
+                        pendingEpisodeFocusRef.current = true;
+                      }
+                      setSeasonIndex(idx);
+                      setSeasonPickerVisible(false);
+                    }}
+                    style={[styles.seasonPickerOption, isActive && styles.seasonPickerOptionActive]}
+                  >
+                    {() => (
+                      <View style={styles.seasonPickerOptionInner}>
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.seasonPickerOptionText,
+                            isActive && styles.seasonPickerOptionTextActive,
+                          ]}
+                        >
+                          {l.title}
+                          {l.quality ? ` • ${l.quality}` : ''}
+                        </Text>
+                        {isActive && (
+                          <MaterialCommunityIcons name="check-circle" size={18} color="#8A5CF6" />
+                        )}
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                );
+              })}
+            </ScrollView>
+            <TVFocusablePressable
+              scaleFocused={1.05}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={8}
+              onPress={() => setSeasonPickerVisible(false)}
+              style={styles.modalCancelBtn}
+            >
+              {() => <Text style={styles.modalCancelText}>Cancel</Text>}
+            </TVFocusablePressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -986,29 +1055,54 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
-  seasonRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 24,
-  },
-  seasonChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 9,
+  // Single trigger button that opens the season/quality picker modal
+  // (replaces the old inline, potentially multi-row, chip list).
+  seasonPickerBtn: {
+    alignSelf: 'flex-start',
     backgroundColor: 'rgba(22, 22, 30, 0.6)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginBottom: 24,
+    maxWidth: 420,
   },
-  seasonChipActive: {
+  seasonPickerBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  seasonPickerBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  // Rows inside the picker modal.
+  seasonPickerOption: {
+    backgroundColor: '#1E1E28',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  seasonPickerOptionActive: {
     backgroundColor: 'rgba(138, 92, 246, 0.22)',
+    borderWidth: 1,
     borderColor: '#8A5CF6',
   },
-  seasonChipText: {
-    color: '#9CA3AF',
-    fontSize: 13,
-    fontWeight: '600',
+  seasonPickerOptionInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
   },
-  seasonChipTextActive: {
+  seasonPickerOptionText: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  seasonPickerOptionTextActive: {
     color: '#FFFFFF',
   },
   sectionHeader: {
