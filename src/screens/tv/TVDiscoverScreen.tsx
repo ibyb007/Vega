@@ -179,6 +179,20 @@ let lastFocusedDiscoverResultsKey: string | null = null;
 // Restoring this offset (see handleResultsContentSizeChange) puts that item
 // back inside the viewport before focus is re-requested.
 let lastResultsScrollY = 0;
+// Same idea, but for the page-1 (browse) poster grid. `screenMode` flips
+// between 'browse' and 'results' via an early-return in this component's
+// render (see the `if (screenMode === 'results') return (...)` below), so
+// the grid ScrollView actually unmounts and remounts fresh -- at y=0 --
+// every time the user backs out of page 2. Rows 1-2 sit inside that
+// initial y=0 viewport so their `hasTVPreferredFocus` request always
+// lands fine; a poster in row 3+ does not, and because the grid uses
+// `removeClippedSubviews`, nothing below the fold has a live native view
+// for focus to attach to -- Android's default search then takes over and
+// (observed) lands on the rail's Discover button instead. Restoring this
+// offset (see handleBrowseContentSizeChange) puts the remembered poster
+// back inside the viewport before focus is re-requested, exactly like
+// lastResultsScrollY does for page 2.
+let lastDiscoverBrowseScrollY = 0;
 
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
   `${c.manifestUrl}::${c.type}::${c.id}`;
@@ -319,6 +333,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // scroll-restore below.
   const mountedResultsKeysRef = useRef<Set<string>>(new Set());
   const resultsScrollRef = useRef<ScrollView | null>(null);
+  // The page-1 grid's ScrollView, plus a flag saying "the grid is about to
+  // remount because we just backed out of page 2 -- restore its scroll
+  // position on the next content-size pass" (see backToBrowse and
+  // handleBrowseContentSizeChange below).
+  const browseScrollRef = useRef<ScrollView | null>(null);
+  const pendingBrowseScrollRestoreRef = useRef(false);
   // Resume flow (Home -> Continue Watching -> here): until the person moves
   // focus themselves, focus is steered to the resume source/episode/play
   // button as each one appears; see shouldPreferResultsFocus.
@@ -384,6 +404,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       lastFocusedDiscoverBrowseKey = null;
       lastFocusedDiscoverResultsKey = null;
       lastResultsScrollY = 0;
+      lastDiscoverBrowseScrollY = 0;
+      pendingBrowseScrollRestoreRef.current = false;
     }
   );
 
@@ -487,6 +509,26 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       reclaimResultsFocusOrFallback(() => requestRefocus());
     }
   }, [requestRefocus, reclaimResultsFocusOrFallback]);
+
+  // Mirrors handleResultsContentSizeChange above, for the page-1 grid.
+  // Fires on every content-size pass of the browse ScrollView, but only
+  // acts the one time `pendingBrowseScrollRestoreRef` is armed (set by
+  // backToBrowse, right before the grid remounts at y=0).
+  const handleBrowseContentSizeChange = useCallback(() => {
+    if (!pendingBrowseScrollRestoreRef.current) return;
+    pendingBrowseScrollRestoreRef.current = false;
+    const y = lastDiscoverBrowseScrollY;
+    if (y <= 0) return;
+    const key = lastFocusedDiscoverBrowseKey;
+    // `mountedResultsKeysRef` (despite the name) tracks every currently
+    // rendered item's key, browse or results -- see setItemRef below.
+    const resolvable = !!key && mountedResultsKeysRef.current.has(key);
+    browseScrollRef.current?.scrollTo({ x: 0, y: resolvable ? y : 0, animated: false });
+    // Give the scroll a beat to bring the target row back into the
+    // ScrollView's clipping window, then re-issue the real focus request
+    // for the poster the person left off on.
+    setTimeout(() => requestRefocus(), 60);
+  }, [requestRefocus]);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
   const [catalogs, setCatalogs] = useState<DiscoverCatalog[]>(savedDiscoverState?.catalogs || []);
@@ -692,6 +734,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       setItemsLoading(true);
       setSkip(0);
       setHasMore(true);
+      // A genuinely new catalog's item list is about to replace the old
+      // one -- any remembered browse scroll offset belongs to the old
+      // list and would be meaningless (or out of range) here.
+      lastDiscoverBrowseScrollY = 0;
+      pendingBrowseScrollRestoreRef.current = false;
       const res = await fetchCatalogItems(
         selectedCatalog!.baseEndpoint,
         selectedCatalog!.type,
@@ -1448,6 +1495,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     if (resolveAbortRef.current) resolveAbortRef.current.abort();
     lastFocusedDiscoverResultsKey = null;
     lastResultsScrollY = 0;
+    // The grid ScrollView is about to remount at y=0 (see the
+    // `screenMode === 'results'` early-return in render) -- arm the
+    // restore so handleBrowseContentSizeChange scrolls the remembered
+    // poster back into view once the grid's items are laid out again.
+    pendingBrowseScrollRestoreRef.current = true;
     setScreenMode('browse');
     setResultsTarget(null);
     setMatchedAddonPosts([]);
@@ -2254,10 +2306,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           </View>
         ) : (
           <ScrollView
+            ref={browseScrollRef}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.gridContainer}
             scrollEventThrottle={16}
             removeClippedSubviews={true}
+            onScroll={(e) => {
+              lastDiscoverBrowseScrollY = e.nativeEvent.contentOffset.y;
+            }}
+            onContentSizeChange={handleBrowseContentSizeChange}
           >
             {items.map((item, index) => {
               const isLeftEdge = index % GRID_COLUMNS === 0;
@@ -2536,8 +2593,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.12)',
   },
   catalogPillActive: {
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    // Was the same translucent black as the inactive pill, distinguished
+    // only by border color -- easy to mistake for the focus ring (which
+    // also draws a purple-ish border via focusedBorderColor). A filled
+    // tint makes the selected category readable at a glance even when
+    // focus is elsewhere.
+    backgroundColor: 'rgba(138, 92, 246, 0.28)',
     borderColor: '#8A5CF6',
+    borderWidth: 1.5,
   },
   catalogText: {
     color: '#D1D5DB',
