@@ -138,7 +138,33 @@ object NavRailManager {
                 }
             }
         }
+        val wasGone = rail.visibility != View.VISIBLE
         rail.visibility = if (visible) View.VISIBLE else View.GONE
+        if (visible && wasGone) {
+            // Mirrors the hide branch above, for the reverse transition:
+            // this fires right as the player/details screen closes, at
+            // which point whatever had focus inside it is already gone (its
+            // whole view was just removed) and nothing has claimed focus
+            // yet. Leaving that race to Android's own default focus search
+            // is exactly what let it land ambiguously -- observed as
+            // landing on the rail's Search row, or on whichever row simply
+            // happened to be first in the still-collapsed rail's layout --
+            // instead of the tab actually on screen. A ViewGroup becoming
+            // visible while nothing else in the window holds focus is
+            // itself enough to trigger Android's own opportunistic
+            // "focusableViewAvailable" grab, so simply doing nothing here
+            // does not leave focus alone -- it leaves the same race
+            // in place. Claiming it explicitly and immediately for the
+            // *active* row instead makes the interim landing spot
+            // deterministic and makes it match the row that's already
+            // drawn as active. The returning screen's own content still
+            // reclaims real focus for itself a moment later once it has
+            // something to focus (see TVDiscoverScreen's post-mount
+            // refocus safety net), same as it always has -- this only
+            // fixes *where focus sits in the meantime*, not who ultimately
+            // keeps it.
+            rail.focusActiveRoute()
+        }
     }
 
     fun registerRouteHandle(route: String, view: View?) {
