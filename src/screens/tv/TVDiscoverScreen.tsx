@@ -22,6 +22,7 @@ import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
+import { useReadingOrderFocus } from '../../lib/tv/useReadingOrderFocus';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { providerManager } from '../../lib/services/ProviderManager';
@@ -231,6 +232,10 @@ interface SavedDiscoverState {
   sourceInfo: Info | null;
   activeLinkIndex: number;
   episodes: EpisodeLink[];
+  // Episode stills / synopses / logo. Saved so a remount after playback
+  // renders the SAME layout the person left; without it the first layout is
+  // shorter and later grows, shifting the restored focus/scroll target.
+  sourceCinemetaMeta?: CinemetaMeta | null;
 }
 
 let savedDiscoverState: SavedDiscoverState | null = null;
@@ -382,16 +387,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   );
 
+  // Page 2 has no rail beside it, so Left/Right at a row's edge walk the
+  // page in reading order instead (see useReadingOrderFocus).
+  const chain = useReadingOrderFocus();
+
   const setItemRef = useCallback(
     (key: string, node: any) => {
       baseSetItemRef(key, node);
+      // Only page-2 items take part in the reading-order chain; skipping the
+      // browse grid's posters avoids an extra re-render per poster mount.
+      if (key.startsWith('results:')) chain.register(key, node);
       if (node) {
         mountedResultsKeysRef.current.add(key);
       } else {
         mountedResultsKeysRef.current.delete(key);
       }
     },
-    [baseSetItemRef],
+    [baseSetItemRef, chain.register],
   );
 
   // Captured once, after the hook above has had its chance to reset the
@@ -412,6 +424,27 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const restoredEpisodesRef = useRef<boolean>(
     Boolean(restoredState?.activeSourcePost && restoredState.episodes && restoredState.episodes.length > 0),
   );
+
+  // When this mount is restoring an earlier page-2 position (Back from the
+  // player), Android may park default focus on the top-most button (the
+  // "Back to Discover" button) for a moment before the real target takes it.
+  // That landing fires the button's onFocus, which used to overwrite the
+  // remembered key with 'results:back' -- so the restore then "correctly"
+  // refocused the Back button and the page scrolled to the top. While this
+  // guard is armed, a focus on the Back button is not treated as the
+  // person's choice (see noteResultsFocus).
+  const restoreGuardRef = useRef<boolean>(
+    restoredState?.screenMode === 'results' &&
+      !!lastFocusedDiscoverResultsKey &&
+      lastFocusedDiscoverResultsKey !== 'results:back',
+  );
+  useEffect(() => {
+    if (!restoreGuardRef.current) return;
+    const t = setTimeout(() => {
+      restoreGuardRef.current = false;
+    }, 1200);
+    return () => clearTimeout(t);
+  }, []);
 
   // Belt-and-suspenders for landing directly in results on mount -- either
   // resuming an existing page-2 session (most commonly: Back from the
@@ -511,7 +544,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   );
   const [episodesLoading, setEpisodesLoading] = useState(false);
 
-  const [sourceCinemetaMeta, setSourceCinemetaMeta] = useState<CinemetaMeta | null>(null);
+  const [sourceCinemetaMeta, setSourceCinemetaMeta] = useState<CinemetaMeta | null>(
+    restoredState?.sourceCinemetaMeta ?? null,
+  );
+  // True only for the first run of the Cinemeta effect below on a remount that
+  // restored the meta -- that run must keep it instead of blanking + refetching.
+  const restoredCinemetaRef = useRef<boolean>(Boolean(restoredState?.sourceCinemetaMeta));
   const [extractingLink, setExtractingLink] = useState(false);
 
   // Resume context handed off by Home's Continue Watching card (see
@@ -1174,12 +1212,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
   useEffect(() => {
     let isMounted = true;
+    if (restoredCinemetaRef.current) {
+      // Remount after playback: keep the restored meta so the first layout
+      // matches the one the person left (no blank -> refetch -> grow).
+      restoredCinemetaRef.current = false;
+      return () => {
+        isMounted = false;
+      };
+    }
     setSourceCinemetaMeta(null);
+    if (savedDiscoverState) savedDiscoverState.sourceCinemetaMeta = null;
     const imdbId = sourceInfo?.imdbId || resultsTarget?.imdb_id || resultsTarget?.id;
     const type = sourceInfo?.type || resultsTarget?.type;
     if (imdbId && type) {
       fetchMatchingCinemetaMeta(imdbId, type, sourceInfo?.title || resultsTarget?.title).then((meta) => {
-        if (isMounted) setSourceCinemetaMeta(meta);
+        if (!isMounted) return;
+        setSourceCinemetaMeta(meta);
+        if (savedDiscoverState) savedDiscoverState.sourceCinemetaMeta = meta;
       });
     }
     return () => {
@@ -1322,6 +1371,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           savedDiscoverState.sourceInfo = sourceInfo;
           savedDiscoverState.activeLinkIndex = activeLinkIndex;
           savedDiscoverState.episodes = episodesToSend || episodes;
+          savedDiscoverState.sourceCinemetaMeta = sourceCinemetaMeta;
         }
 
         const canonicalKey = episodeKey || link || activeSourcePost?.link;
@@ -1543,6 +1593,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     const isAwaitingEpisodes = isSeries && episodesLoading && episodes.length === 0;
     const logoUrl = resultsTarget?.logo || (sourceCinemetaMeta as any)?.logo;
 
+    // Reading-order Left/Right chain: reset at the top of every results
+    // render; each focusable below adds itself, in visual order, via
+    // `chain.propsFor(key)`.
+    chain.beginRender();
+
     // Mirrors `shouldPreferFocus`, but reads its own dedicated
     // `lastFocusedDiscoverResultsKey` variable instead of the page-1
     // browse key, so focusing anything here (the Back button, a source
@@ -1561,6 +1616,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       return lastFocusedDiscoverResultsKey ? lastFocusedDiscoverResultsKey === key : defaultValue;
     };
     const noteResultsFocus = (key: string, keepResumePending: boolean = false) => {
+      if (restoreGuardRef.current) {
+        // Default-focus landing on the Back button while restoring: not a
+        // real choice, so don't let it replace the remembered target.
+        if (key === 'results:back') return;
+        restoreGuardRef.current = false;
+      }
       lastFocusedDiscoverResultsKey = key;
       if (!keepResumePending && key !== 'results:back') {
         resumeFocusPendingRef.current = false;
@@ -1597,21 +1658,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             lastResultsScrollY = e.nativeEvent.contentOffset.y;
           }}
           onContentSizeChange={handleResultsContentSizeChange}
-          // NOTE: left at `true` (its original value) on purpose. Turning
-          // this off to chase the right-edge clipping issue below turned
-          // out to add just enough extra native mount/measure work during
-          // the browse<->results transition to lose the race for Android
-          // TV focus on slower devices -- focus would escape to the nav
-          // rail's Discover button while this screen was still settling,
-          // and returning from the rail would land back on the right item
-          // but with the scroll position reset to the top. The edge-
-          // clipping fix below (padding/right-inset only) doesn't need
-          // this prop changed at all.
-          removeClippedSubviews={true}
+          // Clipping is OFF on purpose. With it on, every row scrolled out of
+          // view is detached from the window, which broke two things here:
+          //  1. Coming back from the player, the episode/button the person
+          //     left off on (usually below the fold) had no attached view to
+          //     take focus, so Android fell back to the first focusable (the
+          //     Back button) and the page jumped to the top.
+          //  2. The Left/Right reading-order links (useReadingOrderFocus) are
+          //     explicit next-focus ids, which only resolve to attached views.
+          // The old reason for keeping it on (winning a focus race against
+          // the nav rail while this screen mounted) is gone: the rail is
+          // hidden while page 2 is showing.
+          removeClippedSubviews={false}
         >
           <TVFocusablePressable
             key={keyFor('results:back')}
             ref={(el) => setItemRef('results:back', el)}
+            {...chain.propsFor('results:back')}
             hasTVPreferredFocus={shouldPreferResultsFocus('results:back', true)}
             onFocus={() => {
               noteResultsFocus('results:back');
@@ -1701,6 +1764,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         setItemRef(sourceKey, el);
                         if (isFirst) sourcesRowFirstRef.current = el;
                       }}
+                      {...chain.propsFor(sourceKey)}
                       hasTVPreferredFocus={
                         resumeHint
                           ? shouldPreferResultsFocus(sourceKey, isResumeSource)
@@ -1786,6 +1850,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           <TVFocusablePressable
                             key={keyFor(`results:link:${idx}`)}
                             ref={(el) => setItemRef(`results:link:${idx}`, el)}
+                            {...chain.propsFor(`results:link:${idx}`)}
                             hasTVPreferredFocus={shouldPreferResultsFocus(`results:link:${idx}`, false)}
                             onFocus={() => {
                               noteResultsFocus(`results:link:${idx}`);
@@ -1860,6 +1925,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                               <TVFocusablePressable
                                 key={keyFor(episodeKey)}
                                 ref={(el) => setItemRef(episodeKey, el)}
+                                {...chain.propsFor(episodeKey)}
                                 hasTVPreferredFocus={
                                   resumeHint?.episodeKey || resumeHint?.episodeLink
                                     ? shouldPreferResultsFocus(episodeKey, isResumeTarget)
@@ -1947,6 +2013,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           <TVFocusablePressable
                             key={keyFor(`results:direct:${idx}`)}
                             ref={(el) => setItemRef(`results:direct:${idx}`, el)}
+                            {...chain.propsFor(`results:direct:${idx}`)}
                             hasTVPreferredFocus={shouldPreferResultsFocus(`results:direct:${idx}`, false)}
                             onFocus={() => {
                               noteResultsFocus(`results:direct:${idx}`);
@@ -2001,6 +2068,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         <TVFocusablePressable
                           key={keyFor('results:direct-stream-btn')}
                           ref={(el) => setItemRef('results:direct-stream-btn', el)}
+                          {...chain.propsFor('results:direct-stream-btn')}
                           hasTVPreferredFocus={
                             resumeHint
                               ? shouldPreferResultsFocus('results:direct-stream-btn', isMovieResume)
