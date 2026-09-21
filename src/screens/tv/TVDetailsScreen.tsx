@@ -5,6 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   Image,
+  useWindowDimensions,
   ActivityIndicator,
   ToastAndroid,
   Modal,
@@ -135,6 +136,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
 }) => {
   const activeStoreProvider = useContentStore((state) => state.provider);
   const providerId = item?.provider || activeStoreProvider?.value || '';
+  // Sizes the season/quality picker popup (see `pickerBoxDynamic` below).
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
 
   // ---- Return-from-player restore -----------------------------------------
   // App.tsx unmounts this screen while the player is open, so what the
@@ -1110,11 +1113,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             {() => (
               <View style={styles.seasonPickerBtnInner}>
                 <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
-                <Text style={styles.seasonPickerBtnText} numberOfLines={1}>
+                {/* No numberOfLines: the button grows with its label up to
+                    `maxWidth`, then the label wraps onto more lines. */}
+                <Text style={styles.seasonPickerBtnText}>
                   {activeLink?.title || 'Select'}
                   {activeLink?.quality ? ` • ${activeLink.quality}` : ''}
                 </Text>
-                <MaterialCommunityIcons name="chevron-down" size={20} color="#9CA3AF" />
+                <MaterialCommunityIcons name="chevron-down" size={20} color="#C4B5FD" />
               </View>
             )}
           </TVFocusablePressable>
@@ -1227,20 +1232,43 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         animationType="fade"
         onRequestClose={() => setSeasonPickerVisible(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Select Season / Quality</Text>
-            <Text style={styles.modalSubtitle}>Choose which source to load episodes from.</Text>
-            <ScrollView showsVerticalScrollIndicator={false}>
+        <View style={styles.pickerOverlay}>
+          {/* Shrink-wraps its content (so a short list gets a compact card,
+              a long label a wider one) up to 70% of the screen; beyond
+              that labels wrap, and a long list scrolls inside the card. */}
+          <View
+            style={[
+              styles.pickerBox,
+              {
+                maxWidth: Math.min(windowWidth * 0.7, 900),
+                maxHeight: windowHeight * 0.8,
+              },
+            ]}
+          >
+            <View style={styles.pickerHeader}>
+              <MaterialCommunityIcons name="playlist-play" size={22} color="#A78BFA" />
+              <View style={styles.pickerHeaderText}>
+                <Text style={styles.pickerTitle}>Select Season / Quality</Text>
+                <Text style={styles.pickerSubtitle}>
+                  {linkList.length} options • choose which source to load episodes from
+                </Text>
+              </View>
+            </View>
+            <View style={styles.pickerDivider} />
+            <ScrollView
+              style={styles.pickerList}
+              contentContainerStyle={styles.pickerListContent}
+              showsVerticalScrollIndicator={false}
+            >
               {linkList.map((l, idx) => {
                 const isActive = idx === activeIndex;
                 return (
                   <TVFocusablePressable
                     key={`season-opt-${l.title}-${idx}`}
                     hasTVPreferredFocus={isActive}
-                    scaleFocused={1.03}
+                    scaleFocused={1.02}
                     focusedBorderColor="#8A5CF6"
-                    borderRadius={8}
+                    borderRadius={10}
                     onPress={() => {
                       // Only arms the forced scroll/refocus below when this
                       // pick will actually trigger an async episode fetch
@@ -1266,8 +1294,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                   >
                     {() => (
                       <View style={styles.seasonPickerOptionInner}>
+                        {/* Full label, wrapped -- never truncated. */}
                         <Text
-                          numberOfLines={1}
                           style={[
                             styles.seasonPickerOptionText,
                             isActive && styles.seasonPickerOptionTextActive,
@@ -1277,7 +1305,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                           {l.quality ? ` • ${l.quality}` : ''}
                         </Text>
                         {isActive && (
-                          <MaterialCommunityIcons name="check-circle" size={18} color="#8A5CF6" />
+                          <MaterialCommunityIcons
+                            name="check-circle"
+                            size={20}
+                            color="#A78BFA"
+                            style={styles.seasonPickerCheck}
+                          />
                         )}
                       </View>
                     )}
@@ -1429,11 +1462,12 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(22, 22, 30, 0.6)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderColor: 'rgba(167, 139, 250, 0.35)',
     paddingHorizontal: 16,
     paddingVertical: 10,
     marginBottom: 24,
-    maxWidth: 420,
+    // Grows with the label up to this width, then the label wraps.
+    maxWidth: 720,
   },
   seasonPickerBtnInner: {
     flexDirection: 'row',
@@ -1443,35 +1477,99 @@ const styles = StyleSheet.create({
   seasonPickerBtnText: {
     color: '#FFFFFF',
     fontSize: 14,
+    lineHeight: 20,
     fontWeight: '600',
     flexShrink: 1,
   },
-  // Rows inside the picker modal.
+  // Season/quality picker popup. Kept separate from the external-player
+  // "Select a Server" modal (modalOverlay/modalBox) so the two can differ.
+  pickerOverlay: {
+    flex: 1,
+    // Light dim so the details screen stays visible behind the popup.
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pickerBox: {
+    minWidth: 380,
+    backgroundColor: 'rgba(19, 19, 26, 0.7)',
+    borderRadius: 18,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    elevation: 12,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  pickerHeaderText: {
+    flexShrink: 1,
+  },
+  pickerTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  pickerSubtitle: {
+    color: '#B4B9C4',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  pickerDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginTop: 14,
+    marginBottom: 10,
+  },
+  pickerList: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  // Breathing room so a focused (scaled-up) row isn't clipped by the list.
+  pickerListContent: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  // Rows inside the picker popup.
   seasonPickerOption: {
-    backgroundColor: '#1E1E28',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    paddingVertical: 13,
+    paddingHorizontal: 16,
     marginBottom: 8,
   },
   seasonPickerOptionActive: {
-    backgroundColor: 'rgba(138, 92, 246, 0.22)',
-    borderWidth: 1,
+    backgroundColor: 'rgba(138, 92, 246, 0.28)',
     borderColor: '#8A5CF6',
   },
   seasonPickerOptionInner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 12,
   },
   seasonPickerOptionText: {
-    color: '#D1D5DB',
-    fontSize: 14,
+    color: '#E5E7EB',
+    fontSize: 15,
+    lineHeight: 21,
     fontWeight: '600',
     flexShrink: 1,
   },
   seasonPickerOptionTextActive: {
     color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  seasonPickerCheck: {
+    flexShrink: 0,
   },
   sectionHeader: {
     color: '#FFFFFF',
