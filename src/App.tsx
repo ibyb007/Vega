@@ -15,6 +15,7 @@ import { updateProvidersService } from './lib/services/UpdateProviders';
 import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks, SkipInterval } from './lib/providers/types';
 import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH, TVRoute } from './lib/native/NavRail';
+import { updateDetailsReturnEpisode } from './lib/tv/detailsReturnState';
 
 // TV Components & Screens
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
@@ -242,10 +243,29 @@ export default function App() {
     NavRail.setVisible(!railHidden);
   }, [railHidden]);
 
+  // Single exit point for the player (on-screen close *and* hardware Back).
+  // The details screen it returns to is rebuilt from scratch, and wants to
+  // put focus on the episode the person *finished* on -- which may not be
+  // the one they pressed if they moved on via Up Next / the Videos list
+  // inside the player. `currentEpisodeIndex` tracks that (see
+  // onSelectNextEpisode below), and each enriched episode carries its real
+  // season/episode numbers. A no-op for streams that did not start from
+  // the details screen (see updateDetailsReturnEpisode).
+  const closeActiveStream = useCallback((stream: ActiveStreamPayload | null) => {
+    const episode = stream?.episodes?.[stream.currentEpisodeIndex ?? 0];
+    if (stream && episode && episode.season != null && episode.episodeNumber != null) {
+      updateDetailsReturnEpisode(stream.itemLink, {
+        episodeKey: `S${episode.season}E${episode.episodeNumber}`,
+        episodeLink: episode.link,
+      });
+    }
+    setActiveStream(null);
+  }, []);
+
   useEffect(() => {
     const handleBackPress = () => {
       if (activeStream) {
-        setActiveStream(null);
+        closeActiveStream(activeStream);
         return true;
       }
 
@@ -277,7 +297,7 @@ export default function App() {
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => sub.remove();
-  }, [activeStream, selectedItem, currentRoute]);
+  }, [activeStream, selectedItem, currentRoute, closeActiveStream]);
 
   return (
     <SafeAreaProvider style={styles.rootContainer}>
@@ -336,9 +356,7 @@ export default function App() {
                           : null
                       );
                     }}
-                    onClose={() => {
-                      setActiveStream(null);
-                    }}
+                    onClose={() => closeActiveStream(activeStream)}
                   />
                 ) : selectedItem ? (
                   <TVDetailsScreen
