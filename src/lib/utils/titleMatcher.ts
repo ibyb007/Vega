@@ -88,6 +88,29 @@ export const cleanTitle = (raw: string): string => {
     .trim();
 };
 
+/**
+ * Turns a scraped addon title into text suitable for a catalog search box:
+ * cut at the first release/quality marker, bracketed noise and a trailing
+ * year removed, dotted/underscored separators turned into spaces. Unlike
+ * `cleanTitle` this keeps case and a leading article ("The Office"), since
+ * a search backend ranks better with the title as a person would type it;
+ * `cleanTitle` is still what the actual match decision is made on.
+ */
+export const toSearchQuery = (raw: string): string => {
+  const truncated = truncateAtReleaseMarker(raw || '');
+  const cleaned = truncated
+    .replace(BRACKETED, ' ')
+    // Truncating at a marker inside a bracket ("Dark [Dual Audio]") leaves
+    // the opening bracket dangling with no partner for BRACKETED to match.
+    .replace(/[[\](){}]/g, ' ')
+    .replace(/[._]+/g, ' ')
+    .replace(WHITESPACE, ' ')
+    .trim();
+  const withoutYear = cleaned.replace(TRAILING_YEAR, '').replace(WHITESPACE, ' ').trim();
+  // A title that IS a year ("2012", "1917") would be stripped to nothing.
+  return withoutYear || cleaned;
+};
+
 const splitMainAndSubtitle = (raw: string): [string, string] => {
   const parts = raw.split(/[:\-–]/);
   const main = cleanTitle(parts[0] || '');
