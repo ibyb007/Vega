@@ -48,6 +48,7 @@ import {
   fetchMatchingCinemetaMeta,
   findCinemetaEpisode,
   formatCinemetaRuntime,
+  formatEpisodeReleaseDate,
   CinemetaMeta,
 } from '../../lib/services/cinemetaService';
 import {
@@ -117,21 +118,6 @@ const isQualityExcluded = (
     }
     const cleanNum = exLower.replace('p', '');
     return text.includes(exLower) || (cleanNum.length >= 3 && text.includes(cleanNum));
-  });
-};
-
-// Cinemeta's per-episode `released` is an ISO datetime string. Formats it
-// down to a short, locale-aware date for display on an episode card --
-// falls back to the raw string if it turns out not to be parseable rather
-// than hiding the info entirely.
-const formatEpisodeReleaseDate = (released: string | undefined | null): string | undefined => {
-  if (!released) return undefined;
-  const date = new Date(released);
-  if (isNaN(date.getTime())) return released;
-  return date.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
   });
 };
 
