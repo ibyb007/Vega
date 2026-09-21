@@ -139,7 +139,10 @@ export class ExtensionManager {
       const providers: ProviderExtension[] = response.data.map((item: any) => ({
         value: item.value,
         display_name: item.display_name,
-        disabled: item.disabled || false,
+        // `"disabled": true` in the manifest hides the provider from the
+        // addons list. Strict on purpose: a stringly-typed "false" must not
+        // read as disabled.
+        disabled: item.disabled === true || item.disabled === 'true',
         source: activeSource,
         version: item.version,
         icon: item.icon || '',
