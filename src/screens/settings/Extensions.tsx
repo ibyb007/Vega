@@ -297,7 +297,10 @@ export default function Extensions({
     try {
       const parsedSource = createProviderSource(trimmed);
       const providers = await extensionManager.fetchManifest(parsedSource, true);
-      if (!providers || providers.length === 0) {
+      // Providers the manifest marks `"disabled": true` are not listed, so
+      // they must not count towards "this source has something to offer".
+      const usableProviders = (providers || []).filter((p) => !p.disabled);
+      if (usableProviders.length === 0) {
         throw new Error('No valid providers found at this source');
       }
 
@@ -307,7 +310,7 @@ export default function Extensions({
       setActiveSource(parsedSource);
       setAvailableProviders(providers);
 
-      ToastAndroid.show(`Found ${providers.length} available providers!`, ToastAndroid.SHORT);
+      ToastAndroid.show(`Found ${usableProviders.length} available providers!`, ToastAndroid.SHORT);
       setIsModalVisible(false);
     } catch (err: any) {
       ToastAndroid.show(err?.message || 'Failed to add source', ToastAndroid.LONG);
@@ -366,6 +369,16 @@ export default function Extensions({
     [installedProviders],
   );
 
+  // A source's manifest can mark a provider `"disabled": true` (broken,
+  // retired, not ready) -- those are not offered in the addons list. One
+  // exception: a disabled provider that is *already installed* stays
+  // listed, otherwise it would be stranded on the device with no way to
+  // uninstall it from here.
+  const visibleProviders = useMemo(
+    () => availableProviders.filter((p) => !p.disabled || installedSet.has(p.value)),
+    [availableProviders, installedSet],
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
@@ -404,7 +417,7 @@ export default function Extensions({
           <TVFocusablePressable
             key={keyFor('add-source-btn')}
             ref={(el) => setItemRef('add-source-btn', el)}
-            hasTVPreferredFocus={shouldPreferFocus('add-source-btn', availableProviders.length === 0)}
+            hasTVPreferredFocus={shouldPreferFocus('add-source-btn', visibleProviders.length === 0)}
             onFocus={() => (lastFocusedAddonsKey = 'add-source-btn')}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
@@ -437,7 +450,7 @@ export default function Extensions({
           <ActivityIndicator size="large" color={primaryColor} />
           <Text style={styles.loadingText}>Loading repository manifest...</Text>
         </View>
-      ) : availableProviders.length === 0 ? (
+      ) : visibleProviders.length === 0 ? (
         <View style={styles.centerContainer}>
           <MaterialCommunityIcons name="package-variant" size={72} color="#4B5563" />
           <Text style={styles.emptyTitle}>No providers available</Text>
@@ -452,7 +465,7 @@ export default function Extensions({
           removeClippedSubviews={true}
           scrollEventThrottle={16}
         >
-          {availableProviders.map((item) => {
+          {visibleProviders.map((item) => {
             const rowKey = `provider-${item.value}`;
             return (
               <ProviderRowItem
