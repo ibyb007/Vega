@@ -2046,10 +2046,124 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           })}
                         </View>
                       </View>
+                    ) : usableDirectItems.length > 0 ? (
+                      // No dedicated `episodesLink` for this season -- the
+                      // provider only gave a flat `directLinks` list (e.g. a
+                      // season whose only episode released so far is
+                      // S02E01). Render those exactly like real episodes
+                      // instead of falling through to "No episodes found",
+                      // matching TVDetailsScreen's equivalent fallback.
+                      <View style={styles.subBlock}>
+                        <Text style={styles.subHeader}>Episodes</Text>
+                        <View style={styles.episodesGrid}>
+                          {usableDirectItems.map((d, idx) => {
+                            const seasonNum = parseSeasonNumber(activeLink?.title) ?? activeLinkIndex + 1;
+                            const episodeNum = parseEpisodeNumber(d.title) ?? idx + 1;
+                            const cinemetaEp = findCinemetaEpisode(
+                              sourceCinemetaMeta,
+                              seasonNum,
+                              episodeNum,
+                            );
+                            const episodeThumb = cinemetaEp?.thumbnail || d.image;
+                            const episodeOverview = d.description || cinemetaEp?.overview;
+                            const episodeReleaseDate = formatEpisodeReleaseDate(cinemetaEp?.released);
+                            const episodeKey = `results:direct-ep:${d.link || idx}`;
+                            const stableEpisodeKey = `S${seasonNum}E${episodeNum}`;
+                            const isResumeTarget = resumeHint?.episodeKey
+                              ? resumeHint.episodeKey === stableEpisodeKey
+                              : !!resumeHint?.episodeLink && d.link === resumeHint.episodeLink;
+                            const episodesForPlayer: EpisodeLink[] = usableDirectItems.map((item, i) => ({
+                              title: item.title || `Episode ${i + 1}`,
+                              link: item.link,
+                              image: item.image,
+                              description: item.description,
+                              skip: item.skip,
+                            }));
+                            return (
+                              <TVFocusablePressable
+                                key={keyFor(episodeKey)}
+                                ref={(el) => setItemRef(episodeKey, el)}
+                                {...chain.propsFor(episodeKey)}
+                                hasTVPreferredFocus={
+                                  resumeHint?.episodeKey || resumeHint?.episodeLink
+                                    ? shouldPreferResultsFocus(episodeKey, isResumeTarget)
+                                    : shouldPreferResultsFocus(episodeKey, false)
+                                }
+                                onFocus={() => {
+                                  noteResultsFocus(episodeKey);
+                                }}
+                                scaleFocused={1.02}
+                                focusedBorderColor="#8A5CF6"
+                                borderRadius={8}
+                                onPress={() =>
+                                  handleResolveAndPlay(
+                                    d.link,
+                                    sourceInfo?.title ||
+                                      activeSourcePost?.title ||
+                                      resultsTarget?.title ||
+                                      d.title ||
+                                      `Episode ${idx + 1}`,
+                                    'series',
+                                    idx,
+                                    episodesForPlayer,
+                                    stableEpisodeKey,
+                                  )
+                                }
+                                style={styles.episodeCard}
+                              >
+                                {() => (
+                                  <View style={styles.episodeInner}>
+                                    {episodeThumb ? (
+                                      <View style={styles.episodeThumbWrap}>
+                                        <Image
+                                          source={{ uri: episodeThumb }}
+                                          style={styles.episodeThumb}
+                                          resizeMode="cover"
+                                        />
+                                        <View style={styles.episodeThumbPlayOverlay}>
+                                          <MaterialCommunityIcons name="play" size={16} color="#FFFFFF" />
+                                        </View>
+                                      </View>
+                                    ) : (
+                                      <MaterialCommunityIcons name="play-circle-outline" size={22} color="#8A5CF6" />
+                                    )}
+                                    <View style={styles.episodeTextWrap}>
+                                      <Text numberOfLines={1} style={styles.episodeText}>
+                                        {formatEpisodeLabel(
+                                          seasonNum,
+                                          episodeNum,
+                                          cinemetaEp?.name || cinemetaEp?.title || d.title,
+                                          `Episode ${idx + 1}`
+                                        )}
+                                      </Text>
+                                      {!!episodeReleaseDate && (
+                                        <Text numberOfLines={1} style={styles.episodeReleaseText}>
+                                          {episodeReleaseDate}
+                                        </Text>
+                                      )}
+                                      {!!episodeOverview && (
+                                        <Text numberOfLines={2} style={styles.episodeOverviewText}>
+                                          {episodeOverview}
+                                        </Text>
+                                      )}
+                                    </View>
+                                    {isResumeTarget && resumeHint?.position ? (
+                                      <Text style={styles.resumeBadge}>
+                                        Resume {Math.floor(resumeHint.position / 60)}:
+                                        {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+                                      </Text>
+                                    ) : null}
+                                  </View>
+                                )}
+                              </TVFocusablePressable>
+                            );
+                          })}
+                        </View>
+                      </View>
                     ) : (
                       <Text style={styles.emptySubtitle}>No episodes found for this season.</Text>
                     )
-                  ) : usableDirectItems.length > 0 ? (
+                  ) : usableDirectItems.length > 1 ? (
                     <View style={styles.subBlock}>
                       <Text style={styles.subHeader}>Play</Text>
                       <View style={styles.chipsRow}>
@@ -2108,6 +2222,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         !resumeHint.episodeKey &&
                         !resumeHint.episodeLink &&
                         !!resumeHint.position;
+                      // A single direct link (one server/quality) is still
+                      // the real target to play -- fall back to the source
+                      // post's own link only when the provider gave no
+                      // direct link at all.
+                      const singleDirect = usableDirectItems[0];
+                      const playLink = singleDirect?.link || activeSourcePost?.link;
+                      const playType = singleDirect?.type || 'movie';
                       return (
                         <TVFocusablePressable
                           key={keyFor('results:direct-stream-btn')}
@@ -2121,31 +2242,31 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           onFocus={() => {
                             noteResultsFocus('results:direct-stream-btn');
                           }}
-                          scaleFocused={1.04}
+                          scaleFocused={1.06}
                           focusedBorderColor="#FFFFFF"
-                          borderRadius={10}
+                          borderRadius={14}
                           onPress={() =>
-                            activeSourcePost &&
+                            playLink &&
                             handleResolveAndPlay(
-                              activeSourcePost.link,
-                              activeSourcePost.title,
-                              'movie',
+                              playLink,
+                              activeSourcePost?.title || resultsTarget?.title || singleDirect?.title,
+                              playType,
                               0,
                               undefined,
-                              activeSourcePost.link,
+                              activeSourcePost?.link,
                             )
                           }
                           style={styles.directStreamBtn}
                         >
                           {() => (
                             <View style={styles.directBtnInner}>
-                              <MaterialCommunityIcons name="play" size={24} color="#FFFFFF" />
+                              <MaterialCommunityIcons name="play" size={26} color="#FFFFFF" />
                               <Text style={styles.directBtnText}>
                                 {isMovieResume
                                   ? `Resume ${Math.floor((resumeHint!.position || 0) / 60)}:${String(
                                       Math.floor((resumeHint!.position || 0) % 60),
                                     ).padStart(2, '0')}`
-                                  : 'Start Playback'}
+                                  : 'Play Movie / Stream'}
                               </Text>
                             </View>
                           )}
@@ -3234,21 +3355,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.25)',
   },
+  // Matches TVDetailsScreen's playBtn/playBtnInner/playBtnText exactly, so
+  // a movie's play button looks identical whether reached from Discover or
+  // Details.
   directStreamBtn: {
     alignSelf: 'flex-start',
     backgroundColor: '#8A5CF6',
-    paddingHorizontal: 22,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingHorizontal: 28,
+    paddingVertical: 14,
   },
   directBtnInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   directBtnText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
   },
   modalOverlay: {
