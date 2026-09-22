@@ -567,6 +567,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const [activeLinkIndex, setActiveLinkIndex] = useState(
     restoredState?.activeLinkIndex ?? 0,
   );
+  // Controls the season/quality picker popup (see the results section
+  // below) -- same modal-based picker as TVDetailsScreen, replacing what
+  // used to be an inline row of chips.
+  const [seasonPickerVisible, setSeasonPickerVisible] = useState(false);
   const [episodes, setEpisodes] = useState<EpisodeLink[]>(
     restoredState?.episodes || [],
   );
@@ -1883,34 +1887,36 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       parseSeasonNumber(usableLinkList[0]?.title) !== null) && (
                     <View style={styles.subBlock}>
                       <Text style={styles.subHeader}>Seasons &amp; Quality</Text>
-                      <View style={styles.chipsRow}>
-                        {usableLinkList.map((l, idx) => (
-                          <TVFocusablePressable
-                            key={keyFor(`results:link:${idx}`)}
-                            ref={(el) => setItemRef(`results:link:${idx}`, el)}
-                            {...chain.propsFor(`results:link:${idx}`)}
-                            hasTVPreferredFocus={shouldPreferResultsFocus(`results:link:${idx}`, false)}
-                            onFocus={() => {
-                              noteResultsFocus(`results:link:${idx}`);
-                            }}
-                            scaleFocused={1.04}
-                            focusedBorderColor="#8A5CF6"
-                            borderRadius={8}
-                            onPress={() => {
-                              setActiveLinkIndex(idx);
-                              if (savedDiscoverState) savedDiscoverState.activeLinkIndex = idx;
-                            }}
-                            style={[styles.qualityChip, idx === activeLinkIndex && styles.qualityChipActive]}
-                          >
-                            {() => (
-                              <View style={styles.chipInner}>
-                                <MaterialCommunityIcons name="filmstrip" size={16} color="#8A5CF6" />
-                                <Text style={styles.chipText}>{l.title}</Text>
-                              </View>
-                            )}
-                          </TVFocusablePressable>
-                        ))}
-                      </View>
+                      {/* Single trigger button that opens the season/quality
+                          picker popup below -- same picker TVDetailsScreen
+                          uses, rather than an inline (and, with many
+                          options, multi-row) chip list. One reading-order
+                          stop here regardless of how many options exist. */}
+                      <TVFocusablePressable
+                        key={keyFor('results:linkPicker')}
+                        ref={(el) => setItemRef('results:linkPicker', el)}
+                        {...chain.propsFor('results:linkPicker')}
+                        hasTVPreferredFocus={shouldPreferResultsFocus('results:linkPicker', false)}
+                        onFocus={() => {
+                          noteResultsFocus('results:linkPicker');
+                        }}
+                        scaleFocused={1.03}
+                        focusedBorderColor="#8A5CF6"
+                        borderRadius={10}
+                        onPress={() => setSeasonPickerVisible(true)}
+                        style={styles.seasonPickerBtn}
+                      >
+                        {() => (
+                          <View style={styles.seasonPickerBtnInner}>
+                            <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
+                            <Text style={styles.seasonPickerBtnText}>
+                              {activeLink?.title || 'Select'}
+                              {activeLink?.quality ? ` • ${activeLink.quality}` : ''}
+                            </Text>
+                            <MaterialCommunityIcons name="chevron-down" size={20} color="#C4B5FD" />
+                          </View>
+                        )}
+                      </TVFocusablePressable>
                     </View>
                   )}
 
@@ -2040,10 +2046,124 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           })}
                         </View>
                       </View>
+                    ) : usableDirectItems.length > 0 ? (
+                      // No dedicated `episodesLink` for this season -- the
+                      // provider only gave a flat `directLinks` list (e.g. a
+                      // season whose only episode released so far is
+                      // S02E01). Render those exactly like real episodes
+                      // instead of falling through to "No episodes found",
+                      // matching TVDetailsScreen's equivalent fallback.
+                      <View style={styles.subBlock}>
+                        <Text style={styles.subHeader}>Episodes</Text>
+                        <View style={styles.episodesGrid}>
+                          {usableDirectItems.map((d, idx) => {
+                            const seasonNum = parseSeasonNumber(activeLink?.title) ?? activeLinkIndex + 1;
+                            const episodeNum = parseEpisodeNumber(d.title) ?? idx + 1;
+                            const cinemetaEp = findCinemetaEpisode(
+                              sourceCinemetaMeta,
+                              seasonNum,
+                              episodeNum,
+                            );
+                            const episodeThumb = cinemetaEp?.thumbnail || d.image;
+                            const episodeOverview = d.description || cinemetaEp?.overview;
+                            const episodeReleaseDate = formatEpisodeReleaseDate(cinemetaEp?.released);
+                            const episodeKey = `results:direct-ep:${d.link || idx}`;
+                            const stableEpisodeKey = `S${seasonNum}E${episodeNum}`;
+                            const isResumeTarget = resumeHint?.episodeKey
+                              ? resumeHint.episodeKey === stableEpisodeKey
+                              : !!resumeHint?.episodeLink && d.link === resumeHint.episodeLink;
+                            const episodesForPlayer: EpisodeLink[] = usableDirectItems.map((item, i) => ({
+                              title: item.title || `Episode ${i + 1}`,
+                              link: item.link,
+                              image: item.image,
+                              description: item.description,
+                              skip: item.skip,
+                            }));
+                            return (
+                              <TVFocusablePressable
+                                key={keyFor(episodeKey)}
+                                ref={(el) => setItemRef(episodeKey, el)}
+                                {...chain.propsFor(episodeKey)}
+                                hasTVPreferredFocus={
+                                  resumeHint?.episodeKey || resumeHint?.episodeLink
+                                    ? shouldPreferResultsFocus(episodeKey, isResumeTarget)
+                                    : shouldPreferResultsFocus(episodeKey, false)
+                                }
+                                onFocus={() => {
+                                  noteResultsFocus(episodeKey);
+                                }}
+                                scaleFocused={1.02}
+                                focusedBorderColor="#8A5CF6"
+                                borderRadius={8}
+                                onPress={() =>
+                                  handleResolveAndPlay(
+                                    d.link,
+                                    sourceInfo?.title ||
+                                      activeSourcePost?.title ||
+                                      resultsTarget?.title ||
+                                      d.title ||
+                                      `Episode ${idx + 1}`,
+                                    'series',
+                                    idx,
+                                    episodesForPlayer,
+                                    stableEpisodeKey,
+                                  )
+                                }
+                                style={styles.episodeCard}
+                              >
+                                {() => (
+                                  <View style={styles.episodeInner}>
+                                    {episodeThumb ? (
+                                      <View style={styles.episodeThumbWrap}>
+                                        <Image
+                                          source={{ uri: episodeThumb }}
+                                          style={styles.episodeThumb}
+                                          resizeMode="cover"
+                                        />
+                                        <View style={styles.episodeThumbPlayOverlay}>
+                                          <MaterialCommunityIcons name="play" size={16} color="#FFFFFF" />
+                                        </View>
+                                      </View>
+                                    ) : (
+                                      <MaterialCommunityIcons name="play-circle-outline" size={22} color="#8A5CF6" />
+                                    )}
+                                    <View style={styles.episodeTextWrap}>
+                                      <Text numberOfLines={1} style={styles.episodeText}>
+                                        {formatEpisodeLabel(
+                                          seasonNum,
+                                          episodeNum,
+                                          cinemetaEp?.name || cinemetaEp?.title || d.title,
+                                          `Episode ${idx + 1}`
+                                        )}
+                                      </Text>
+                                      {!!episodeReleaseDate && (
+                                        <Text numberOfLines={1} style={styles.episodeReleaseText}>
+                                          {episodeReleaseDate}
+                                        </Text>
+                                      )}
+                                      {!!episodeOverview && (
+                                        <Text numberOfLines={2} style={styles.episodeOverviewText}>
+                                          {episodeOverview}
+                                        </Text>
+                                      )}
+                                    </View>
+                                    {isResumeTarget && resumeHint?.position ? (
+                                      <Text style={styles.resumeBadge}>
+                                        Resume {Math.floor(resumeHint.position / 60)}:
+                                        {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
+                                      </Text>
+                                    ) : null}
+                                  </View>
+                                )}
+                              </TVFocusablePressable>
+                            );
+                          })}
+                        </View>
+                      </View>
                     ) : (
                       <Text style={styles.emptySubtitle}>No episodes found for this season.</Text>
                     )
-                  ) : usableDirectItems.length > 0 ? (
+                  ) : usableDirectItems.length > 1 ? (
                     <View style={styles.subBlock}>
                       <Text style={styles.subHeader}>Play</Text>
                       <View style={styles.chipsRow}>
@@ -2102,6 +2222,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         !resumeHint.episodeKey &&
                         !resumeHint.episodeLink &&
                         !!resumeHint.position;
+                      // A single direct link (one server/quality) is still
+                      // the real target to play -- fall back to the source
+                      // post's own link only when the provider gave no
+                      // direct link at all.
+                      const singleDirect = usableDirectItems[0];
+                      const playLink = singleDirect?.link || activeSourcePost?.link;
+                      const playType = singleDirect?.type || 'movie';
                       return (
                         <TVFocusablePressable
                           key={keyFor('results:direct-stream-btn')}
@@ -2115,31 +2242,31 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           onFocus={() => {
                             noteResultsFocus('results:direct-stream-btn');
                           }}
-                          scaleFocused={1.04}
+                          scaleFocused={1.06}
                           focusedBorderColor="#FFFFFF"
-                          borderRadius={10}
+                          borderRadius={14}
                           onPress={() =>
-                            activeSourcePost &&
+                            playLink &&
                             handleResolveAndPlay(
-                              activeSourcePost.link,
-                              activeSourcePost.title,
-                              'movie',
+                              playLink,
+                              activeSourcePost?.title || resultsTarget?.title || singleDirect?.title,
+                              playType,
                               0,
                               undefined,
-                              activeSourcePost.link,
+                              activeSourcePost?.link,
                             )
                           }
                           style={styles.directStreamBtn}
                         >
                           {() => (
                             <View style={styles.directBtnInner}>
-                              <MaterialCommunityIcons name="play" size={24} color="#FFFFFF" />
+                              <MaterialCommunityIcons name="play" size={26} color="#FFFFFF" />
                               <Text style={styles.directBtnText}>
                                 {isMovieResume
                                   ? `Resume ${Math.floor((resumeHint!.position || 0) / 60)}:${String(
                                       Math.floor((resumeHint!.position || 0) % 60),
                                     ).padStart(2, '0')}`
-                                  : 'Start Playback'}
+                                  : 'Play Movie / Stream'}
                               </Text>
                             </View>
                           )}
@@ -2152,6 +2279,95 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             </View>
           )}
         </ScrollView>
+
+        <Modal
+          visible={seasonPickerVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSeasonPickerVisible(false)}
+        >
+          <View style={styles.pickerOverlay}>
+            {/* Shrink-wraps its content (so a short list gets a compact card,
+                a long label a wider one) up to 70% of the screen; beyond
+                that labels wrap, and a long list scrolls inside the card. */}
+            <View
+              style={[
+                styles.pickerBox,
+                {
+                  maxWidth: Math.min(SCREEN_WIDTH * 0.7, 900),
+                  maxHeight: SCREEN_HEIGHT * 0.8,
+                },
+              ]}
+            >
+              <View style={styles.pickerHeader}>
+                <MaterialCommunityIcons name="playlist-play" size={22} color="#A78BFA" />
+                <View style={styles.pickerHeaderText}>
+                  <Text style={styles.pickerTitle}>Select Season / Quality</Text>
+                  <Text style={styles.pickerSubtitle}>
+                    {usableLinkList.length} options • choose which source to load episodes from
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.pickerDivider} />
+              <ScrollView
+                style={styles.pickerList}
+                contentContainerStyle={styles.pickerListContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {usableLinkList.map((l, idx) => {
+                  const isActive = idx === activeLinkIndex;
+                  return (
+                    <TVFocusablePressable
+                      key={`results-season-opt-${l.title}-${idx}`}
+                      hasTVPreferredFocus={isActive}
+                      scaleFocused={1.02}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={10}
+                      onPress={() => {
+                        setActiveLinkIndex(idx);
+                        if (savedDiscoverState) savedDiscoverState.activeLinkIndex = idx;
+                        setSeasonPickerVisible(false);
+                      }}
+                      style={[styles.seasonPickerOption, isActive && styles.seasonPickerOptionActive]}
+                    >
+                      {() => (
+                        <View style={styles.seasonPickerOptionInner}>
+                          {/* Full label, wrapped -- never truncated. */}
+                          <Text
+                            style={[
+                              styles.seasonPickerOptionText,
+                              isActive && styles.seasonPickerOptionTextActive,
+                            ]}
+                          >
+                            {l.title}
+                            {l.quality ? ` • ${l.quality}` : ''}
+                          </Text>
+                          {isActive && (
+                            <MaterialCommunityIcons
+                              name="check-circle"
+                              size={20}
+                              color="#A78BFA"
+                              style={styles.seasonPickerCheck}
+                            />
+                          )}
+                        </View>
+                      )}
+                    </TVFocusablePressable>
+                  );
+                })}
+              </ScrollView>
+              <TVFocusablePressable
+                scaleFocused={1.05}
+                focusedBorderColor="#FFFFFF"
+                borderRadius={8}
+                onPress={() => setSeasonPickerVisible(false)}
+                style={styles.pickerCancelBtn}
+              >
+                {() => <Text style={styles.pickerCancelText}>Cancel</Text>}
+              </TVFocusablePressable>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }
@@ -2894,7 +3110,134 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 8,
   },
+  // Season/quality picker trigger button + popup -- same look as
+  // TVDetailsScreen's picker (0.7-opacity card, dynamic sizing, no
+  // truncation).
+  seasonPickerBtn: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(22, 22, 30, 0.6)',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.35)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    // Grows with the label up to this width, then the label wraps.
+    maxWidth: 720,
+  },
+  seasonPickerBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  seasonPickerBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  pickerOverlay: {
+    flex: 1,
+    // Light dim so the results page stays visible behind the popup.
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pickerBox: {
+    minWidth: 380,
+    backgroundColor: 'rgba(19, 19, 26, 0.7)',
+    borderRadius: 18,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    elevation: 12,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  pickerHeaderText: {
+    flexShrink: 1,
+  },
+  pickerTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  pickerSubtitle: {
+    color: '#B4B9C4',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  pickerDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginTop: 14,
+    marginBottom: 10,
+  },
+  pickerList: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  // Breathing room so a focused (scaled-up) row isn't clipped by the list.
+  pickerListContent: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  // Rows inside the picker popup.
+  seasonPickerOption: {
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  seasonPickerOptionActive: {
+    backgroundColor: 'rgba(138, 92, 246, 0.28)',
+    borderColor: '#8A5CF6',
+  },
+  seasonPickerOptionInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  seasonPickerOptionText: {
+    color: '#E5E7EB',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  seasonPickerOptionTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  seasonPickerCheck: {
+    flexShrink: 0,
+  },
+  pickerCancelBtn: {
+    alignSelf: 'flex-end',
+    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+  },
+  pickerCancelText: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   chipsRow: {
+
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
@@ -3012,21 +3355,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.25)',
   },
+  // Matches TVDetailsScreen's playBtn/playBtnInner/playBtnText exactly, so
+  // a movie's play button looks identical whether reached from Discover or
+  // Details.
   directStreamBtn: {
     alignSelf: 'flex-start',
     backgroundColor: '#8A5CF6',
-    paddingHorizontal: 22,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingHorizontal: 28,
+    paddingVertical: 14,
   },
   directBtnInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   directBtnText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
   },
   modalOverlay: {

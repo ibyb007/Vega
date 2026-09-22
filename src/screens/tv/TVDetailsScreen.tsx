@@ -572,8 +572,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       });
     }
 
-    // Flat direct-link list.
-    if (usableDirectItems.length > 1) {
+    // Flat direct-link list. A season/quality pick with only one direct
+    // link is still a proper episode row (not a "movie") whenever the
+    // overall title is a series -- e.g. a season whose only episode
+    // released so far is S02E01. Only fall through to the single-source
+    // "Play Movie / Stream" button below when this really is a movie.
+    if (usableDirectItems.length > 1 || (usableDirectItems.length === 1 && directItemsAreEpisodes)) {
       const episodesForPlayer: EpisodeLink[] | undefined = directItemsAreEpisodes
         ? usableDirectItems.map((d: DirectLink, index) => {
             const episodeNum = episodeNumberFor(d.title, index);
