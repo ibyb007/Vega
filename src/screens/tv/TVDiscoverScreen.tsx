@@ -22,6 +22,7 @@ import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
+import { useReadingOrderFocus } from '../../lib/tv/useReadingOrderFocus';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { providerManager } from '../../lib/services/ProviderManager';
@@ -47,6 +48,7 @@ import {
   fetchMatchingCinemetaMeta,
   findCinemetaEpisode,
   formatCinemetaRuntime,
+  formatEpisodeReleaseDate,
   CinemetaMeta,
 } from '../../lib/services/cinemetaService';
 import {
@@ -70,6 +72,9 @@ const CONTAINER_PADDING_LEFT = 20;
 // extra headroom here (plus the matching inset on episodesGrid/chipsRow
 // below) keeps that growth inside the screen.
 const CONTAINER_PADDING_RIGHT = 56;
+// Page 2 has no rail beside it, so it needs a slightly larger left gutter than
+// page 1's 20dp (which sits next to the rail strip). Tweak to taste.
+const RESULTS_PADDING_LEFT = 48;
 const GRID_GAP = 14;
 const GRID_COLUMNS = 6;
 // This screen's content sits inside App.tsx's shared viewport wrapper,
@@ -116,21 +121,6 @@ const isQualityExcluded = (
   });
 };
 
-// Cinemeta's per-episode `released` is an ISO datetime string. Formats it
-// down to a short, locale-aware date for display on an episode card --
-// falls back to the raw string if it turns out not to be parseable rather
-// than hiding the info entirely.
-const formatEpisodeReleaseDate = (released: string | undefined | null): string | undefined => {
-  if (!released) return undefined;
-  const date = new Date(released);
-  if (isNaN(date.getTime())) return released;
-  return date.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-};
-
 interface TVDiscoverScreenProps {
   onSelectItem: (item: Post) => void;
   onNavigateRoute?: (route: TVRoute) => void;
@@ -139,6 +129,9 @@ interface TVDiscoverScreenProps {
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
   resetFocusOnMount?: boolean;
+  // Reports whether page 2 (results) is showing, so App can hide the native
+  // rail behind it -- same treatment as the details screen / player.
+  onResultsModeChange?: (active: boolean) => void;
 }
 
 // Module-level (not component state) so it survives this screen unmounting
@@ -163,6 +156,29 @@ let lastFocusedDiscoverBrowseKey: string | null = null;
 // card, a link, an episode, a direct-stream button -- last had real focus,
 // independently of the page-1 browse key above.
 let lastFocusedDiscoverResultsKey: string | null = null;
+// Vertical scroll offset of the page-2 results ScrollView, kept alongside the
+// key above. Coming back from the player remounts this whole screen with the
+// ScrollView at offset 0; the episode/link the person left off on is usually
+// further down and -- because that ScrollView clips off-screen children --
+// isn't attached to the window yet, so its `hasTVPreferredFocus` request has
+// nothing to focus and Android drops focus onto the nav rail instead.
+// Restoring this offset (see handleResultsContentSizeChange) puts that item
+// back inside the viewport before focus is re-requested.
+let lastResultsScrollY = 0;
+// Same idea, but for the page-1 (browse) poster grid. `screenMode` flips
+// between 'browse' and 'results' via an early-return in this component's
+// render (see the `if (screenMode === 'results') return (...)` below), so
+// the grid ScrollView actually unmounts and remounts fresh -- at y=0 --
+// every time the user backs out of page 2. Rows 1-2 sit inside that
+// initial y=0 viewport so their `hasTVPreferredFocus` request always
+// lands fine; a poster in row 3+ does not, and because the grid uses
+// `removeClippedSubviews`, nothing below the fold has a live native view
+// for focus to attach to -- Android's default search then takes over and
+// (observed) lands on the rail's Discover button instead. Restoring this
+// offset (see handleBrowseContentSizeChange) puts the remembered poster
+// back inside the viewport before focus is re-requested, exactly like
+// lastResultsScrollY does for page 2.
+let lastDiscoverBrowseScrollY = 0;
 
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
   `${c.manifestUrl}::${c.type}::${c.id}`;
@@ -216,6 +232,10 @@ interface SavedDiscoverState {
   sourceInfo: Info | null;
   activeLinkIndex: number;
   episodes: EpisodeLink[];
+  // Episode stills / synopses / logo. Saved so a remount after playback
+  // renders the SAME layout the person left; without it the first layout is
+  // shorter and later grows, shifting the restored focus/scroll target.
+  sourceCinemetaMeta?: CinemetaMeta | null;
 }
 
 let savedDiscoverState: SavedDiscoverState | null = null;
@@ -263,27 +283,238 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onRegisterEntryHandleGetter,
   onRegisterReturnFocusTrigger,
   resetFocusOnMount,
+  onResultsModeChange,
 }) => {
   // Kept in sync with `screenMode` state below via a plain render-time
   // assignment (not an effect) so the mode-aware getter passed to
   // useTVEntryFocus always reads the *current* mode at call time, even
   // though the effect that captures this getter only fires once (see the
   // hook's own `[onRegisterEntryHandleGetter]` dep array).
-  const screenModeRef = useRef<'browse' | 'results'>(savedDiscoverState?.screenMode || 'browse');
 
-  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+  // Home's Continue Watching card can hand this screen an item to open on
+  // page 2 (see openDiscoverResultFor). That request is already known at
+  // mount time, so start straight in the results view instead of first
+  // rendering the browse grid (nothing focusable yet -> Android parks focus
+  // on the rail's Search button) and only switching over from an effect.
+  const pendingOpenAtMountRef = useRef(pendingDiscoverOpenItem);
+  const startInResults = pendingOpenAtMountRef.current !== null;
+  // Page-2-specific state is never restored when a fresh open is pending --
+  // whatever results view was saved belongs to a different title.
+  const restoredState = startInResults ? null : savedDiscoverState;
+  const freshResultsResetRef = useRef(false);
+  if (startInResults && !freshResultsResetRef.current) {
+    freshResultsResetRef.current = true;
+    // A stale key from an earlier page-2 session (e.g. the episode last
+    // played) would otherwise stop the Back button claiming focus below.
+    lastFocusedDiscoverResultsKey = null;
+    lastResultsScrollY = 0;
+  }
+
+  const screenModeRef = useRef<'browse' | 'results'>(
+    startInResults ? 'results' : savedDiscoverState?.screenMode || 'browse',
+  );
+
+  // Keys of the page-2 items that currently have a real native view, and
+  // the results ScrollView itself -- see registerReturnTrigger / the
+  // scroll-restore below.
+  const mountedResultsKeysRef = useRef<Set<string>>(new Set());
+  const resultsScrollRef = useRef<ScrollView | null>(null);
+  // The page-1 grid's ScrollView, plus a flag saying "the grid is about to
+  // remount because we just backed out of page 2 -- restore its scroll
+  // position on the next content-size pass" (see backToBrowse and
+  // handleBrowseContentSizeChange below).
+  const browseScrollRef = useRef<ScrollView | null>(null);
+  const pendingBrowseScrollRestoreRef = useRef(false);
+  // Resume flow (Home -> Continue Watching -> here): until the person moves
+  // focus themselves, focus is steered to the resume source/episode/play
+  // button as each one appears; see shouldPreferResultsFocus.
+  const resumeFocusPendingRef = useRef(false);
+
+  // Shared fallback used both by the rail's Right-key recovery below and by
+  // the post-mount focus safety-net further down: if the item we think was
+  // last focused (`lastFocusedDiscoverResultsKey`) is missing or has no live
+  // native view right now, there's nothing for a bare focus() to land on --
+  // reroute to the always-present Back button (scrolled into view) instead
+  // of silently doing nothing. `invoke` is whatever actually issues the real
+  // focus request (the rail's returned trigger, or this screen's own
+  // `requestRefocus`) -- both behave identically, so this can drive either.
+  const reclaimResultsFocusOrFallback = useCallback((invoke: () => void) => {
+    const key = lastFocusedDiscoverResultsKey;
+    if (!key || !mountedResultsKeysRef.current.has(key)) {
+      lastFocusedDiscoverResultsKey = 'results:back';
+      resultsScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+      setTimeout(invoke, 50);
+      return;
+    }
+    invoke();
+  }, []);
+
+  // The rail's Right key asks the screen to re-focus whatever it last had
+  // focused. If that item is no longer there (episode list changed, source
+  // deselected...) or has been scrolled out of the viewport, the request
+  // used to silently do nothing -- and because the rail swallows the Right
+  // key while it waits for JS, that left no way back into the page at all.
+  // Fall back to the Back button, scrolled into view, so it can never dead-end.
+  const registerReturnTrigger = useCallback(
+    (trigger: (() => void) | null) => {
+      if (!onRegisterReturnFocusTrigger) return;
+      if (!trigger) {
+        onRegisterReturnFocusTrigger(null);
+        return;
+      }
+      onRegisterReturnFocusTrigger(() => {
+        if (screenModeRef.current === 'results') {
+          reclaimResultsFocusOrFallback(trigger);
+          return;
+        }
+        trigger();
+      });
+    },
+    [onRegisterReturnFocusTrigger, reclaimResultsFocusOrFallback],
+  );
+
+  const {
+    setItemRef: baseSetItemRef,
+    keyFor,
+    shouldPreferFocus,
+    requestRefocus,
+  } = useTVEntryFocus(
     () =>
       screenModeRef.current === 'results'
         ? lastFocusedDiscoverResultsKey
         : lastFocusedDiscoverBrowseKey,
     onRegisterEntryHandleGetter,
-    onRegisterReturnFocusTrigger,
+    registerReturnTrigger,
     resetFocusOnMount,
     () => {
       lastFocusedDiscoverBrowseKey = null;
       lastFocusedDiscoverResultsKey = null;
+      lastResultsScrollY = 0;
+      lastDiscoverBrowseScrollY = 0;
+      pendingBrowseScrollRestoreRef.current = false;
     }
   );
+
+  // Page 2 has no rail beside it, so Left/Right at a row's edge walk the
+  // page in reading order instead (see useReadingOrderFocus).
+  const chain = useReadingOrderFocus();
+
+  const setItemRef = useCallback(
+    (key: string, node: any) => {
+      baseSetItemRef(key, node);
+      // Only page-2 items take part in the reading-order chain; skipping the
+      // browse grid's posters avoids an extra re-render per poster mount.
+      if (key.startsWith('results:')) chain.register(key, node);
+      if (node) {
+        mountedResultsKeysRef.current.add(key);
+      } else {
+        mountedResultsKeysRef.current.delete(key);
+      }
+    },
+    [baseSetItemRef, chain.register],
+  );
+
+  // Captured once, after the hook above has had its chance to reset the
+  // keys for a fresh tab entry: only a genuine "come back to an existing
+  // page 2" mount (with something below the fold focused) needs the scroll
+  // position put back.
+  const restoreScrollYRef = useRef<number | null>(
+    restoredState?.screenMode === 'results' &&
+      lastFocusedDiscoverResultsKey &&
+      lastResultsScrollY > 0
+      ? lastResultsScrollY
+      : null,
+  );
+  // Same story for the episode list: it was restored from saved state, so
+  // there's nothing to re-fetch (and re-fetching swaps the grid for a
+  // "Loading episodes..." row, unmounting the very card that should hold
+  // focus).
+  const restoredEpisodesRef = useRef<boolean>(
+    Boolean(restoredState?.activeSourcePost && restoredState.episodes && restoredState.episodes.length > 0),
+  );
+
+  // When this mount is restoring an earlier page-2 position (Back from the
+  // player), Android may park default focus on the top-most button (the
+  // "Back to Discover" button) for a moment before the real target takes it.
+  // That landing fires the button's onFocus, which used to overwrite the
+  // remembered key with 'results:back' -- so the restore then "correctly"
+  // refocused the Back button and the page scrolled to the top. While this
+  // guard is armed, a focus on the Back button is not treated as the
+  // person's choice (see noteResultsFocus).
+  const restoreGuardRef = useRef<boolean>(
+    restoredState?.screenMode === 'results' &&
+      !!lastFocusedDiscoverResultsKey &&
+      lastFocusedDiscoverResultsKey !== 'results:back',
+  );
+  useEffect(() => {
+    if (!restoreGuardRef.current) return;
+    const t = setTimeout(() => {
+      restoreGuardRef.current = false;
+    }, 1200);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Belt-and-suspenders for landing directly in results on mount -- either
+  // resuming an existing page-2 session (most commonly: Back from the
+  // player) or opening straight into one from Home's Continue Watching card
+  // (see `startInResults`/`pendingDiscoverOpenItem` above). The scroll-
+  // restore path right below already re-issues a real focus request when
+  // the last-focused item was scrolled out of view, but plenty of sessions
+  // never scrolled at all (`lastResultsScrollY` stays 0) -- e.g. hitting
+  // Play without scrolling past the first source. Those still race the
+  // exact same native focus hazard on the way back from the player: the
+  // nav rail is transitioning from hidden to visible again at the same
+  // moment this whole screen is remounting from scratch, and if Android's
+  // default focus search resolves before this screen's own
+  // `hasTVPreferredFocus` request wins, it lands on the rail (observed as
+  // its "Search" row) instead -- with nothing below re-claiming it, since
+  // the scroll-restore branch only ever fires when there's an offset to
+  // restore. This flag makes the same one-time, post-layout re-assertion
+  // fire for every direct-to-results mount, not just the scrolled ones.
+  const resultsFocusSafetyNeededRef = useRef<boolean>(screenModeRef.current === 'results');
+
+  const handleResultsContentSizeChange = useCallback(() => {
+    const y = restoreScrollYRef.current;
+    if (y !== null) {
+      restoreScrollYRef.current = null;
+      resultsFocusSafetyNeededRef.current = false;
+      const key = lastFocusedDiscoverResultsKey;
+      const resolvable = !!key && mountedResultsKeysRef.current.has(key);
+      resultsScrollRef.current?.scrollTo({ x: 0, y: resolvable ? y : 0, animated: false });
+      // Give the scroll a beat to update which children are attached, then
+      // re-issue the real focus request for the item the person left off on
+      // (or the Back button if that item is gone).
+      setTimeout(() => requestRefocus(), 60);
+      return;
+    }
+    if (resultsFocusSafetyNeededRef.current) {
+      resultsFocusSafetyNeededRef.current = false;
+      // No scroll to restore, but still worth one re-assertion in case the
+      // rail won the initial focus race -- a no-op if it didn't, since this
+      // just re-requests focus on the same item that should already have it.
+      reclaimResultsFocusOrFallback(() => requestRefocus());
+    }
+  }, [requestRefocus, reclaimResultsFocusOrFallback]);
+
+  // Mirrors handleResultsContentSizeChange above, for the page-1 grid.
+  // Fires on every content-size pass of the browse ScrollView, but only
+  // acts the one time `pendingBrowseScrollRestoreRef` is armed (set by
+  // backToBrowse, right before the grid remounts at y=0).
+  const handleBrowseContentSizeChange = useCallback(() => {
+    if (!pendingBrowseScrollRestoreRef.current) return;
+    pendingBrowseScrollRestoreRef.current = false;
+    const y = lastDiscoverBrowseScrollY;
+    if (y <= 0) return;
+    const key = lastFocusedDiscoverBrowseKey;
+    // `mountedResultsKeysRef` (despite the name) tracks every currently
+    // rendered item's key, browse or results -- see setItemRef below.
+    const resolvable = !!key && mountedResultsKeysRef.current.has(key);
+    browseScrollRef.current?.scrollTo({ x: 0, y: resolvable ? y : 0, animated: false });
+    // Give the scroll a beat to bring the target row back into the
+    // ScrollView's clipping window, then re-issue the real focus request
+    // for the poster the person left off on.
+    setTimeout(() => requestRefocus(), 60);
+  }, [requestRefocus]);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
   const [catalogs, setCatalogs] = useState<DiscoverCatalog[]>(savedDiscoverState?.catalogs || []);
@@ -304,35 +535,49 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const heroRequestIdRef = useRef(0);
 
   const [screenMode, setScreenMode] = useState<'browse' | 'results'>(
-    savedDiscoverState?.screenMode || 'browse',
+    startInResults ? 'results' : savedDiscoverState?.screenMode || 'browse',
   );
   screenModeRef.current = screenMode;
 
+  // Tell App whether page 2 is showing so it can hide the rail behind it.
+  // No cleanup on purpose: this screen unmounts whenever the player opens,
+  // and reporting "not results" then would un-hide the rail right as the
+  // screen remounts on the way back -- the exact focus race this avoids.
+  // App clears the flag itself when it is genuinely left (see backToBrowse).
+  useEffect(() => {
+    onResultsModeChange?.(screenMode === 'results');
+  }, [screenMode, onResultsModeChange]);
+
   const [resultsTarget, setResultsTarget] = useState<
     (CatalogMediaItem & { logo?: string; cast?: string[]; runtime?: string }) | null
-  >(savedDiscoverState?.resultsTarget ?? null);
-  const [resultsLoading, setResultsLoading] = useState(false);
+  >((startInResults ? (pendingOpenAtMountRef.current as any) : savedDiscoverState?.resultsTarget) ?? null);
+  const [resultsLoading, setResultsLoading] = useState(startInResults);
   const [matchedAddonPosts, setMatchedAddonPosts] = useState<Post[]>(
-    savedDiscoverState?.matchedAddonPosts || [],
+    restoredState?.matchedAddonPosts || [],
   );
   const resolveAbortRef = useRef<AbortController | null>(null);
 
   const [activeSourcePost, setActiveSourcePost] = useState<Post | null>(
-    savedDiscoverState?.activeSourcePost ?? null,
+    restoredState?.activeSourcePost ?? null,
   );
   const [sourceInfo, setSourceInfo] = useState<Info | null>(
-    savedDiscoverState?.sourceInfo ?? null,
+    restoredState?.sourceInfo ?? null,
   );
   const [loadingSourceInfo, setLoadingSourceInfo] = useState(false);
   const [activeLinkIndex, setActiveLinkIndex] = useState(
-    savedDiscoverState?.activeLinkIndex ?? 0,
+    restoredState?.activeLinkIndex ?? 0,
   );
   const [episodes, setEpisodes] = useState<EpisodeLink[]>(
-    savedDiscoverState?.episodes || [],
+    restoredState?.episodes || [],
   );
   const [episodesLoading, setEpisodesLoading] = useState(false);
 
-  const [sourceCinemetaMeta, setSourceCinemetaMeta] = useState<CinemetaMeta | null>(null);
+  const [sourceCinemetaMeta, setSourceCinemetaMeta] = useState<CinemetaMeta | null>(
+    restoredState?.sourceCinemetaMeta ?? null,
+  );
+  // True only for the first run of the Cinemeta effect below on a remount that
+  // restored the meta -- that run must keep it instead of blanking + refetching.
+  const restoredCinemetaRef = useRef<boolean>(Boolean(restoredState?.sourceCinemetaMeta));
   const [extractingLink, setExtractingLink] = useState(false);
 
   // Resume context handed off by Home's Continue Watching card (see
@@ -475,6 +720,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       setItemsLoading(true);
       setSkip(0);
       setHasMore(true);
+      // A genuinely new catalog's item list is about to replace the old
+      // one -- any remembered browse scroll offset belongs to the old
+      // list and would be meaningless (or out of range) here.
+      lastDiscoverBrowseScrollY = 0;
+      pendingBrowseScrollRestoreRef.current = false;
       const res = await fetchCatalogItems(
         selectedCatalog!.baseEndpoint,
         selectedCatalog!.type,
@@ -555,6 +805,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       }
       const controller = new AbortController();
       resolveAbortRef.current = controller;
+      // A new page-2 context starts with nothing remembered from an earlier
+      // one -- a stale key/offset here is what left Back (the default entry
+      // point) without focus and parked it on the rail instead.
+      lastFocusedDiscoverResultsKey = null;
+      lastResultsScrollY = 0;
+      resumeFocusPendingRef.current = false;
       setResultsTarget(item);
       setScreenMode('results');
       setResultsLoading(true);
@@ -617,6 +873,26 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       const targetIds = extractExternalIds(item);
 
       const matches: Post[] = [];
+      // Publish matches to the list as each one is confirmed instead of
+      // holding them all back until the slowest addon has finished.
+      // Bursts (several posts confirmed in the same tick) are coalesced
+      // into a single state update.
+      let publishTimer: ReturnType<typeof setTimeout> | null = null;
+      const publishMatches = () => {
+        publishTimer = null;
+        if (controller.signal.aborted) return;
+        const snapshot = [...matches];
+        setMatchedAddonPosts(snapshot);
+        if (savedDiscoverState) {
+          savedDiscoverState.matchedAddonPosts = snapshot;
+        }
+      };
+      const addMatch = (post: Post) => {
+        matches.push(post);
+        if (!publishTimer) {
+          publishTimer = setTimeout(publishMatches, 60);
+        }
+      };
       await Promise.allSettled(
         installedProviders.map(async (provider) => {
           try {
@@ -639,7 +915,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 const candidateIds = extractExternalIds(post);
                 if (hasExternalId(candidateIds)) {
                   if (hasMatchingExternalId(targetIds, candidateIds)) {
-                    matches.push(post);
+                    addMatch(post);
                   }
                   return;
                 }
@@ -652,7 +928,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 // movie and series can't both satisfy.
                 const postType = (post as any).type;
                 if (isStrictMatch(item.title, post.title, item.year, postYear, item.type, postType)) {
-                  matches.push(post);
+                  addMatch(post);
                   return;
                 }
 
@@ -709,7 +985,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     !metaYear ||
                     isStrictMatch(item.title, post.title, item.year, metaYear, item.type, metaType)
                   ) {
-                    matches.push(post);
+                    addMatch(post);
                   }
                 } catch (metaErr) {
                   // Couldn't resolve this candidate's own metadata -- fall
@@ -722,7 +998,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     !controller.signal.aborted &&
                     !mediaKindsConflict(item.type, postType, item.title, post.title)
                   ) {
-                    matches.push(post);
+                    addMatch(post);
                   }
                 }
               }),
@@ -734,12 +1010,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           }
         }),
       );
-      if (controller.signal.aborted) return;
-      setMatchedAddonPosts(matches);
-      setResultsLoading(false);
-      if (savedDiscoverState) {
-        savedDiscoverState.matchedAddonPosts = matches;
+      if (publishTimer) {
+        clearTimeout(publishTimer);
+        publishTimer = null;
       }
+      if (controller.signal.aborted) return;
+      publishMatches();
+      setResultsLoading(false);
     },
     [installedProviders, selectedCatalog, catalogs, items, skip, hasMore, activeHero],
   );
@@ -760,6 +1037,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       pendingDiscoverResumeHint = null;
       if (hint) setResumeHint(hint);
       handleItemPress(item);
+      if (hint) resumeFocusPendingRef.current = true;
     }
   }, [handleItemPress]);
 
@@ -800,22 +1078,39 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // scratch every time they tap a Discover-sourced Continue Watching card.
   // Runs once per mount -- if the person picks a different source
   // manually, that choice is left alone.
+  //
+  // Matches now stream in one by one, so this can't just pick from whatever
+  // the first batch happens to contain: the exact info-page match is taken
+  // the moment it shows up, but the provider-only fallback (and giving up)
+  // waits until every addon has finished searching -- same outcome as when
+  // the list used to arrive all at once.
   useEffect(() => {
     if (autoSelectedResumeSourceRef.current) return;
-    if (!resumeHint || activeSourcePost || matchedAddonPosts.length === 0) return;
+    if (!resumeHint || activeSourcePost) return;
+    const exact =
+      (resumeHint.infoUrl && matchedAddonPosts.find((p) => p.link === resumeHint.infoUrl)) || null;
+    if (exact) {
+      autoSelectedResumeSourceRef.current = true;
+      handleSelectSourceCard(exact);
+      return;
+    }
+    if (resultsLoading) return;
     autoSelectedResumeSourceRef.current = true;
-    const match =
-      (resumeHint.infoUrl &&
-        matchedAddonPosts.find((p) => p.link === resumeHint.infoUrl)) ||
+    const byProvider =
       (resumeHint.providerValue &&
         matchedAddonPosts.find((p) => p.provider === resumeHint.providerValue)) ||
       null;
-    if (match) {
-      handleSelectSourceCard(match);
+    if (byProvider) {
+      handleSelectSourceCard(byProvider);
     }
-  }, [resumeHint, activeSourcePost, matchedAddonPosts, handleSelectSourceCard]);
+  }, [resumeHint, activeSourcePost, matchedAddonPosts, resultsLoading, handleSelectSourceCard]);
 
   const handleBackToSources = useCallback(() => {
+    // The episode/link that held focus is about to disappear; hand focus to
+    // the Back button (scrolled into view) instead of letting Android pick.
+    lastFocusedDiscoverResultsKey = null;
+    lastResultsScrollY = 0;
+    resultsScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
     setActiveSourcePost(null);
     setSourceInfo(null);
     setActiveLinkIndex(0);
@@ -841,6 +1136,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     if (!activeSourcePost?.provider) {
       setEpisodes([]);
       return;
+    }
+
+    // Returning from the player: episodes were restored with the rest of the
+    // saved page-2 state and nothing they depend on has changed, so skip the
+    // re-fetch (and the loading row that would replace the grid, unmounting
+    // the card that is supposed to get focus back).
+    if (restoredEpisodesRef.current) {
+      restoredEpisodesRef.current = false;
+      if (episodes.length > 0) return;
     }
 
     if (activeLink?.episodesLink) {
@@ -941,12 +1245,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
   useEffect(() => {
     let isMounted = true;
+    if (restoredCinemetaRef.current) {
+      // Remount after playback: keep the restored meta so the first layout
+      // matches the one the person left (no blank -> refetch -> grow).
+      restoredCinemetaRef.current = false;
+      return () => {
+        isMounted = false;
+      };
+    }
     setSourceCinemetaMeta(null);
+    if (savedDiscoverState) savedDiscoverState.sourceCinemetaMeta = null;
     const imdbId = sourceInfo?.imdbId || resultsTarget?.imdb_id || resultsTarget?.id;
     const type = sourceInfo?.type || resultsTarget?.type;
     if (imdbId && type) {
       fetchMatchingCinemetaMeta(imdbId, type, sourceInfo?.title || resultsTarget?.title).then((meta) => {
-        if (isMounted) setSourceCinemetaMeta(meta);
+        if (!isMounted) return;
+        setSourceCinemetaMeta(meta);
+        if (savedDiscoverState) savedDiscoverState.sourceCinemetaMeta = meta;
       });
     }
     return () => {
@@ -1089,6 +1404,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           savedDiscoverState.sourceInfo = sourceInfo;
           savedDiscoverState.activeLinkIndex = activeLinkIndex;
           savedDiscoverState.episodes = episodesToSend || episodes;
+          savedDiscoverState.sourceCinemetaMeta = sourceCinemetaMeta;
         }
 
         const canonicalKey = episodeKey || link || activeSourcePost?.link;
@@ -1163,6 +1479,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       return;
     }
     if (resolveAbortRef.current) resolveAbortRef.current.abort();
+    lastFocusedDiscoverResultsKey = null;
+    lastResultsScrollY = 0;
+    // The grid ScrollView is about to remount at y=0 (see the
+    // `screenMode === 'results'` early-return in render) -- arm the
+    // restore so handleBrowseContentSizeChange scrolls the remembered
+    // poster back into view once the grid's items are laid out again.
+    pendingBrowseScrollRestoreRef.current = true;
     setScreenMode('browse');
     setResultsTarget(null);
     setMatchedAddonPosts([]);
@@ -1308,6 +1631,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     const isAwaitingEpisodes = isSeries && episodesLoading && episodes.length === 0;
     const logoUrl = resultsTarget?.logo || (sourceCinemetaMeta as any)?.logo;
 
+    // Reading-order Left/Right chain: reset at the top of every results
+    // render; each focusable below adds itself, in visual order, via
+    // `chain.propsFor(key)`.
+    chain.beginRender();
+
     // Mirrors `shouldPreferFocus`, but reads its own dedicated
     // `lastFocusedDiscoverResultsKey` variable instead of the page-1
     // browse key, so focusing anything here (the Back button, a source
@@ -1316,8 +1644,27 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     // never suppresses the default entry point (the Back button) the
     // first time results are shown, since the two keys can no longer
     // collide.
-    const shouldPreferResultsFocus = (key: string, defaultValue: boolean): boolean =>
-      lastFocusedDiscoverResultsKey ? lastFocusedDiscoverResultsKey === key : defaultValue;
+    const shouldPreferResultsFocus = (key: string, defaultValue: boolean): boolean => {
+      if (resumeFocusPendingRef.current) {
+        // Resume flow: the Back button holds focus while sources load, then
+        // the resume source -> episode/play button claim it as they appear,
+        // until the person moves focus somewhere else themselves.
+        return key === 'results:back' ? true : defaultValue;
+      }
+      return lastFocusedDiscoverResultsKey ? lastFocusedDiscoverResultsKey === key : defaultValue;
+    };
+    const noteResultsFocus = (key: string, keepResumePending: boolean = false) => {
+      if (restoreGuardRef.current) {
+        // Default-focus landing on the Back button while restoring: not a
+        // real choice, so don't let it replace the remembered target.
+        if (key === 'results:back') return;
+        restoreGuardRef.current = false;
+      }
+      lastFocusedDiscoverResultsKey = key;
+      if (!keepResumePending && key !== 'results:back') {
+        resumeFocusPendingRef.current = false;
+      }
+    };
 
     return (
       <View style={styles.resultsRoot}>
@@ -1340,28 +1687,35 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         </View>
 
         <ScrollView
+          ref={resultsScrollRef}
           style={styles.resultsScrollView}
           contentContainerStyle={styles.resultsScrollContent}
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={16}
-          // NOTE: left at `true` (its original value) on purpose. Turning
-          // this off to chase the right-edge clipping issue below turned
-          // out to add just enough extra native mount/measure work during
-          // the browse<->results transition to lose the race for Android
-          // TV focus on slower devices -- focus would escape to the nav
-          // rail's Discover button while this screen was still settling,
-          // and returning from the rail would land back on the right item
-          // but with the scroll position reset to the top. The edge-
-          // clipping fix below (padding/right-inset only) doesn't need
-          // this prop changed at all.
-          removeClippedSubviews={true}
+          onScroll={(e) => {
+            lastResultsScrollY = e.nativeEvent.contentOffset.y;
+          }}
+          onContentSizeChange={handleResultsContentSizeChange}
+          // Clipping is OFF on purpose. With it on, every row scrolled out of
+          // view is detached from the window, which broke two things here:
+          //  1. Coming back from the player, the episode/button the person
+          //     left off on (usually below the fold) had no attached view to
+          //     take focus, so Android fell back to the first focusable (the
+          //     Back button) and the page jumped to the top.
+          //  2. The Left/Right reading-order links (useReadingOrderFocus) are
+          //     explicit next-focus ids, which only resolve to attached views.
+          // The old reason for keeping it on (winning a focus race against
+          // the nav rail while this screen mounted) is gone: the rail is
+          // hidden while page 2 is showing.
+          removeClippedSubviews={false}
         >
           <TVFocusablePressable
             key={keyFor('results:back')}
             ref={(el) => setItemRef('results:back', el)}
+            {...chain.propsFor('results:back')}
             hasTVPreferredFocus={shouldPreferResultsFocus('results:back', true)}
             onFocus={() => {
-              lastFocusedDiscoverResultsKey = 'results:back';
+              noteResultsFocus('results:back');
             }}
             scaleFocused={1.04}
             focusedBorderColor="#8A5CF6"
@@ -1417,13 +1771,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>Matching Addon Sources</Text>
-            {resultsLoading ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator size="small" color="#8A5CF6" />
-                <Text style={styles.loadingText}>Searching installed addons for exact matches...</Text>
-              </View>
-            ) : matchedAddonPosts.length === 0 ? (
-              <Text style={styles.emptySubtitle}>No matching releases found in your installed addons.</Text>
+            {matchedAddonPosts.length === 0 ? (
+              resultsLoading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator size="small" color="#8A5CF6" />
+                  <Text style={styles.loadingText}>Searching installed addons for exact matches...</Text>
+                </View>
+              ) : (
+                <Text style={styles.emptySubtitle}>No matching releases found in your installed addons.</Text>
+              )
             ) : (
               <ScrollView
                 horizontal
@@ -1446,6 +1802,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         setItemRef(sourceKey, el);
                         if (isFirst) sourcesRowFirstRef.current = el;
                       }}
+                      {...chain.propsFor(sourceKey)}
                       hasTVPreferredFocus={
                         resumeHint
                           ? shouldPreferResultsFocus(sourceKey, isResumeSource)
@@ -1455,7 +1812,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       focusedBorderColor="#8A5CF6"
                       borderRadius={10}
                       onFocus={() => {
-                        lastFocusedDiscoverResultsKey = sourceKey;
+                        noteResultsFocus(sourceKey, isResumeSource);
                         if (isFirst) registerRailLeftEdge('discover', sourcesRowFirstRef.current);
                       }}
                       onPress={() => handleSelectSourceCard(post)}
@@ -1486,6 +1843,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     </TVFocusablePressable>
                   );
                 })}
+                {resultsLoading ? (
+                  // Still searching the remaining addons -- more cards will
+                  // be appended after these as they are confirmed.
+                  <View style={styles.sourcesLoadingTail}>
+                    <ActivityIndicator size="small" color="#8A5CF6" />
+                  </View>
+                ) : null}
               </ScrollView>
             )}
           </View>
@@ -1524,9 +1888,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           <TVFocusablePressable
                             key={keyFor(`results:link:${idx}`)}
                             ref={(el) => setItemRef(`results:link:${idx}`, el)}
+                            {...chain.propsFor(`results:link:${idx}`)}
                             hasTVPreferredFocus={shouldPreferResultsFocus(`results:link:${idx}`, false)}
                             onFocus={() => {
-                              lastFocusedDiscoverResultsKey = `results:link:${idx}`;
+                              noteResultsFocus(`results:link:${idx}`);
                             }}
                             scaleFocused={1.04}
                             focusedBorderColor="#8A5CF6"
@@ -1598,13 +1963,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                               <TVFocusablePressable
                                 key={keyFor(episodeKey)}
                                 ref={(el) => setItemRef(episodeKey, el)}
+                                {...chain.propsFor(episodeKey)}
                                 hasTVPreferredFocus={
                                   resumeHint?.episodeKey || resumeHint?.episodeLink
                                     ? shouldPreferResultsFocus(episodeKey, isResumeTarget)
                                     : shouldPreferResultsFocus(episodeKey, false)
                                 }
                                 onFocus={() => {
-                                  lastFocusedDiscoverResultsKey = episodeKey;
+                                  noteResultsFocus(episodeKey);
                                 }}
                                 scaleFocused={1.02}
                                 focusedBorderColor="#8A5CF6"
@@ -1685,9 +2051,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                           <TVFocusablePressable
                             key={keyFor(`results:direct:${idx}`)}
                             ref={(el) => setItemRef(`results:direct:${idx}`, el)}
+                            {...chain.propsFor(`results:direct:${idx}`)}
                             hasTVPreferredFocus={shouldPreferResultsFocus(`results:direct:${idx}`, false)}
                             onFocus={() => {
-                              lastFocusedDiscoverResultsKey = `results:direct:${idx}`;
+                              noteResultsFocus(`results:direct:${idx}`);
                             }}
                             scaleFocused={1.04}
                             focusedBorderColor="#FFFFFF"
@@ -1739,13 +2106,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         <TVFocusablePressable
                           key={keyFor('results:direct-stream-btn')}
                           ref={(el) => setItemRef('results:direct-stream-btn', el)}
+                          {...chain.propsFor('results:direct-stream-btn')}
                           hasTVPreferredFocus={
                             resumeHint
                               ? shouldPreferResultsFocus('results:direct-stream-btn', isMovieResume)
                               : shouldPreferResultsFocus('results:direct-stream-btn', false)
                           }
                           onFocus={() => {
-                            lastFocusedDiscoverResultsKey = 'results:direct-stream-btn';
+                            noteResultsFocus('results:direct-stream-btn');
                           }}
                           scaleFocused={1.04}
                           focusedBorderColor="#FFFFFF"
@@ -1924,10 +2292,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           </View>
         ) : (
           <ScrollView
+            ref={browseScrollRef}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.gridContainer}
             scrollEventThrottle={16}
             removeClippedSubviews={true}
+            onScroll={(e) => {
+              lastDiscoverBrowseScrollY = e.nativeEvent.contentOffset.y;
+            }}
+            onContentSizeChange={handleBrowseContentSizeChange}
           >
             {items.map((item, index) => {
               const isLeftEdge = index % GRID_COLUMNS === 0;
@@ -2206,8 +2579,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.12)',
   },
   catalogPillActive: {
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    // Was the same translucent black as the inactive pill, distinguished
+    // only by border color -- easy to mistake for the focus ring (which
+    // also draws a purple-ish border via focusedBorderColor). A filled
+    // tint makes the selected category readable at a glance even when
+    // focus is elsewhere.
+    backgroundColor: 'rgba(138, 92, 246, 0.28)',
     borderColor: '#8A5CF6',
+    borderWidth: 1.5,
   },
   catalogText: {
     color: '#D1D5DB',
@@ -2329,7 +2708,9 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   resultsScrollContent: {
-    paddingLeft: CONTAINER_PADDING_LEFT,
+    // App no longer reserves the rail's 72dp strip on page 2 (rail is hidden
+    // there), so this carries the whole left gutter itself.
+    paddingLeft: RESULTS_PADDING_LEFT,
     paddingRight: CONTAINER_PADDING_RIGHT,
     paddingTop: 24,
     paddingBottom: 60,
@@ -2460,6 +2841,12 @@ const styles = StyleSheet.create({
     // ended exactly at the scroll content's edge, so focusing it and
     // triggering its scaleFocused growth pushed it straight off-screen.
     paddingRight: 40,
+  },
+  sourcesLoadingTail: {
+    width: 44,
+    height: 180,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sourceCard: {
     width: 125,

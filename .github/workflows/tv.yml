@@ -1,10 +1,28 @@
 name: Build Android TV Release APK
 
+# Controls how each run is labeled in the Actions run list (not just the
+# static workflow name above) -- a canary dispatch shows up as its own
+# "Build Canary APK" run instead of blending in with stable release runs.
+run-name: ${{ inputs.channel == 'canary' && 'Build Canary APK' || 'Build Android TV Release APK' }}
+
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel'
+        type: choice
+        options:
+          - stable
+          - canary
+        default: stable
 
 permissions:
   contents: write
+
+# Avoid two manual runs racing to publish/overwrite releases out of order.
+concurrency:
+  group: build-tv-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   build-tv:
@@ -39,23 +57,54 @@ jobs:
         run: |
           # Keep manual version from package.json/app.config.js
           VERSION_NAME=$(node -p "require('./package.json').version || '4.0.6'")
-          
+
           # Automatically increment versionCode above 192 (e.g., Run 103 -> 203)
           VERSION_CODE=$((100 + ${{ github.run_number }}))
           RUN_ATTEMPT=${{ github.run_attempt }}
 
+          # Only trigger left is workflow_dispatch, so the channel input is
+          # always present -- "stable" unless explicitly switched to
+          # "canary" in the run dialog.
+          CHANNEL="${{ inputs.channel }}"
+
           # Ensure unique tag name across runs and re-run attempts.
           # "-kotlin" sits right next to the version so it's visible on the
-          # tag, the release title, and every APK filename below.
-          if [ "$RUN_ATTEMPT" -gt 1 ]; then
-            TAG_NAME="v${VERSION_NAME}-kotlin-tv-${{ github.run_number }}.${RUN_ATTEMPT}"
+          # tag, the release title, and every APK filename below. Canary
+          # builds get their own "-canary-" segment so they never collide
+          # with a stable tag/filename and are unmistakable at a glance.
+          if [ "$CHANNEL" = "canary" ]; then
+            TAG_SUFFIX="kotlin-tv-canary"
+            RELEASE_LABEL="Vega TV Canary"
           else
-            TAG_NAME="v${VERSION_NAME}-kotlin-tv-${{ github.run_number }}"
+            TAG_SUFFIX="kotlin-tv"
+            RELEASE_LABEL="Vega TV"
           fi
 
+          if [ "$RUN_ATTEMPT" -gt 1 ]; then
+            TAG_NAME="v${VERSION_NAME}-${TAG_SUFFIX}-${{ github.run_number }}.${RUN_ATTEMPT}"
+          else
+            TAG_NAME="v${VERSION_NAME}-${TAG_SUFFIX}-${{ github.run_number }}"
+          fi
+
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "release_name=$RELEASE_LABEL $TAG_NAME" >> $GITHUB_OUTPUT
+
+          # Canary is a prerelease and must never become the repo's
+          # highlighted "Latest release" -- both flags are required:
+          # prerelease alone still lets `make_latest: true`/auto-detection
+          # promote it, and make_latest:false alone would still show it
+          # without the Pre-release badge. Together, it's only visible by
+          # opening the full Releases list.
+          if [ "$CHANNEL" = "canary" ]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "make_latest=false" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+            echo "make_latest=true" >> $GITHUB_OUTPUT
+          fi
 
           git fetch --tags origin 2>/dev/null || true
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
@@ -121,7 +170,7 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Vega-TV-Release-APKs
+          name: Vega-TV-${{ steps.release_meta.outputs.channel }}-APKs
           path: output_apks/*.apk
           if-no-files-found: error
 
@@ -129,19 +178,22 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag_name }}
-          name: Vega TV ${{ steps.release_meta.outputs.tag_name }}
-          make_latest: true
+          name: ${{ steps.release_meta.outputs.release_name }}
+          make_latest: ${{ steps.release_meta.outputs.make_latest }}
+          prerelease: ${{ steps.release_meta.outputs.prerelease }}
           body: |
+            ${{ steps.release_meta.outputs.channel == 'canary' && '> ⚠️ **Canary build** -- a manually-triggered test build. May be unstable; not shown as the repo''s Latest release.' || '' }}
+
             ## What's Changed
             ${{ steps.release_meta.outputs.changelog }}
 
             ---
+            * **Channel**: `${{ steps.release_meta.outputs.channel }}`
             * **App Version**: `${{ steps.release_meta.outputs.version_name }}`
             * **Build Code (versionCode)**: `${{ steps.release_meta.outputs.version_code }}`
             * **Target Architecture**: Android TV (`armeabi-v7a`, `arm64-v8a`)
           files: output_apks/*.apk
           generate_release_notes: false
           draft: false
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

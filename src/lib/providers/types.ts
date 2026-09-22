@@ -74,6 +74,10 @@ export interface EpisodeLink {
   sourceLink?: string;
   description?: string;
   image?: string;
+  // Optional file size, e.g. "1.4 GB" / "850 MB" (a bare number is bytes).
+  // Providers that don't set it can still put the size in the title or
+  // description -- see getFileSizeLabel in lib/utils/fileSize.
+  size?: string | number;
   quickDownload?: boolean;
   skip?: SkipInterval[];
 }
@@ -89,6 +93,8 @@ export interface Link {
     type?: 'movie' | 'series';
     description?: string;
     image?: string;
+    // Optional file size -- same contract as EpisodeLink.size.
+    size?: string | number;
     quickDownload?: boolean;
     skip?: SkipInterval[];
   }[];
