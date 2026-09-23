@@ -53,6 +53,23 @@ export interface CinemetaMeta {
 const metaCache = new Map<string, CinemetaMeta>();
 const metaInFlight = new Map<string, Promise<CinemetaMeta | null>>();
 
+// A full meta carries every episode of a show (hundreds of entries for a
+// long series), and browsing the home screen touches one title per D-pad
+// move. Unbounded, the caches below would just keep growing for the whole
+// session -- so they evict oldest-first past these sizes. Big enough that
+// the title being looked at (and its neighbours) always stays warm.
+const META_CACHE_LIMIT = 60;
+const SEARCH_CACHE_LIMIT = 200;
+
+const rememberBounded = <V,>(map: Map<string, V>, key: string, value: V, limit: number) => {
+  map.delete(key); // re-insert so a refreshed entry counts as newest
+  map.set(key, value);
+  if (map.size > limit) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+};
+
 const keyFor = (imdbId: string, mediaType: string) => `${mediaType}::${imdbId}`;
 
 // Normalizes a title for loose equality checks (strip punctuation/case/
@@ -99,7 +116,7 @@ export const fetchCinemetaMeta = (
     .then((data) => {
       const meta: CinemetaMeta | null = data?.meta || null;
       metaInFlight.delete(key);
-      if (meta) metaCache.set(key, meta);
+      if (meta) rememberBounded(metaCache, key, meta, META_CACHE_LIMIT);
       return meta;
     })
     .catch(() => {
@@ -217,6 +234,14 @@ export interface CinemetaSearchHit {
   name: string;
   /** 4-digit start year, when Cinemeta gave one. */
   year?: string;
+  // What Cinemeta's catalog rows already carry alongside the id. Enough to
+  // paint a home hero without fetching the full meta (whose `videos` list
+  // makes it by far the heaviest response to download and JSON-parse).
+  background?: string;
+  description?: string;
+  releaseInfo?: string;
+  rating?: string;
+  genres?: string[];
 }
 
 const searchCache = new Map<string, Promise<CinemetaSearchHit[]>>();
@@ -249,7 +274,19 @@ export const searchCinemetaCatalog = (
         const rawId = m?.imdb_id || m?.id;
         if (!name || typeof rawId !== 'string' || !IMDB_ID.test(rawId)) return;
         const year = String(m.releaseInfo ?? m.year ?? '').match(/(19|20)\d{2}/)?.[0];
-        hits.push({ imdbId: rawId.toLowerCase(), type, name: String(name), year });
+        const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
+        const genres = Array.isArray(m.genres) ? m.genres : Array.isArray(m.genre) ? m.genre : [];
+        hits.push({
+          imdbId: rawId.toLowerCase(),
+          type,
+          name: String(name),
+          year,
+          background: str(m.background),
+          description: str(m.description),
+          releaseInfo: m.releaseInfo != null ? String(m.releaseInfo) : undefined,
+          rating: m.imdbRating != null ? String(m.imdbRating) : undefined,
+          genres: genres.filter((g: unknown) => typeof g === 'string'),
+        });
       });
       return hits;
     })
@@ -258,7 +295,7 @@ export const searchCinemetaCatalog = (
       return [];
     });
 
-  searchCache.set(key, request);
+  rememberBounded(searchCache, key, request, SEARCH_CACHE_LIMIT);
   return request;
 };
 
@@ -291,9 +328,16 @@ const TMDB_CHECK_LIMIT = 5;
  * none -- so it returns null rather than guessing when several same-titled
  * releases remain and nothing (year, kind, TMDB id) tells them apart.
  */
-export const findCinemetaMetaForProviderTitle = async (
+interface PickedCinemeta {
+  hit: CinemetaSearchHit;
+  // Only set when picking already required fetching the full meta (the
+  // TMDB-id check below), so callers don't fetch it a second time.
+  meta?: CinemetaMeta;
+}
+
+const pickCinemetaForProviderTitle = async (
   query: ProviderTitleQuery,
-): Promise<CinemetaMeta | null> => {
+): Promise<PickedCinemeta | null> => {
   const providerTitle = query.title || '';
   const searchText = toSearchQuery(providerTitle);
   if (!searchText) return null;
@@ -317,8 +361,10 @@ export const findCinemetaMetaForProviderTitle = async (
   if (tmdbId) {
     const candidates = hits.slice(0, TMDB_CHECK_LIMIT);
     const metas = await Promise.all(candidates.map((h) => fetchCinemetaMeta(h.imdbId, h.type)));
-    const exact = metas.find((m) => m && m.moviedb_id != null && String(m.moviedb_id) === tmdbId);
-    if (exact) return exact;
+    const exactIndex = metas.findIndex(
+      (m) => m && m.moviedb_id != null && String(m.moviedb_id) === tmdbId,
+    );
+    if (exactIndex >= 0) return { hit: candidates[exactIndex], meta: metas[exactIndex]! };
     conflicting = new Set(
       candidates
         .filter((_, i) => metas[i]?.moviedb_id != null && String(metas[i]!.moviedb_id) !== tmdbId)
@@ -367,7 +413,15 @@ export const findCinemetaMetaForProviderTitle = async (
   }
 
   if (!pick) return null;
-  return fetchCinemetaMeta(pick.imdbId, pick.type);
+  return { hit: pick };
+};
+
+export const findCinemetaMetaForProviderTitle = async (
+  query: ProviderTitleQuery,
+): Promise<CinemetaMeta | null> => {
+  const picked = await pickCinemetaForProviderTitle(query);
+  if (!picked) return null;
+  return picked.meta ?? fetchCinemetaMeta(picked.hit.imdbId, picked.hit.type);
 };
 
 export interface CinemetaResolveInput extends ProviderTitleQuery {
@@ -383,6 +437,24 @@ export interface CinemetaResolveResult {
   source: 'id' | 'title';
 }
 
+const resolveByProviderId = async (input: CinemetaResolveInput): Promise<CinemetaMeta | null> => {
+  const imdbId = typeof input.imdbId === 'string' ? input.imdbId.trim() : '';
+  if (!imdbId || !IMDB_ID.test(imdbId)) return null;
+  const providerKind = normalizeMediaKind(input.type);
+  // The id is what identifies the title; the provider's own `type` is
+  // only a hint about which Cinemeta endpoint to try first (providers
+  // frequently leave it at a movie default even for shows).
+  const order: ('movie' | 'series')[] =
+    providerKind === 'movie' ? ['movie', 'series'] : ['series', 'movie'];
+  for (const kind of order) {
+    const meta = await fetchCinemetaMeta(imdbId.toLowerCase(), kind);
+    if (meta && (input.populateMeta === true || titlesAgree(meta.name, input.title))) {
+      return meta;
+    }
+  }
+  return null;
+};
+
 /**
  * One entry point for "give me the Cinemeta meta for this provider title":
  *  1. If the provider supplied an IMDb id, use it -- accepted outright when
@@ -396,24 +468,95 @@ export interface CinemetaResolveResult {
 export const resolveCinemetaMeta = async (
   input: CinemetaResolveInput,
 ): Promise<CinemetaResolveResult | null> => {
-  const imdbId = typeof input.imdbId === 'string' ? input.imdbId.trim() : '';
-  if (imdbId && IMDB_ID.test(imdbId)) {
-    const providerKind = normalizeMediaKind(input.type);
-    // The id is what identifies the title; the provider's own `type` is
-    // only a hint about which Cinemeta endpoint to try first (providers
-    // frequently leave it at a movie default even for shows).
-    const order: ('movie' | 'series')[] =
-      providerKind === 'movie' ? ['movie', 'series'] : ['series', 'movie'];
-    for (const kind of order) {
-      const meta = await fetchCinemetaMeta(imdbId.toLowerCase(), kind);
-      if (meta && (input.populateMeta === true || titlesAgree(meta.name, input.title))) {
-        return { meta, source: 'id' };
-      }
-    }
-  }
+  const byId = await resolveByProviderId(input);
+  if (byId) return { meta: byId, source: 'id' };
 
   const byTitle = await findCinemetaMetaForProviderTitle(input);
   return byTitle ? { meta: byTitle, source: 'title' } : null;
+};
+
+// ---------------------------------------------------------------------------
+// Light "hero" resolution (home screen)
+// ---------------------------------------------------------------------------
+
+/** The handful of Cinemeta fields a home hero shows -- and nothing heavier. */
+export interface CinemetaHeroData {
+  imdbId: string;
+  name: string;
+  /** Cinemeta's 16:9 backdrop. */
+  background?: string;
+  description?: string;
+  rating?: string;
+  /** Display string, e.g. "2019" or "2019-". */
+  year?: string;
+  genres?: string[];
+  cast?: string[];
+  source: 'id' | 'title';
+}
+
+export interface CinemetaHeroInput extends CinemetaResolveInput {
+  /**
+   * The caller has no synopsis of its own. When set, a catalog row that has
+   * a backdrop but no description is not enough, and the full meta is
+   * fetched for its description.
+   */
+  needsDescription?: boolean;
+}
+
+const heroFromMeta = (meta: CinemetaMeta, source: 'id' | 'title'): CinemetaHeroData => {
+  const year = meta.releaseInfo || meta.year;
+  const rating = meta.imdbRating || meta.rating;
+  return {
+    imdbId: meta.imdb_id || meta.id,
+    name: meta.name,
+    background: meta.background || undefined,
+    description: meta.description || undefined,
+    rating: rating ? String(rating) : undefined,
+    year: year ? String(year) : undefined,
+    genres: meta.genres?.length ? meta.genres : undefined,
+    cast: meta.cast?.length ? meta.cast.slice(0, 3) : undefined,
+    source,
+  };
+};
+
+/**
+ * Same matching as `resolveCinemetaMeta` (provider IMDb id first, then the
+ * title matcher), but built for a screen that resolves one title per D-pad
+ * move: on the title path it reads the backdrop straight off the catalog
+ * search row it already had to fetch to find the title, and only downloads
+ * the full meta -- episodes and all -- when that row lacks what is needed.
+ * Never throws.
+ */
+export const resolveCinemetaHero = async (
+  input: CinemetaHeroInput,
+): Promise<CinemetaHeroData | null> => {
+  try {
+    const byId = await resolveByProviderId(input);
+    if (byId) return heroFromMeta(byId, 'id');
+
+    const picked = await pickCinemetaForProviderTitle(input);
+    if (!picked) return null;
+    if (picked.meta) return heroFromMeta(picked.meta, 'title');
+
+    const { hit } = picked;
+    const fromHit = (): CinemetaHeroData => ({
+      imdbId: hit.imdbId,
+      name: hit.name,
+      background: hit.background,
+      description: hit.description,
+      rating: hit.rating,
+      year: hit.releaseInfo || hit.year,
+      genres: hit.genres?.length ? hit.genres : undefined,
+      source: 'title',
+    });
+    if (hit.background && (hit.description || !input.needsDescription)) return fromHit();
+
+    const meta = await fetchCinemetaMeta(hit.imdbId, hit.type);
+    if (meta) return heroFromMeta(meta, 'title');
+    return hit.background ? fromHit() : null;
+  } catch {
+    return null;
+  }
 };
 
 // ---------------------------------------------------------------------------
