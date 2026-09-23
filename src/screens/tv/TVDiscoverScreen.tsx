@@ -49,6 +49,7 @@ import {
   findCinemetaEpisode,
   formatCinemetaRuntime,
   formatEpisodeReleaseDate,
+  peekCinemetaMeta,
   CinemetaMeta,
 } from '../../lib/services/cinemetaService';
 import {
@@ -624,6 +625,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // True only for the first run of the Cinemeta effect below on a remount that
   // restored the meta -- that run must keep it instead of blanking + refetching.
   const restoredCinemetaRef = useRef<boolean>(Boolean(restoredState?.sourceCinemetaMeta));
+  // `type::imdbId` the current `sourceCinemetaMeta` belongs to. The effect
+  // below re-runs whenever the provider's details arrive (its title/type
+  // change) -- without this it blanked the meta on every one of those runs
+  // and re-filled it a beat later, which is the "S01E01-S01E01 -> real name"
+  // flash on the episode list.
+  const cinemetaKeyRef = useRef<string | null>(null);
   const [extractingLink, setExtractingLink] = useState(false);
 
   // Resume context handed off by Home's Continue Watching card (see
@@ -1291,21 +1298,43 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
   useEffect(() => {
     let isMounted = true;
+    // A provider-supplied IMDb id has to be sanity-checked against the
+    // provider's own title. The id on the Cinemeta catalog item the user
+    // clicked, though, is Cinemeta's own and comes with its canonical
+    // title -- checking that against the provider's scraped title (say
+    // "The Boys [Hindi] S1-S5") rejected a perfectly correct id, so
+    // episode names/synopses never appeared for such providers.
+    const providerImdbId = sourceInfo?.imdbId;
+    const catalogImdbId = resultsTarget?.imdb_id || resultsTarget?.id;
+    const imdbId = providerImdbId || catalogImdbId;
+    const type = sourceInfo?.type || resultsTarget?.type;
+    const knownTitle = providerImdbId ? sourceInfo?.title : resultsTarget?.title;
+    const key = imdbId && type ? `${type}::${imdbId}` : null;
+
     if (restoredCinemetaRef.current) {
       // Remount after playback: keep the restored meta so the first layout
       // matches the one the person left (no blank -> refetch -> grow).
       restoredCinemetaRef.current = false;
+      cinemetaKeyRef.current = key;
       return () => {
         isMounted = false;
       };
     }
-    setSourceCinemetaMeta(null);
-    if (savedDiscoverState) savedDiscoverState.sourceCinemetaMeta = null;
-    const imdbId = sourceInfo?.imdbId || resultsTarget?.imdb_id || resultsTarget?.id;
-    const type = sourceInfo?.type || resultsTarget?.type;
+
+    // Only reset when the title this meta belongs to actually changed; a
+    // provider's details arriving later must not wipe an already-correct
+    // meta. Seed from the in-memory cache so a new title paints instantly
+    // when the hero enrichment already pulled it.
+    if (cinemetaKeyRef.current !== key) {
+      cinemetaKeyRef.current = key;
+      const cached = key ? peekCinemetaMeta(imdbId, type) : null;
+      setSourceCinemetaMeta(cached);
+      if (savedDiscoverState) savedDiscoverState.sourceCinemetaMeta = cached;
+    }
+
     if (imdbId && type) {
-      fetchMatchingCinemetaMeta(imdbId, type, sourceInfo?.title || resultsTarget?.title).then((meta) => {
-        if (!isMounted) return;
+      fetchMatchingCinemetaMeta(imdbId, type, knownTitle).then((meta) => {
+        if (!isMounted || !meta) return;
         setSourceCinemetaMeta(meta);
         if (savedDiscoverState) savedDiscoverState.sourceCinemetaMeta = meta;
       });
