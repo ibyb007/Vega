@@ -1,4 +1,4 @@
-// Parses real season/episode numbers out of provider-supplied labels.
+=// Parses real season/episode numbers out of provider-supplied labels.
 //
 // Providers give us free-text titles, not structured data: a season/quality
 // chip's `title` might read "S01", "s1", "Season 01", "Season1", "Season 1 -
@@ -47,13 +47,26 @@ export const parseEpisodeNumber = (label: string | undefined | null): number | n
   return null;
 };
 
+// True when an episode "name" is nothing but a season/episode designator
+// ("S01 E01", "S01E01", "E5", "EP 12", "Episode 3", "Season 1 Episode 2").
+// Providers that have no real episode titles (e.g. MovieBox Web) hand these
+// back as the title. That is not a name -- prefixing it with the real
+// season/episode numbers would just repeat it ("S01E01-S01 E01").
+const BARE_EPISODE_LABEL =
+  /^\s*(?:S(?:eason)?[\s._-]*\d{1,3}[\s._,:-]*)?E(?:p(?:isode)?)?[\s._-]*\d{1,4}\s*$/i;
+
+export const isBareEpisodeLabel = (name: string | undefined | null): boolean =>
+  Boolean(name) && BARE_EPISODE_LABEL.test(name as string);
+
 // Formats a consistent "S01E02-Title" display label out of real
 // season/episode numbers (see parseSeasonNumber/parseEpisodeNumber above)
 // plus an episode's name -- used anywhere an episode is shown by itself
 // without an already-visible season/episode grouping (the Home hero
 // header, episode list rows, the player's "Up Next" popup). Falls back to
 // just the name -- or the given placeholder -- when the season/episode
-// numbers aren't known.
+// numbers aren't known. When the name is only a bare designator (the
+// provider had no real title, and Cinemeta hasn't supplied one yet) the
+// label is just "S01E02" rather than "S01E02-S01 E02".
 export const formatEpisodeLabel = (
   season: number | null | undefined,
   episodeNumber: number | null | undefined,
@@ -64,6 +77,7 @@ export const formatEpisodeLabel = (
   if (season == null || episodeNumber == null) return displayName;
   const s = String(season).padStart(2, '0');
   const e = String(episodeNumber).padStart(2, '0');
+  if (!name || isBareEpisodeLabel(name)) return `S${s}E${e}`;
   return `S${s}E${e}-${displayName}`;
 };
 
