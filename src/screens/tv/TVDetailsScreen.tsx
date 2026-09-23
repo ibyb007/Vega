@@ -479,6 +479,15 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const seasonNumber = parseSeasonNumber(activeLink?.title) ?? activeIndex + 1;
   const episodeNumberFor = (title: string | undefined, index: number): number =>
     parseEpisodeNumber(stripFileSize(title)) ?? index + 1;
+  // Some providers (e.g. one that lists every season's episodes in a single
+  // flattened call) never expose separate per-season tabs -- every episode
+  // instead carries its own "S01 E01" / "S02 E01" style title. For those,
+  // trust the number in the episode's own title over the tab-level guess
+  // above; otherwise two different episodes (say S01E01 and S02E01) would
+  // both get forced onto the same `seasonNumber` and render as the exact
+  // same "S01E01" label, looking like the same episode listed twice.
+  const seasonNumberFor = (title: string | undefined): number =>
+    parseSeasonNumber(title) ?? seasonNumber;
 
   // Episode payload actually handed to TVPlayerScreen -- same list as
   // `episodes` above, but enriched with each episode's real season/episode
@@ -489,7 +498,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const playerEpisodes: EpisodeLink[] = useMemo(() => {
     return episodes.map((ep, index) => {
       const episodeNum = parseEpisodeNumber(stripFileSize(ep.title)) ?? index + 1;
-      const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNumber, episodeNum);
+      const epSeasonNumber = seasonNumberFor(ep.title);
+      const cinemetaEp = findCinemetaEpisode(cinemetaMeta, epSeasonNumber, episodeNum);
       return {
         ...ep,
         // Real episode name (Cinemeta) over the provider's own bare/numeric
@@ -497,7 +507,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         title: cinemetaEp?.name || cinemetaEp?.title || ep.title || `Episode ${index + 1}`,
         image: cinemetaEp?.thumbnail || ep.image,
         synopsis: ep.description || cinemetaEp?.overview,
-        season: seasonNumber,
+        season: epSeasonNumber,
         episodeNumber: episodeNum,
         releaseDate: formatEpisodeReleaseDate(cinemetaEp?.released),
       } as EpisodeLink & { synopsis?: string; season?: number; episodeNumber?: number; releaseDate?: string };
@@ -535,8 +545,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     if (episodes.length > 0) {
       return episodes.map((ep, index): DetailRow => {
         const episodeNum = parseEpisodeNumber(stripFileSize(ep.title)) ?? index + 1;
-        const stableKey = `S${seasonNumber}E${episodeNum}`;
-        const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNumber, episodeNum);
+        const epSeasonNumber = seasonNumberFor(ep.title);
+        const stableKey = `S${epSeasonNumber}E${episodeNum}`;
+        const cinemetaEp = findCinemetaEpisode(cinemetaMeta, epSeasonNumber, episodeNum);
         const sizeLabel = getFileSizeLabel(ep);
         // Stable key match is authoritative; raw link match is only a
         // fallback for continue-watching entries saved before this key
@@ -551,7 +562,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           isEpisode: true,
           stableKey,
           title: formatEpisodeLabel(
-            seasonNumber,
+            epSeasonNumber,
             episodeNum,
             cinemetaEp?.name || cinemetaEp?.title || cleanLabel(ep.title, sizeLabel),
             `Episode ${index + 1}`,
@@ -581,14 +592,15 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       const episodesForPlayer: EpisodeLink[] | undefined = directItemsAreEpisodes
         ? usableDirectItems.map((d: DirectLink, index) => {
             const episodeNum = episodeNumberFor(d.title, index);
-            const cinemetaEp = findCinemetaEpisode(cinemetaMeta, seasonNumber, episodeNum);
+            const epSeasonNumber = seasonNumberFor(d.title);
+            const cinemetaEp = findCinemetaEpisode(cinemetaMeta, epSeasonNumber, episodeNum);
             return {
               title: cinemetaEp?.name || cinemetaEp?.title || d.title,
               link: d.link,
               description: d.description,
               image: cinemetaEp?.thumbnail || d.image,
               synopsis: d.description || cinemetaEp?.overview,
-              season: seasonNumber,
+              season: epSeasonNumber,
               episodeNumber: episodeNum,
               releaseDate: formatEpisodeReleaseDate(cinemetaEp?.released),
               quickDownload: d.quickDownload,
@@ -599,10 +611,11 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
 
       return usableDirectItems.map((d: DirectLink, index): DetailRow => {
         const episodeNum = episodeNumberFor(d.title, index);
+        const epSeasonNumber = seasonNumberFor(d.title);
         const cinemetaEp = directItemsAreEpisodes
-          ? findCinemetaEpisode(cinemetaMeta, seasonNumber, episodeNum)
+          ? findCinemetaEpisode(cinemetaMeta, epSeasonNumber, episodeNum)
           : null;
-        const stableKey = directItemsAreEpisodes ? `S${seasonNumber}E${episodeNum}` : undefined;
+        const stableKey = directItemsAreEpisodes ? `S${epSeasonNumber}E${episodeNum}` : undefined;
         const sizeLabel = getFileSizeLabel(d);
         const isResumeTarget = stableKey
           ? resumeHint?.episodeKey
@@ -618,7 +631,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           stableKey,
           title: directItemsAreEpisodes
             ? formatEpisodeLabel(
-                seasonNumber,
+                epSeasonNumber,
                 episodeNum,
                 cinemetaEp?.name || cinemetaEp?.title || baseTitle,
                 `Episode ${index + 1}`,

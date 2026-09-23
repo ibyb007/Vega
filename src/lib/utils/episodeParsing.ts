@@ -67,9 +67,10 @@ export const formatEpisodeLabel = (
   return `S${s}E${e}-${displayName}`;
 };
 
-// Sorts an episode list ascending by parsed episode number. Only reorders
-// when a real number can be parsed for essentially every entry (>=80%) --
-// if parsing is spotty (mixed/unnumbered titles), a partial sort would
+// Sorts an episode list ascending by season then by parsed episode number,
+// and folds out exact (season, episode) duplicates. Only reorders when a
+// real number can be parsed for essentially every entry (>=80%) -- if
+// parsing is spotty (mixed/unnumbered titles), a partial sort would
 // interleave real positions with parsing guesses, so the provider's
 // original order is trusted instead. Entries an episode number can't be
 // found for are pushed to the end, keeping their relative order.
@@ -79,6 +80,15 @@ export const sortEpisodesChronologically = <T extends { title?: string }>(episod
   const withParsed = episodes.map((ep, originalIndex) => ({
     ep,
     originalIndex,
+    // Some providers (e.g. a "list every season's episodes in one call"
+    // source) don't group by season at all -- every title carries its own
+    // "S01 E01" / "S02 E01" prefix instead. Read that out too so those can
+    // be grouped season-by-season below rather than only by raw episode
+    // number (which would otherwise interleave "episode 1 of every
+    // season" together). A normal single-season list has no season token
+    // in its titles at all, so this parses to null for every entry and
+    // sorting falls back to episode number alone, unchanged from before.
+    season: parseSeasonNumber(ep.title),
     num: parseEpisodeNumber(ep.title),
   }));
 
@@ -87,9 +97,34 @@ export const sortEpisodesChronologically = <T extends { title?: string }>(episod
     return episodes;
   }
 
-  return withParsed
+  // Some providers hand back the same episode twice within one flattened
+  // list (seen with sources that bundle multiple audio/resolution tracks
+  // per season block) even though it's really a single episode -- collapse
+  // those here, keeping the first occurrence, before sorting. Only a pair
+  // with both a season *and* an episode number parsed is treated as a
+  // duplicate of each other; anything that couldn't be parsed on either
+  // axis is left alone rather than risk merging two genuinely different
+  // (but unnumbered) entries.
+  const seenKeys = new Set<string>();
+  const deduped = withParsed.filter((e) => {
+    if (e.season == null || e.num == null) return true;
+    const key = `${e.season}-${e.num}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
+
+  return deduped
     .slice()
     .sort((a, b) => {
+      // Group by season first -- a flattened multi-season list must read
+      // top-to-bottom as season 1 in full, then season 2, and so on, not
+      // interleaved by matching episode numbers across seasons. Entries
+      // without a parseable season (the normal single-season case, where
+      // titles never mention a season at all) sort together as before.
+      const aSeason = a.season ?? 0;
+      const bSeason = b.season ?? 0;
+      if (aSeason !== bSeason) return aSeason - bSeason;
       if (a.num === null && b.num === null) return a.originalIndex - b.originalIndex;
       if (a.num === null) return 1;
       if (b.num === null) return -1;
