@@ -67,6 +67,19 @@ export const normalizeTitle = (t: string | undefined | null): string =>
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
+// Loose "same title?" check between Cinemeta's canonical name and a title
+// we hold. Compares both a plain normalisation and the release-marker-
+// stripped `cleanTitle`, so a scraped provider title such as
+// "The Boys [Hindi] S1-S5" still agrees with Cinemeta's "The Boys" -- a
+// plain normalisation alone rejected exactly those (very common) titles.
+export const titlesAgree = (canonical: string | undefined, providerTitle: string): boolean => {
+  if (!canonical || !providerTitle) return true; // nothing to compare against
+  return (
+    normalizeTitle(canonical) === normalizeTitle(providerTitle) ||
+    cleanTitle(canonical) === cleanTitle(providerTitle)
+  );
+};
+
 export const fetchCinemetaMeta = (
   imdbId: string | undefined,
   type: string | undefined,
@@ -109,9 +122,21 @@ export const fetchMatchingCinemetaMeta = async (
 ): Promise<CinemetaMeta | null> => {
   const meta = await fetchCinemetaMeta(imdbId, type);
   if (!meta) return null;
-  const titleMatches =
-    !knownTitle || !meta.name || normalizeTitle(meta.name) === normalizeTitle(knownTitle);
-  return titleMatches ? meta : null;
+  return titlesAgree(meta.name, knownTitle || '') ? meta : null;
+};
+
+/**
+ * Synchronous read of an already-fetched Cinemeta meta (or null). Lets a
+ * screen paint episode names/synopses on its very first render when
+ * something earlier (hero enrichment, a prewarm) already pulled the meta,
+ * instead of blanking and waiting a tick for the promise to resolve.
+ */
+export const peekCinemetaMeta = (
+  imdbId: string | undefined | null,
+  type: string | undefined | null,
+): CinemetaMeta | null => {
+  if (!imdbId || !imdbId.startsWith('tt')) return null;
+  return metaCache.get(keyFor(imdbId, type === 'series' ? 'series' : 'movie')) ?? null;
 };
 
 // Providers' `EpisodeLink[]` has no real season/episode numbers, only
@@ -246,6 +271,13 @@ export interface ProviderTitleQuery {
   year?: string;
   /** Provider-supplied TMDB id, if any. */
   tmdbId?: string | number | null;
+  /**
+   * When several same-titled series remain and nothing (year, kind, TMDB
+   * id) tells them apart, accept Cinemeta's top-ranked (most popular) one
+   * instead of giving up. Series only -- a wrong pick for a movie
+   * (remakes sharing a title) is far more likely than for a show.
+   */
+  preferTopRanked?: boolean;
 }
 
 // How many of Cinemeta's top search hits are worth fully fetching to
@@ -296,19 +328,42 @@ export const findCinemetaMetaForProviderTitle = async (
 
   const viable = hits.filter((h) => !conflicting.has(h.imdbId));
 
-  let pick: CinemetaSearchHit | undefined = viable.find((h) =>
-    isStrictMatch(h.name, providerTitle, h.year, providerYear, h.type, knownKind),
-  );
+  // A year handed over outside the title text (e.g. a provider's release-
+  // date tag) is a hint, not gospel -- providers often report a regional /
+  // dub release year that is more than the tolerated gap away from the
+  // show's first-air year. So it is tried first, then the title's own year
+  // (or none), rather than letting a wrong hint veto every candidate.
+  const titleYear = extractYearFromTitle(providerTitle);
+  const yearAttempts: (string | undefined)[] = [query.year || titleYear];
+  if (query.year && query.year !== titleYear) yearAttempts.push(titleYear);
 
-  if (!pick) {
+  let pick: CinemetaSearchHit | undefined;
+  let sameTitled: CinemetaSearchHit[] = [];
+  for (const year of yearAttempts) {
+    pick = viable.find((h) =>
+      isStrictMatch(h.name, providerTitle, h.year, year, h.type, knownKind),
+    );
+    if (pick) break;
+
     // Titles line up but a year is missing on one side (very common: most
     // scraped titles carry none). Only safe to accept when exactly one
     // same-titled release remains -- otherwise it is a coin flip between
     // e.g. a movie and a series (or two remakes) sharing a name.
     const ambiguous = viable.filter((h) =>
-      isAmbiguousYearMatch(h.name, providerTitle, h.year, providerYear, h.type, knownKind),
+      isAmbiguousYearMatch(h.name, providerTitle, h.year, year, h.type, knownKind),
     );
-    if (ambiguous.length === 1) pick = ambiguous[0];
+    if (ambiguous.length === 1) {
+      pick = ambiguous[0];
+      break;
+    }
+    if (ambiguous.length > 1 && sameTitled.length === 0) sameTitled = ambiguous;
+  }
+
+  // Still several same-titled series and no year to split them: Cinemeta
+  // ranks by popularity, and the show a provider lists is overwhelmingly
+  // the popular one ("The Boys" -> the 2019 series, not a namesake).
+  if (!pick && query.preferTopRanked && knownKind === 'series' && sameTitled.length > 1) {
+    pick = sameTitled.find((h) => h.type === 'series');
   }
 
   if (!pick) return null;
@@ -327,14 +382,6 @@ export interface CinemetaResolveResult {
   /** How the match was made: by the provider's id, or by title matching. */
   source: 'id' | 'title';
 }
-
-const titlesAgree = (canonical: string | undefined, providerTitle: string): boolean => {
-  if (!canonical || !providerTitle) return true; // nothing to compare against
-  return (
-    normalizeTitle(canonical) === normalizeTitle(providerTitle) ||
-    cleanTitle(canonical) === cleanTitle(providerTitle)
-  );
-};
 
 /**
  * One entry point for "give me the Cinemeta meta for this provider title":
@@ -367,4 +414,46 @@ export const resolveCinemetaMeta = async (
 
   const byTitle = await findCinemetaMetaForProviderTitle(input);
   return byTitle ? { meta: byTitle, source: 'title' } : null;
+};
+
+// ---------------------------------------------------------------------------
+// Prewarming
+// ---------------------------------------------------------------------------
+
+// Only the first few same-titled hits are worth pulling in full.
+const PREWARM_META_LIMIT = 3;
+
+/**
+ * Starts the Cinemeta search (and pulls the meta of the best-looking hits)
+ * for a provider title *before* the provider's own details have loaded.
+ * The details screen otherwise has to wait for the provider response and
+ * only then do search -> meta, so episode names/synopses trailed the
+ * episode list by two full network round trips. Everything lands in the
+ * same caches `resolveCinemetaMeta` reads, so by the time it runs it
+ * resolves almost instantly. Fire-and-forget; never throws.
+ */
+export const prewarmCinemetaForTitle = (
+  title: string | undefined | null,
+  type?: string | null,
+): void => {
+  const providerTitle = title || '';
+  const searchText = toSearchQuery(providerTitle);
+  if (!searchText) return;
+
+  const knownKind = inferMediaKind(type, providerTitle);
+  const kinds: ('movie' | 'series')[] = knownKind ? [knownKind] : ['series', 'movie'];
+  const wanted = cleanTitle(providerTitle);
+
+  kinds.forEach((kind) => {
+    searchCinemetaCatalog(searchText, kind)
+      .then((hits) => {
+        hits
+          .filter((h) => cleanTitle(h.name) === wanted)
+          .slice(0, PREWARM_META_LIMIT)
+          .forEach((h) => {
+            fetchCinemetaMeta(h.imdbId, h.type);
+          });
+      })
+      .catch(() => {});
+  });
 };
