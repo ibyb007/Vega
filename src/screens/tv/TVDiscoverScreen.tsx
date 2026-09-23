@@ -44,6 +44,7 @@ import {
   hasMatchingExternalId,
 } from '../../lib/utils/titleMatcher';
 import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel } from '../../lib/utils/episodeParsing';
+import { getFileSizeLabel, stripFileSize } from '../../lib/utils/fileSize';
 import {
   fetchMatchingCinemetaMeta,
   findCinemetaEpisode,
@@ -1381,7 +1382,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
         const enrichedEpisodesToSend = episodesToSend
           ? episodesToSend.map((ep, idx) => {
-              const seasonNum = parseSeasonNumber(activeLinkForEnrich?.title) ?? activeLinkIndex + 1;
+              // Prefer the season number embedded in the episode's own
+              // title (providers that flatten every season into one list
+              // give each episode a "S01 E01" / "S02 E01" style title) over
+              // the tab-level guess -- otherwise every episode collapses
+              // onto the same season number and two different episodes can
+              // end up with an identical "S01E01" label.
+              const seasonNum =
+                parseSeasonNumber(ep.title) ?? parseSeasonNumber(activeLinkForEnrich?.title) ?? activeLinkIndex + 1;
               const episodeNum = parseEpisodeNumber(ep.title) ?? idx + 1;
               const cinemetaEp = findCinemetaEpisode(sourceCinemetaMeta, seasonNum, episodeNum);
               return {
@@ -1931,7 +1939,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         <Text style={styles.subHeader}>Episodes</Text>
                         <View style={styles.episodesGrid}>
                           {episodes.map((ep, idx) => {
-                            const seasonNum = parseSeasonNumber(activeLink?.title) ?? activeLinkIndex + 1;
+                            // Prefer the season parsed from the episode's
+                            // own title (a flattened "every season in one
+                            // list" provider gives each episode its own
+                            // "S01 E01" / "S02 E01" title) over the
+                            // tab-level guess -- otherwise every episode
+                            // collapses onto the same season number and two
+                            // different episodes can render the exact same
+                            // "S01E01" label.
+                            const seasonNum =
+                              parseSeasonNumber(ep.title) ?? parseSeasonNumber(activeLink?.title) ?? activeLinkIndex + 1;
                             const episodeNum = parseEpisodeNumber(ep.title) ?? idx + 1;
                             const cinemetaEp = findCinemetaEpisode(
                               sourceCinemetaMeta,
@@ -1950,6 +1967,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             const episodeThumb = cinemetaEp?.thumbnail || ep.image;
                             const episodeOverview = ep.description || cinemetaEp?.overview;
                             const episodeReleaseDate = formatEpisodeReleaseDate(cinemetaEp?.released);
+                            // Same "GB/MB baked into the title" extraction
+                            // TVDetailsScreen uses, so a provider that
+                            // mentions file size sees the same badge here.
+                            const sizeLabel = getFileSizeLabel(ep);
+                            const displayTitle = sizeLabel ? stripFileSize(ep.title) || ep.title : ep.title;
                             const episodeKey = `results:ep:${ep.link || idx}`;
                             // Stable per-episode identity (matches the
                             // `episodeKey` format ContinueWatchingItem and
@@ -2018,7 +2040,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                         {formatEpisodeLabel(
                                           seasonNum,
                                           episodeNum,
-                                          cinemetaEp?.name || cinemetaEp?.title || ep.title,
+                                          cinemetaEp?.name || cinemetaEp?.title || displayTitle,
                                           `Episode ${idx + 1}`
                                         )}
                                       </Text>
@@ -2033,6 +2055,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                         </Text>
                                       )}
                                     </View>
+                                    {!!sizeLabel && (
+                                      <View style={styles.sizeBadge}>
+                                        <Text style={styles.sizeBadgeText}>{sizeLabel}</Text>
+                                      </View>
+                                    )}
                                     {isResumeTarget && resumeHint?.position ? (
                                       <Text style={styles.resumeBadge}>
                                         Resume {Math.floor(resumeHint.position / 60)}:
@@ -2057,7 +2084,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         <Text style={styles.subHeader}>Episodes</Text>
                         <View style={styles.episodesGrid}>
                           {usableDirectItems.map((d, idx) => {
-                            const seasonNum = parseSeasonNumber(activeLink?.title) ?? activeLinkIndex + 1;
+                            const seasonNum =
+                              parseSeasonNumber(d.title) ?? parseSeasonNumber(activeLink?.title) ?? activeLinkIndex + 1;
                             const episodeNum = parseEpisodeNumber(d.title) ?? idx + 1;
                             const cinemetaEp = findCinemetaEpisode(
                               sourceCinemetaMeta,
@@ -2067,6 +2095,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                             const episodeThumb = cinemetaEp?.thumbnail || d.image;
                             const episodeOverview = d.description || cinemetaEp?.overview;
                             const episodeReleaseDate = formatEpisodeReleaseDate(cinemetaEp?.released);
+                            const sizeLabel = getFileSizeLabel(d);
+                            const displayTitle = sizeLabel ? stripFileSize(d.title) || d.title : d.title;
                             const episodeKey = `results:direct-ep:${d.link || idx}`;
                             const stableEpisodeKey = `S${seasonNum}E${episodeNum}`;
                             const isResumeTarget = resumeHint?.episodeKey
@@ -2132,7 +2162,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                         {formatEpisodeLabel(
                                           seasonNum,
                                           episodeNum,
-                                          cinemetaEp?.name || cinemetaEp?.title || d.title,
+                                          cinemetaEp?.name || cinemetaEp?.title || displayTitle,
                                           `Episode ${idx + 1}`
                                         )}
                                       </Text>
@@ -2147,6 +2177,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                                         </Text>
                                       )}
                                     </View>
+                                    {!!sizeLabel && (
+                                      <View style={styles.sizeBadge}>
+                                        <Text style={styles.sizeBadgeText}>{sizeLabel}</Text>
+                                      </View>
+                                    )}
                                     {isResumeTarget && resumeHint?.position ? (
                                       <Text style={styles.resumeBadge}>
                                         Resume {Math.floor(resumeHint.position / 60)}:
@@ -3319,6 +3354,19 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 4,
     marginLeft: 8,
+  },
+  // Matches TVDetailsScreen's sizeBadge/sizeBadgeText exactly.
+  sizeBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  sizeBadgeText: {
+    color: '#D1D5DB',
+    fontSize: 11,
+    fontWeight: '700',
   },
   sourceResumeBadge: {
     position: 'absolute',
