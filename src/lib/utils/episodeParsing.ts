@@ -1,4 +1,4 @@
-=// Parses real season/episode numbers out of provider-supplied labels.
+// Parses real season/episode numbers out of provider-supplied labels.
 //
 // Providers give us free-text titles, not structured data: a season/quality
 // chip's `title` might read "S01", "s1", "Season 01", "Season1", "Season 1 -
