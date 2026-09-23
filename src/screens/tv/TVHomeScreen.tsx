@@ -37,11 +37,11 @@ import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { formatEpisodeLabel } from '../../lib/utils/episodeParsing';
+import { resolveCinemetaHero } from '../../lib/services/cinemetaService';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 
 const ROW_HEIGHT = 235;
-const imdbMetaCache = new Map<string, any>();
 
 // ---------------------------------------------------------------------------
 // Performance tuning knobs (see the notes on HomeRow / HomeCard below).
@@ -72,13 +72,6 @@ const SECONDARY_FETCH_MAX_DELAY_MS = 4000;
 let lastFocusedKey: string | null = null;
 let lastFocusedRowIndex = 0;
 
-const normalizeTitle = (t: string | undefined | null): string =>
-  (t || '')
-    .toLowerCase()
-    .replace(/\(\d{4}\)/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-
 // A row's *identity* -- not its current array position. Continue Watching
 // gaining its first-ever poster, or losing its last one, inserts/removes a
 // whole row and shifts every later row's index; keying off index alone (the
@@ -102,25 +95,73 @@ const buildItemKey = (row: any, item: any, pIndex: number = 0): string => {
   return `${getRowId(row)}::${itemId || `idx-${pIndex}`}`;
 };
 
-const fetchCinemetaByImdb = async (imdbId: string, type: string = 'movie'): Promise<any | null> => {
-  if (!imdbId || !imdbId.startsWith('tt')) return null;
+// ---------------------------------------------------------------------------
+// Hero enrichment cache
+//
+// What the hero learned about a title (Cinemeta's 16:9 backdrop, synopsis,
+// rating, ...) is remembered per provider+link, so focusing a card again --
+// D-pad back and forth along a row, the same title in two rows -- paints the
+// finished hero on the very first frame with no network and no poster ->
+// backdrop swap. Small plain objects only (never the full Cinemeta meta),
+// oldest evicted first. A result without a backdrop is only trusted for a
+// few minutes, so a Cinemeta hiccup can't leave a title on the poster
+// fallback for the rest of the session.
+// ---------------------------------------------------------------------------
+interface HeroEnrichment {
+  backdrop: string | null;
+  description: string;
+  rating: string | null;
+  year: string | null;
+  genres: string[];
+  cast: string[];
+  cachedAt: number;
+}
+const HERO_ENRICHMENT_CACHE_LIMIT = 150;
+const HERO_ENRICHMENT_RETRY_MS = 5 * 60 * 1000;
+const heroEnrichmentCache = new Map<string, HeroEnrichment>();
 
-  if (imdbMetaCache.has(imdbId)) {
-    return imdbMetaCache.get(imdbId);
+const readHeroEnrichment = (key: string): HeroEnrichment | undefined => {
+  const cached = heroEnrichmentCache.get(key);
+  if (!cached) return undefined;
+  if (!cached.backdrop && Date.now() - cached.cachedAt > HERO_ENRICHMENT_RETRY_MS) {
+    heroEnrichmentCache.delete(key);
+    return undefined;
   }
-
-  try {
-    const mediaType = type === 'series' ? 'series' : 'movie';
-    const res = await fetch(`https://v3-cinemeta.strem.io/meta/${mediaType}/${imdbId}.json`);
-    const data = await res.json();
-    if (data?.meta) {
-      imdbMetaCache.set(imdbId, data.meta);
-      return data.meta;
-    }
-  } catch {}
-
-  return null;
+  return cached;
 };
+
+const writeHeroEnrichment = (key: string, value: HeroEnrichment) => {
+  heroEnrichmentCache.delete(key);
+  heroEnrichmentCache.set(key, value);
+  if (heroEnrichmentCache.size > HERO_ENRICHMENT_CACHE_LIMIT) {
+    const oldest = heroEnrichmentCache.keys().next().value;
+    if (oldest !== undefined) heroEnrichmentCache.delete(oldest);
+  }
+};
+
+const isEmptyEnrichment = (e: HeroEnrichment) =>
+  !e.backdrop &&
+  !e.description &&
+  !e.rating &&
+  !e.year &&
+  e.genres.length === 0 &&
+  e.cast.length === 0;
+
+// Layers an enrichment over a hero. Every field is "only if we have it", so
+// whatever the base hero already shows (poster fallback, provider synopsis,
+// ...) stays when Cinemeta had nothing better.
+const applyEnrichment = (hero: TVHeroMedia, e: HeroEnrichment, isHistory: boolean): TVHeroMedia => ({
+  ...hero,
+  backdropUrl: e.backdrop || hero.backdropUrl,
+  hasLandscapeBackdrop: e.backdrop ? true : hero.hasLandscapeBackdrop,
+  isPosterFallback: e.backdrop ? false : hero.isPosterFallback,
+  // Continue Watching keeps its "Resume watching (N%)" line.
+  overview: isHistory ? hero.overview : e.description || hero.overview,
+  rating: e.rating || hero.rating,
+  year: e.year || hero.year,
+  genres: e.genres.length > 0 ? e.genres : hero.genres,
+  cast: e.cast.length > 0 ? e.cast : hero.cast,
+});
 
 const tagRowsWithProvider = (rows: any[], providerValue?: string) =>
   rows.map((row) => ({
@@ -699,7 +740,15 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         ? `Resume watching (${progressPercent}%)`
         : item.extra || item.description || undefined;
 
-      const baseHero: TVHeroMedia = {
+      // Already learned this title's Cinemeta backdrop/metadata? Paint it
+      // straight into the first frame instead of poster -> backdrop later.
+      const enrichKey =
+        !hasSourceBackdrop && targetUrl && targetProvider
+          ? `${targetProvider}::${targetUrl}`
+          : null;
+      const cachedEnrichment = enrichKey ? readHeroEnrichment(enrichKey) : undefined;
+
+      const rawBaseHero: TVHeroMedia = {
         title: item.title,
         subtitle: isHistory ? episodeLabel : undefined,
         backdropUrl: sourceBackdrop || posterImage || undefined,
@@ -712,6 +761,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         hasLandscapeBackdrop: hasSourceBackdrop,
         isPosterFallback: !hasSourceBackdrop,
       };
+      const baseHero = cachedEnrichment
+        ? applyEnrichment(rawBaseHero, cachedEnrichment, isHistory)
+        : rawBaseHero;
 
       const applyBaseHero = () => {
         heroApplyTimerRef.current = null;
@@ -725,73 +777,86 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         heroApplyTimerRef.current = setTimeout(applyBaseHero, HERO_APPLY_DELAY_MS);
       }
 
-      if (hasSourceBackdrop || !targetUrl || !targetProvider) return;
+      if (!enrichKey || cachedEnrichment) return;
 
       heroEnrichTimerRef.current = setTimeout(async () => {
         if (requestId !== heroRequestIdRef.current) return;
 
-        let backdrop: string | null = null;
-        let description = '';
-        let rating: string | null = null;
-        let year: string | null = null;
-        let genres: string[] = [];
-        let cast: string[] = [];
+        const enrichment: HeroEnrichment = {
+          backdrop: null,
+          description: '',
+          rating: null,
+          year: null,
+          genres: [],
+          cast: [],
+          cachedAt: Date.now(),
+        };
+        let info: any = null;
 
+        // 1. The provider's own details (synopsis, rating, and the type /
+        //    ids / year the Cinemeta lookup below can use). Usually already
+        //    warm from the neighbour prefetch.
         try {
-          const info = await getOrFetchMetadata(targetUrl, targetProvider);
+          info = await getOrFetchMetadata(targetUrl, targetProvider);
+          if (requestId !== heroRequestIdRef.current) return;
+          if (info?.synopsis) enrichment.description = info.synopsis;
+          if (info?.rating) enrichment.rating = String(info.rating);
+        } catch {}
+
+        // 2. Cinemeta's 16:9 backdrop (+ synopsis/rating/year/genres/cast):
+        //    by the provider's IMDb id when it gives one, otherwise by
+        //    title -- the same matcher the details and Discover screens
+        //    use, so a provider without ids still gets artwork. Anything
+        //    it can't confidently match simply leaves the hero as it is
+        //    now (the provider's own image, poster fallback).
+        try {
+          const isSeries = Boolean(info?.linkList?.some((l: any) => l?.episodesLink));
+          const tagYear = (info?.tags || [])
+            .map((t: any) => String(t).trim())
+            .find((t: string) => /^(19|20)\d{2}$/.test(t));
+          const hero = await resolveCinemetaHero({
+            title: info?.title || item.title,
+            type: isSeries ? 'series' : info?.type || item.type,
+            imdbId: info?.imdbId,
+            populateMeta: info?.populateMeta === true,
+            tmdbId: info?.tmdbId,
+            year: tagYear,
+            preferTopRanked: true,
+            needsDescription: !enrichment.description,
+          });
           if (requestId !== heroRequestIdRef.current) return;
 
-          if (info) {
-            if (info.synopsis) description = info.synopsis;
-            if (info.rating) rating = String(info.rating);
-
-            if (info.populateMeta === true && info.imdbId && info.type) {
-              const cineMeta = await fetchCinemetaByImdb(info.imdbId, info.type);
-              if (requestId !== heroRequestIdRef.current) return;
-
-              if (cineMeta) {
-                const titleMatches =
-                  !item.title ||
-                  !cineMeta.name ||
-                  normalizeTitle(cineMeta.name) === normalizeTitle(item.title);
-
-                if (cineMeta.background && titleMatches) {
-                  backdrop = cineMeta.background;
-                }
-                if (!description && cineMeta.description) description = cineMeta.description;
-                if (!rating && (cineMeta.imdbRating || cineMeta.rating)) {
-                  rating = String(cineMeta.imdbRating || cineMeta.rating);
-                }
-                if (cineMeta.releaseInfo || cineMeta.year) {
-                  year = String(cineMeta.releaseInfo || cineMeta.year);
-                }
-                if (cineMeta.genres?.length) genres = cineMeta.genres;
-                // Same "Cast: Name1, Name2, Name3" data the Discover
-                // screen's pages already pull from Cinemeta, now surfaced
-                // under the Home hero's synopsis too.
-                if (cineMeta.cast?.length && titleMatches) cast = cineMeta.cast.slice(0, 3);
-              }
-            }
+          if (hero) {
+            if (hero.background) enrichment.backdrop = hero.background;
+            if (!enrichment.description && hero.description) enrichment.description = hero.description;
+            if (!enrichment.rating && hero.rating) enrichment.rating = hero.rating;
+            if (hero.year) enrichment.year = hero.year;
+            if (hero.genres?.length) enrichment.genres = hero.genres;
+            if (hero.cast?.length) enrichment.cast = hero.cast;
           }
         } catch {}
 
+        // 3. Load the backdrop into the image cache *before* swapping it in,
+        //    so the hero never flashes blank while a big image downloads --
+        //    and a dead URL just keeps the current image instead of
+        //    replacing it with nothing.
+        if (enrichment.backdrop) {
+          try {
+            await Image.prefetch(enrichment.backdrop);
+          } catch {
+            enrichment.backdrop = null;
+          }
+        }
+
+        // Cache even if focus has moved on (the work is done); only *apply*
+        // if this is still the hero being shown. A provider that failed to
+        // answer isn't cached (nothing learned), so the next focus retries.
+        if (info || enrichment.backdrop) writeHeroEnrichment(enrichKey, enrichment);
         if (requestId !== heroRequestIdRef.current) return;
-        if (!backdrop && !description && !rating && !year && genres.length === 0 && cast.length === 0) return;
+        if (isEmptyEnrichment(enrichment)) return;
 
         heroHostRef.current?.set((prev) =>
-          prev
-            ? {
-                ...prev,
-                backdropUrl: backdrop || prev.backdropUrl,
-                hasLandscapeBackdrop: backdrop ? true : prev.hasLandscapeBackdrop,
-                isPosterFallback: backdrop ? false : prev.isPosterFallback,
-                overview: isHistory ? prev.overview : description || prev.overview,
-                rating: rating || prev.rating,
-                year: year || prev.year,
-                genres: genres.length > 0 ? genres : prev.genres,
-                cast: cast.length > 0 ? cast : prev.cast,
-              }
-            : prev
+          prev ? applyEnrichment(prev, enrichment, isHistory) : prev
         );
       }, 250);
     },
