@@ -18,6 +18,7 @@ import { providerManager } from '../../lib/services/ProviderManager';
 import { getCachedMetadata, getOrFetchMetadata } from '../../lib/services/metadataCache';
 import {
   resolveCinemetaMeta,
+  prewarmCinemetaForTitle,
   findCinemetaEpisode,
   formatCinemetaRuntime,
   formatEpisodeReleaseDate,
@@ -287,6 +288,30 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     };
   }, [item, providerId, itemKey]);
 
+  // Start the Cinemeta search (and pull the best hits' full meta) as soon as
+  // the screen opens, using the title of the post that was clicked, instead
+  // of waiting for the provider's details request to finish first. Without
+  // this the episode names/synopses trailed the episode list by a full
+  // search -> meta round trip after the provider had already answered.
+  // Purely a cache warm-up; the resolve effect below still does the real
+  // (and, by then, near-instant) lookup.
+  useEffect(() => {
+    if (restored?.cinemetaSettled) return;
+    const postTitle = item?.title;
+    if (postTitle) prewarmCinemetaForTitle(postTitle, item?.type);
+  }, [item?.title, item?.type]);
+
+  // Release year handed over outside the title text -- most providers put
+  // it in `tags` (e.g. MovieBox Web: [country, year, ...genres]). Used to
+  // tell same-titled shows apart when the scraped title carries no year.
+  const providerYear = useMemo(
+    () =>
+      (info?.tags || [])
+        .map((t) => String(t).trim())
+        .find((t) => /^(19|20)\d{2}$/.test(t)),
+    [info?.tags],
+  );
+
   // Resolve the Cinemeta meta for this title once real metadata is in.
   const hasEpisodesLinkAnywhere = (info?.linkList || []).some((l) => Boolean(l?.episodesLink));
   const hasInfo = Boolean(info);
@@ -322,6 +347,11 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       // the provider left at its default.
       type: hasEpisodesLinkAnywhere ? 'series' : info.type,
       title: providerTitle,
+      year: providerYear,
+      // Scraped titles like "The Boys [Hindi] S1-S5" carry no year and
+      // several same-named shows exist; fall back to Cinemeta's top-ranked
+      // series instead of leaving every episode unnamed.
+      preferTopRanked: true,
     })
       .then((result) => {
         if (!isMounted) return;
@@ -342,6 +372,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     info?.type,
     info?.title,
     item?.title,
+    providerYear,
     hasEpisodesLinkAnywhere,
     hasInfo,
   ]);
