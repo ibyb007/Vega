@@ -182,6 +182,10 @@ interface HomeCardProps {
   onCardPress: (rowIndex: number, item: any, itemKey: string, isHistory: boolean) => void;
   onCardLongPress: (item: any, isHistory: boolean) => void;
   registerItemRef: (itemKey: string, el: View | null) => void;
+  // Imperatively brings a card into view inside its row's horizontal
+  // ScrollView. See the comment on HomeRow's own `scrollItemIntoView` for
+  // why this can't just be left to Android's native focus-scroll.
+  scrollItemIntoView: (node: View | null) => void;
 }
 
 const HomeCard = React.memo(function HomeCard({
@@ -195,6 +199,7 @@ const HomeCard = React.memo(function HomeCard({
   onCardPress,
   onCardLongPress,
   registerItemRef,
+  scrollItemIntoView,
 }: HomeCardProps) {
   const isFirstInRow = pIndex === 0;
   const isTopRow = rowIndex === 0;
@@ -255,7 +260,28 @@ const HomeCard = React.memo(function HomeCard({
         node.setNativeProps?.({ nextFocusUp: selfHandle });
       }
     }
-  }, [onCardFocus, rowIndex, item, itemKey, isHistoryRow, pIndex, isFirstInRow, isTopRow]);
+    // Don't rely on Android's own "bring focused descendant on screen"
+    // behaviour -- it only reliably fires for focus changes that happen
+    // while the ScrollView it lives in was already laid out and settled.
+    // Restoring focus straight to (say) the 9th card of a row -- e.g. the
+    // whole Home screen remounting fresh after Back from Details, which
+    // drops every row's native scroll position back to 0 -- lands the
+    // request before/at the same time as layout, and the row is left
+    // showing its first screenful while the "selected" card sits off to
+    // the right, unscrolled-to. Doing it ourselves on every focus (not
+    // just this remount case) makes it deterministic either way.
+    scrollItemIntoView(nodeRef.current);
+  }, [
+    onCardFocus,
+    rowIndex,
+    item,
+    itemKey,
+    isHistoryRow,
+    pIndex,
+    isFirstInRow,
+    isTopRow,
+    scrollItemIntoView,
+  ]);
 
   const handlePress = useCallback(
     () => onCardPress(rowIndex, item, itemKey, isHistoryRow),
@@ -343,6 +369,37 @@ const HomeRow = React.memo(function HomeRow({
   const totalRef = useRef(rowPosts.length);
   totalRef.current = rowPosts.length;
 
+  // Each row owns its own horizontal ScrollView, and its native scroll
+  // offset is *not* part of React's tree -- it isn't restored just because
+  // the card that had focus remounts and reclaims focus. Most of the time
+  // that's invisible because Android's default focus-search also nudges
+  // the ScrollView to reveal whatever just got focus, but that native
+  // behaviour isn't dependable the moment this row's ScrollView is freshly
+  // mounted (e.g. the whole Home screen remounting after Back from
+  // Details -- see App.tsx, which unmounts Home outright while Details is
+  // open). So every card scrolls itself into view explicitly on focus
+  // instead of hoping the OS does it.
+  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollItemIntoView = useCallback((node: View | null) => {
+    const scrollView = scrollViewRef.current;
+    if (!node || !scrollView) return;
+    const scrollHandle = findNodeHandle(scrollView);
+    if (!scrollHandle) return;
+    // measureLayout gives the card's position relative to the ScrollView's
+    // own content, which is exactly what scrollTo's `x` needs -- no manual
+    // width/gap math, and it stays correct however the row is styled.
+    (node as any).measureLayout?.(
+      scrollHandle,
+      (x: number) => {
+        // A little left padding so the target card doesn't land flush
+        // against the row's edge.
+        const targetX = Math.max(0, x - 24);
+        scrollView.scrollTo({ x: targetX, y: 0, animated: false });
+      },
+      () => {}
+    );
+  }, []);
+
   // Whatever card holds (or last held) focus in this row must always be
   // mounted -- e.g. coming back from Details to a poster that is well past
   // the first screenful, or a refetch that reorders the row.
@@ -383,6 +440,7 @@ const HomeRow = React.memo(function HomeRow({
       </View>
 
       <ScrollView
+        ref={scrollViewRef}
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.horizontalRowScroll}
@@ -403,6 +461,7 @@ const HomeRow = React.memo(function HomeRow({
               onCardPress={onCardPress}
               onCardLongPress={onCardLongPress}
               registerItemRef={registerItemRef}
+              scrollItemIntoView={scrollItemIntoView}
             />
           );
         })}
