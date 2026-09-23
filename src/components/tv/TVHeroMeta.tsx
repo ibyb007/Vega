@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Image, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Image, useWindowDimensions } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export interface TVHeroMedia {
   title: string;
@@ -39,6 +37,20 @@ const probedAspectRatioCache = new Map<string, number>();
 const LANDSCAPE_ASPECT_THRESHOLD = 1.3;
 
 export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
+  const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
+
+  // The backdrop canvas (image + gradients) used to stop at a flat 480dp,
+  // regardless of the actual screen height. Below that it fell straight
+  // through to `container`'s plain `#0A0A0E` background, which on a
+  // screen taller than ~480+220dp of rows (i.e. most TVs, especially with
+  // few/short rows) showed up as a hard-edged black band across the
+  // bottom instead of the backdrop reaching edge to edge. Sizing it to the
+  // actual window height instead makes the backdrop -- and its existing
+  // fade-to-`#0A0A0E` gradient -- cover all the way down, so any leftover
+  // dark space is the same gradual fade used everywhere else, not a
+  // separate flat-black region.
+  const canvasHeight = Math.max(480, SCREEN_HEIGHT);
+
   // Many providers only ever return a single image per title, and for a lot
   // of catalogs that single image is itself already a landscape banner --
   // not a true portrait poster -- even though nothing in the data explicitly
@@ -99,12 +111,12 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
   const posterSource = media?.posterUrl || media?.backdropUrl;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { width: SCREEN_WIDTH }]}>
       {isLandscape && backdropSource ? (
         /* ========================================================== */
         /* CASE 1: Genuine 16:9 Landscape Backdrop                     */
         /* ========================================================== */
-        <View style={styles.canvasLayer} pointerEvents="none">
+        <View style={[styles.canvasLayer, { height: canvasHeight }]} pointerEvents="none">
           <Image
             key={backdropSource}
             source={{ uri: backdropSource }}
@@ -132,7 +144,7 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
         /* ========================================================== */
         /* CASE 2: Client-Side Fallback (Dynamic 3-Layer Canvas)      */
         /* ========================================================== */
-        <View style={styles.canvasLayer} pointerEvents="none">
+        <View style={[styles.canvasLayer, { height: canvasHeight }]} pointerEvents="none">
           {/* Layer 1: The Blurred Fill (centerCrop + heavy blur + 45% tint) */}
           <Image
             key={`blur-${posterSource}`}
@@ -213,18 +225,19 @@ export const TVHeroMeta: React.FC<TVHeroMetaProps> = React.memo(({ media }) => {
 const styles = StyleSheet.create({
   container: {
     height: 300,
-    width: SCREEN_WIDTH,
     position: 'relative',
     backgroundColor: '#0A0A0E',
     justifyContent: 'flex-start',
     paddingTop: 18,
   },
   canvasLayer: {
+    // Height is set inline per-render to the window height (see
+    // `canvasHeight` above) so the backdrop reaches the true bottom of the
+    // screen instead of stopping at a fixed dp value.
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    height: 480, // Extends naturally behind the first row cards
     overflow: 'hidden',
   },
   fullImage: {
