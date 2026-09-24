@@ -1531,6 +1531,19 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           // press handler can reopen this same page-2 inspector instead of
           // the regular details screen. See openDiscoverResultFor below.
           discoverSource: resultsTarget || undefined,
+          // Ids for TheIntroDB skip markers. Provider ids first, then the
+          // Cinemeta meta already matched for this title (its `moviedb_id` is
+          // the TMDB id), then the catalog item's own imdb id. Whatever is
+          // still missing is worked out in the player from `mediaTitle`.
+          tmdbId: sourceInfo?.tmdbId || sourceCinemetaMeta?.moviedb_id,
+          imdbId:
+            sourceInfo?.imdbId ||
+            sourceCinemetaMeta?.imdb_id ||
+            [resultsTarget?.imdb_id, resultsTarget?.id].find(
+              (v) => typeof v === 'string' && /^tt\d+$/.test(v),
+            ),
+          mediaTitle: resultsTarget?.title || sourceInfo?.title,
+          mediaYear: resultsTarget?.year,
         });
       } catch (err: any) {
         console.warn('[Discover] getStream error:', err);
