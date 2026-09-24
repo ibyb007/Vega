@@ -25,6 +25,7 @@ import { launchVideo } from '../../lib/services/PlayerLauncher';
 import { settingsStorage } from '../../lib/storage';
 import { formatEpisodeLabel as formatSeasonEpisodeLabel } from '../../lib/utils/episodeParsing';
 import { fetchIntroDbSegments } from '../../lib/services/theIntroDbService';
+import { resolveTmdbId } from '../../lib/services/tmdbIdResolver';
 import type { IntroDbSegment } from '../../lib/services/theIntroDbService';
 import type { EpisodeLink, TextTracks, SkipInterval } from '../../lib/providers/types';
 
@@ -255,6 +256,12 @@ interface TVPlayerScreenProps {
   // absent, the Skip Intro/Recap popup simply never appears.
   tmdbId?: number | string;
   imdbId?: string;
+  // Clean show/movie title (NOT the episode title) and release year, used to
+  // work out a tmdbId when the provider didn't supply one -- see
+  // lib/services/tmdbIdResolver.ts. Optional; without them (and without ids)
+  // the Skip Intro/Recap popup simply never appears.
+  mediaTitle?: string;
+  mediaYear?: string | number;
   startPosition?: number;
   // Present only when this stream was launched from the Discover screen's
   // page-2 results inspector -- threaded straight through to whatever
@@ -288,6 +295,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   skip,
   tmdbId,
   imdbId,
+  mediaTitle,
+  mediaYear,
   startPosition,
   discoverSource,
   onSelectNextEpisode,
@@ -421,10 +430,16 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
   }, [streamUrl, headers, sourceType, skip]);
 
-  // Looks up TheIntroDB for whatever intro/recap markers the provider's
+  // Looks up TheIntroDB for whatever intro/recap/outro markers the provider's
   // own `skip` array didn't already supply. Runs whenever the stream or
   // the episode identity changes; a token guards against a slow response
   // landing after the person has already moved on to a different episode.
+  //
+  // Many addon providers never supply a tmdbId, and TheIntroDB is far more
+  // accurate with one than with an imdb id (especially for TV). So when it's
+  // missing, `resolveTmdbId` works one out first (Cinemeta -> TMDB /find ->
+  // vetted TMDB title search, cached on-device, see tmdbIdResolver.ts). If
+  // that finds nothing, the lookup still proceeds with the imdb id alone.
   //
   // Waits until the player has reported the video duration so the request
   // can carry `duration_ms` -- TheIntroDB uses it to pick the matching
@@ -434,40 +449,67 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // value itself is read from `currentProgRef`, which the stream-change
   // reset above zeroes in the same commit -- so a stale duration from the
   // previous stream/episode can never be sent.
+  //
+  // Dependencies are primitives derived from `episodes` (not the array
+  // itself) so a re-created array with the same content can't re-trigger it.
   const introDbFetchTokenRef = useRef(0);
   const durationReady = duration > 0;
+  const introIsSeries = episodes.length > 0;
+  const introSeason = episodes[currentEpisodeIndex]?.season;
+  const introEpisodeNumber = episodes[currentEpisodeIndex]?.episodeNumber;
   useEffect(() => {
     const token = ++introDbFetchTokenRef.current;
-    if (!tmdbId && !imdbId) return;
+    if (!tmdbId && !imdbId && !mediaTitle) return;
     const durationSec = currentProgRef.current.duration;
     if (!durationReady || !(durationSec > 0)) return;
 
-    const isSeries = episodes.length > 0;
-    const currentEp = episodes[currentEpisodeIndex] as
-      | (EpisodeItem & { season?: number; episodeNumber?: number })
-      | undefined;
-
     // A series episode without a known season/episode must not be looked up
     // as a movie (TMDB movie/TV id spaces overlap -> wrong title's markers).
-    if (isSeries && (currentEp?.season == null || currentEp?.episodeNumber == null)) return;
+    if (introIsSeries && (introSeason == null || introEpisodeNumber == null)) return;
 
-    fetchIntroDbSegments({
-      tmdbId,
-      imdbId,
-      season: isSeries ? currentEp?.season : undefined,
-      episode: isSeries ? currentEp?.episodeNumber : undefined,
-      durationSec,
-    }).then((segments) => {
+    (async () => {
+      let lookupTmdbId: number | string | undefined = tmdbId;
+      if (!lookupTmdbId) {
+        const identity = await resolveTmdbId({
+          tmdbId,
+          imdbId,
+          title: mediaTitle,
+          year: mediaYear,
+          kind: introIsSeries ? 'series' : 'movie',
+        });
+        // Stream/episode moved on while resolving -- discard.
+        if (introDbFetchTokenRef.current !== token) return;
+        lookupTmdbId = identity?.tmdbId;
+      }
+      if (!lookupTmdbId && !imdbId) return;
+
+      const segments = await fetchIntroDbSegments({
+        tmdbId: lookupTmdbId,
+        imdbId,
+        season: introIsSeries ? introSeason : undefined,
+        episode: introIsSeries ? introEpisodeNumber : undefined,
+        durationSec,
+      });
       // Stream/episode moved on before this resolved -- discard.
       if (introDbFetchTokenRef.current !== token) return;
       if (segments.length === 0) return;
       setActiveSkip((prev) =>
-        mergeSkipIntervals(prev, segments, { isSeries, durationSec })
+        mergeSkipIntervals(prev, segments, { isSeries: introIsSeries, durationSec })
       );
-    });
+    })();
     // Duration is read from a ref once it first becomes available (see above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamUrl, tmdbId, imdbId, currentEpisodeIndex, episodes, durationReady]);
+  }, [
+    streamUrl,
+    tmdbId,
+    imdbId,
+    mediaTitle,
+    mediaYear,
+    introIsSeries,
+    introSeason,
+    introEpisodeNumber,
+    durationReady,
+  ]);
 
   useEffect(() => {
     return () => {
