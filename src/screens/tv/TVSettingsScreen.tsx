@@ -1,5 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, Switch, ToastAndroid } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Switch,
+  ToastAndroid,
+  Modal,
+  TextInput,
+  ActivityIndicator,
+} from 'react-native';
+import Constants from 'expo-constants';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
@@ -36,6 +47,35 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
   },
 ];
 
+// TMDB "API Key (v3)" -- exactly 32 hex characters. (The long "Read Access
+// Token" TMDB also issues is a different credential and isn't what the app's
+// `api_key=` requests use.)
+const TMDB_V3_KEY_RE = /^[a-f0-9]{32}$/i;
+
+type TmdbKeyVerdict = 'valid' | 'invalid' | 'unreachable';
+
+// Asks TMDB whether the key works before it's saved, so a typo (easy to make
+// with a remote-control keyboard) is caught here rather than showing up later
+// as silently missing metadata. Only a definite 401 counts as "invalid" --
+// a timeout/offline/rate-limit answer says nothing about the key itself.
+const verifyTmdbKey = async (key: string): Promise<TmdbKeyVerdict> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(
+      `https://api.themoviedb.org/3/configuration?api_key=${encodeURIComponent(key)}`,
+      { signal: controller.signal },
+    );
+    if (res.ok) return 'valid';
+    if (res.status === 401) return 'invalid';
+    return 'unreachable';
+  } catch {
+    return 'unreachable';
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 interface TVSettingsScreenProps {
   onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
   onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
@@ -69,6 +109,17 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   const [activeDohProvider, setActiveDohProvider] = useState('cloudflare');
   const [selectedPlayer, setSelectedPlayer] = useState<'exo' | 'vlc' | 'system'>('exo');
   const [excludedQualities, setExcludedQualities] = useState<string[]>([]);
+
+  // Custom TMDB key. `savedTmdbKey` mirrors what's in storage; the rest is
+  // the edit dialog's own state. A key saved here takes priority over the
+  // one bundled at build time (see `getTmdbApiKey()` in useTmdbStory.ts).
+  const [savedTmdbKey, setSavedTmdbKey] = useState(() => settingsStorage.getTmdbApiKey());
+  const hasBundledTmdbKey = Boolean(String(Constants.expoConfig?.extra?.tmdbApiKey || '').trim());
+  const [tmdbModalVisible, setTmdbModalVisible] = useState(false);
+  const [tmdbKeyInput, setTmdbKeyInput] = useState('');
+  const [tmdbKeyVisible, setTmdbKeyVisible] = useState(false);
+  const [tmdbKeyError, setTmdbKeyError] = useState<string | null>(null);
+  const [tmdbKeyChecking, setTmdbKeyChecking] = useState(false);
 
   // Every row on this screen is a full-width, single-column item, so every
   // one of them sits at the screen's left edge -- unlike Home/Discover's
@@ -152,6 +203,78 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
       ToastAndroid.SHORT,
     );
   };
+
+  const openTmdbModal = () => {
+    setTmdbKeyInput(savedTmdbKey);
+    setTmdbKeyVisible(false);
+    setTmdbKeyError(null);
+    setTmdbModalVisible(true);
+  };
+
+  const closeTmdbModal = () => {
+    if (tmdbKeyChecking) return;
+    setTmdbModalVisible(false);
+    setTmdbKeyError(null);
+  };
+
+  const clearTmdbKey = () => {
+    settingsStorage.setTmdbApiKey('');
+    setSavedTmdbKey('');
+    setTmdbKeyInput('');
+    setTmdbModalVisible(false);
+    ToastAndroid.show(
+      hasBundledTmdbKey ? 'Custom TMDB key removed -- using built-in key' : 'Custom TMDB key removed',
+      ToastAndroid.SHORT,
+    );
+  };
+
+  const saveTmdbKey = async () => {
+    if (tmdbKeyChecking) return;
+    const candidate = tmdbKeyInput.trim();
+
+    if (!candidate) {
+      // Saving an empty box is the same as clearing.
+      if (savedTmdbKey) clearTmdbKey();
+      else closeTmdbModal();
+      return;
+    }
+    if (candidate === savedTmdbKey) {
+      closeTmdbModal();
+      return;
+    }
+    if (!TMDB_V3_KEY_RE.test(candidate)) {
+      setTmdbKeyError(
+        'That doesn\'t look like a TMDB API Key (v3): it is 32 letters/digits. Use the "API Key", not the "Read Access Token".',
+      );
+      return;
+    }
+
+    setTmdbKeyError(null);
+    setTmdbKeyChecking(true);
+    const verdict = await verifyTmdbKey(candidate);
+    setTmdbKeyChecking(false);
+
+    if (verdict === 'invalid') {
+      setTmdbKeyError('TMDB rejected this key. Check it for typos and try again.');
+      return;
+    }
+
+    settingsStorage.setTmdbApiKey(candidate);
+    setSavedTmdbKey(candidate);
+    setTmdbModalVisible(false);
+    ToastAndroid.show(
+      verdict === 'valid'
+        ? 'Custom TMDB key saved'
+        : 'Custom TMDB key saved (couldn\'t verify it -- no connection?)',
+      ToastAndroid.LONG,
+    );
+  };
+
+  const tmdbStatusLine = savedTmdbKey
+    ? `Custom key active (ending ${savedTmdbKey.slice(-4)})`
+    : hasBundledTmdbKey
+    ? 'Using the built-in key'
+    : 'No key configured -- some metadata and skip-intro lookups are limited';
 
   return (
     <ScrollView
@@ -377,6 +500,134 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
           })}
         </View>
       </View>
+
+      {/* Metadata (TMDB) Section */}
+      <Text style={styles.sectionHeader}>Metadata (TMDB)</Text>
+      <TVFocusablePressable
+        key={keyFor('tmdb-key')}
+        ref={registerItem('tmdb-key')}
+        hasTVPreferredFocus={shouldPreferFocus('tmdb-key', false)}
+        onFocus={() => (lastFocusedSettingsKey = 'tmdb-key')}
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        onPress={openTmdbModal}
+        style={styles.settingCard}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View
+              style={[
+                styles.iconContainer,
+                { backgroundColor: savedTmdbKey ? primaryColor : '#252530' },
+              ]}
+            >
+              <MaterialCommunityIcons name="key-variant" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <Text style={styles.settingTitle}>Custom TMDB API key</Text>
+              <Text style={styles.settingSubtitle}>
+                Used for titles, artwork and skip-intro matching. Overrides the built-in key.
+              </Text>
+              <Text style={[styles.settingSubtitle, { color: savedTmdbKey ? primaryColor : '#9CA3AF', marginTop: 4 }]}>
+                {tmdbStatusLine}
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="pencil-outline" size={22} color="#9CA3AF" />
+          </View>
+        )}
+      </TVFocusablePressable>
+
+      <Modal
+        visible={tmdbModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeTmdbModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Custom TMDB API key</Text>
+            <Text style={styles.modalSubtitle}>
+              Paste or type your TMDB "API Key (v3)" from themoviedb.org/settings/api. Tip: the
+              Google TV / Android TV phone app gives you a phone keyboard for typing it.
+            </Text>
+
+            <View style={styles.keyInputRow}>
+              <TextInput
+                value={tmdbKeyInput}
+                onChangeText={(text) => {
+                  setTmdbKeyInput(text);
+                  if (tmdbKeyError) setTmdbKeyError(null);
+                }}
+                placeholder="32-character API key"
+                placeholderTextColor="#6B7280"
+                autoCapitalize="none"
+                autoCorrect={false}
+                importantForAutofill="no"
+                secureTextEntry={!tmdbKeyVisible}
+                editable={!tmdbKeyChecking}
+                returnKeyType="done"
+                onSubmitEditing={saveTmdbKey}
+                style={styles.keyInput}
+              />
+              <TVFocusablePressable
+                scaleFocused={1.06}
+                focusedBorderColor="#FFFFFF"
+                borderRadius={8}
+                onPress={() => setTmdbKeyVisible((v) => !v)}
+                style={styles.keyEyeBtn}
+              >
+                {() => (
+                  <MaterialCommunityIcons
+                    name={tmdbKeyVisible ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    color="#FFFFFF"
+                  />
+                )}
+              </TVFocusablePressable>
+            </View>
+            {tmdbKeyError && <Text style={styles.keyErrorText}>{tmdbKeyError}</Text>}
+
+            <View style={styles.modalActions}>
+              {savedTmdbKey ? (
+                <TVFocusablePressable
+                  scaleFocused={1.04}
+                  focusedBorderColor="#EF4444"
+                  borderRadius={8}
+                  onPress={clearTmdbKey}
+                  style={styles.cancelBtn}
+                >
+                  {() => <Text style={[styles.cancelBtnText, { color: '#F87171' }]}>Remove key</Text>}
+                </TVFocusablePressable>
+              ) : null}
+              <TVFocusablePressable
+                scaleFocused={1.04}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={8}
+                onPress={closeTmdbModal}
+                style={styles.cancelBtn}
+              >
+                {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
+              </TVFocusablePressable>
+              <TVFocusablePressable
+                scaleFocused={1.04}
+                focusedBorderColor="#FFFFFF"
+                borderRadius={8}
+                onPress={saveTmdbKey}
+                style={styles.confirmBtn}
+              >
+                {() =>
+                  tmdbKeyChecking ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.confirmBtnText}>Save</Text>
+                  )
+                }
+              </TVFocusablePressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -524,5 +775,92 @@ const styles = StyleSheet.create({
     color: '#E5E7EB',
     fontSize: 14,
     fontWeight: '600',
+  },
+  // ---- TMDB key dialog (mirrors the Discover screen's catalog dialogs) ----
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: 560,
+    backgroundColor: '#16161E',
+    borderRadius: 16,
+    padding: 24,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  modalSubtitle: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  keyInputRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 8,
+  },
+  keyInput: {
+    flex: 1,
+    backgroundColor: '#0A0A0E',
+    color: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 8,
+    fontSize: 14,
+  },
+  keyEyeBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  keyErrorText: {
+    color: '#EF4444',
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 8,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'flex-end',
+    width: '100%',
+    marginTop: 14,
+  },
+  cancelBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: 8,
+  },
+  cancelBtnText: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  confirmBtn: {
+    backgroundColor: '#8A5CF6',
+    minWidth: 72,
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: 8,
+  },
+  confirmBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });
