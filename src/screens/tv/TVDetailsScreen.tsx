@@ -120,6 +120,9 @@ interface TVDetailsScreenProps {
       providerValue?: string;
       episodes?: any[];
       currentEpisodeIndex?: number;
+      // Passed straight through to TVPlayerScreen's TheIntroDB lookup.
+      tmdbId?: number | string;
+      imdbId?: string;
       servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
       qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
       headers?: Record<string, string>;
@@ -810,6 +813,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           providerValue: providerId,
           episodes: episodesOverride ?? playerEpisodes,
           currentEpisodeIndex: episodeIdx,
+          tmdbId: info?.tmdbId,
+          imdbId: info?.imdbId,
           qualities,
           skip: best.skip,
           headers: best.headers,
