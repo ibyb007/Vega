@@ -28,13 +28,23 @@ import { fetchIntroDbSegments } from '../../lib/services/theIntroDbService';
 import type { IntroDbSegment } from '../../lib/services/theIntroDbService';
 import type { EpisodeLink, TextTracks, SkipInterval } from '../../lib/providers/types';
 
-// Folds TheIntroDB's fetched intro/recap segments into whatever the
-// provider's own `skip` array already had, without duplicating a type the
-// provider already supplied (provider data wins -- it came with the exact
-// stream that's playing, TheIntroDB's is matched by title/episode number).
+// Credits that start before this fraction of the runtime are treated as bad
+// community data for the "Up Next" trigger -- firing the popup mid-episode
+// would be far worse than falling back to the default 120s-before-end.
+const MIN_CREDITS_START_FRACTION = 0.5;
+
+// Folds TheIntroDB's fetched segments into whatever the provider's own
+// `skip` array already had, without duplicating a type the provider already
+// supplied (provider data wins -- it came with the exact stream that's
+// playing, TheIntroDB's is matched by title/episode number).
+//   intro   -> "Intro"  (drives the Skip Intro popup)
+//   recap   -> "Recap"  (drives the Skip Recap popup)
+//   credits -> "Outro"  (series only; drives the "Up Next" trigger via the
+//              existing `/outro/i` lookup -- the first credits block wins)
 const mergeSkipIntervals = (
   provider: SkipInterval[] = [],
-  fetched: IntroDbSegment[]
+  fetched: IntroDbSegment[],
+  opts: { isSeries: boolean; durationSec: number }
 ): SkipInterval[] => {
   const hasType = (re: RegExp) => provider.some((s) => re.test(s.title || ''));
   const additions: SkipInterval[] = [];
@@ -45,6 +55,21 @@ const mergeSkipIntervals = (
       additions.push({ title: 'Recap', from: seg.from, to: seg.to });
     }
   }
+
+  if (opts.isSeries && !hasType(/outro/i)) {
+    // `fetched` is sorted by start time, so the first credits entry is the
+    // main credits block (later ones are typically post-credits scenes).
+    const credits = fetched.find((s) => s.type === 'credits');
+    if (
+      credits &&
+      opts.durationSec > 0 &&
+      credits.from >= opts.durationSec * MIN_CREDITS_START_FRACTION &&
+      credits.from < opts.durationSec
+    ) {
+      additions.push({ title: 'Outro', from: credits.from, to: credits.to });
+    }
+  }
+
   if (additions.length === 0) return provider;
   return [...provider, ...additions].sort((a, b) => a.from - b.from);
 };
@@ -400,28 +425,49 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // own `skip` array didn't already supply. Runs whenever the stream or
   // the episode identity changes; a token guards against a slow response
   // landing after the person has already moved on to a different episode.
+  //
+  // Waits until the player has reported the video duration so the request
+  // can carry `duration_ms` -- TheIntroDB uses it to pick the matching
+  // release (theatrical vs extended cut, etc.), and it costs one request
+  // instead of two. `durationReady` (not `duration`) is the dependency so
+  // small duration updates during playback don't trigger refetches, and the
+  // value itself is read from `currentProgRef`, which the stream-change
+  // reset above zeroes in the same commit -- so a stale duration from the
+  // previous stream/episode can never be sent.
   const introDbFetchTokenRef = useRef(0);
+  const durationReady = duration > 0;
   useEffect(() => {
     const token = ++introDbFetchTokenRef.current;
     if (!tmdbId && !imdbId) return;
+    const durationSec = currentProgRef.current.duration;
+    if (!durationReady || !(durationSec > 0)) return;
 
     const isSeries = episodes.length > 0;
     const currentEp = episodes[currentEpisodeIndex] as
       | (EpisodeItem & { season?: number; episodeNumber?: number })
       | undefined;
 
+    // A series episode without a known season/episode must not be looked up
+    // as a movie (TMDB movie/TV id spaces overlap -> wrong title's markers).
+    if (isSeries && (currentEp?.season == null || currentEp?.episodeNumber == null)) return;
+
     fetchIntroDbSegments({
       tmdbId,
       imdbId,
       season: isSeries ? currentEp?.season : undefined,
       episode: isSeries ? currentEp?.episodeNumber : undefined,
+      durationSec,
     }).then((segments) => {
       // Stream/episode moved on before this resolved -- discard.
       if (introDbFetchTokenRef.current !== token) return;
       if (segments.length === 0) return;
-      setActiveSkip((prev) => mergeSkipIntervals(prev, segments));
+      setActiveSkip((prev) =>
+        mergeSkipIntervals(prev, segments, { isSeries, durationSec })
+      );
     });
-  }, [streamUrl, tmdbId, imdbId, currentEpisodeIndex, episodes]);
+    // Duration is read from a ref once it first becomes available (see above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamUrl, tmdbId, imdbId, currentEpisodeIndex, episodes, durationReady]);
 
   useEffect(() => {
     return () => {
