@@ -492,6 +492,13 @@ export interface CinemetaHeroData {
   genres?: string[];
   cast?: string[];
   source: 'id' | 'title';
+  /**
+   * False when this came from a catalog search row: backdrop, synopsis and
+   * year are there, but rating, genres and cast usually are not. Pass it to
+   * `completeCinemetaHero` to fill those in from the full meta.
+   */
+  complete: boolean;
+  type?: 'movie' | 'series';
 }
 
 export interface CinemetaHeroInput extends CinemetaResolveInput {
@@ -516,6 +523,7 @@ const heroFromMeta = (meta: CinemetaMeta, source: 'id' | 'title'): CinemetaHeroD
     genres: meta.genres?.length ? meta.genres : undefined,
     cast: meta.cast?.length ? meta.cast.slice(0, 3) : undefined,
     source,
+    complete: true,
   };
 };
 
@@ -548,6 +556,8 @@ export const resolveCinemetaHero = async (
       year: hit.releaseInfo || hit.year,
       genres: hit.genres?.length ? hit.genres : undefined,
       source: 'title',
+      complete: false,
+      type: hit.type,
     });
     if (hit.background && (hit.description || !input.needsDescription)) return fromHit();
 
@@ -556,6 +566,33 @@ export const resolveCinemetaHero = async (
     return hit.background ? fromHit() : null;
   } catch {
     return null;
+  }
+};
+
+/**
+ * Upgrades a hero resolved from a catalog row (`complete: false`) with the
+ * fields only the full meta has -- rating, genres, cast. Kept separate from
+ * `resolveCinemetaHero` so a screen can paint the backdrop and synopsis
+ * first and let this (the heavy download) land a moment later. Resolves to
+ * the hero unchanged if the meta can't be fetched. Never throws.
+ */
+export const completeCinemetaHero = async (hero: CinemetaHeroData): Promise<CinemetaHeroData> => {
+  if (hero.complete || !hero.type) return hero;
+  try {
+    const meta = await fetchCinemetaMeta(hero.imdbId, hero.type);
+    if (!meta) return hero;
+    const full = heroFromMeta(meta, hero.source);
+    return {
+      ...full,
+      // Whatever the row already gave us stays if the meta lacks it.
+      background: full.background || hero.background,
+      description: full.description || hero.description,
+      rating: full.rating || hero.rating,
+      year: full.year || hero.year,
+      genres: full.genres || hero.genres,
+    };
+  } catch {
+    return hero;
   }
 };
 
