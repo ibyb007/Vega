@@ -41,6 +41,9 @@ export interface ActiveStreamPayload {
   servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
   qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
   skip?: SkipInterval[];
+  // Passed straight through to TVPlayerScreen's TheIntroDB lookup.
+  tmdbId?: number | string;
+  imdbId?: string;
   headers?: Record<string, string>;
   sourceType?: string;
   subtitles?: TextTracks;
@@ -330,6 +333,8 @@ export default function App() {
                     servers={activeStream.servers}
                     qualities={activeStream.qualities}
                     skip={activeStream.skip}
+                    tmdbId={activeStream.tmdbId}
+                    imdbId={activeStream.imdbId}
                     startPosition={activeStream.startPosition}
                     discoverSource={activeStream.discoverSource}
                     onSelectNextEpisode={(nextEp) => {
