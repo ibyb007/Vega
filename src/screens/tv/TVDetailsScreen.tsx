@@ -474,15 +474,45 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     return filtered.length > 0 ? filtered : rawEpisodes;
   }, [rawEpisodes, excludedQualities]);
 
+  // Providers without a TMDB/IMDb id often can't group a show into proper
+  // season tabs + an `episodesLink` fetch, so each episode ends up as a flat
+  // "direct link" entry instead of going through a real episode list.
+  // Whether that flat list is actually a set of distinct episodes (needing
+  // per-item resume matching) or just several servers/qualities for one
+  // movie (where every entry legitimately shares the same resume badge)
+  // can't be read off `d.type` alone -- most providers never bother setting
+  // it. `info.type` is set from basic scraping regardless of TMDB/IMDb
+  // enrichment, so -- matching the convention already used elsewhere in
+  // this app (TVInfoScreen, TVDiscoverScreen) -- treat anything not
+  // explicitly `'movie'` as episodes. Computed off the raw `directItems`
+  // (not the filtered/sorted list below) so it isn't affected by either.
+  const directItemsAreEpisodes =
+    directItems.some((d) => d.type === 'series') || (info?.type || 'series') !== 'movie';
+
+  // Some providers (e.g. 4khdhub) never expose a real `episodesLink` at
+  // all -- every episode of a season is scraped straight into this link's
+  // `directLinks`, in whatever order the page lists them (often
+  // newest-first). Discover already re-sorts this exact flat list with
+  // `sortEpisodesChronologically`; do the same here so a season shows
+  // S01E01 -> S01E02 -> ... regardless of provider order, matching the
+  // real per-season `episodes` list above. Only applies when these direct
+  // links actually represent distinct episodes -- a flat list of
+  // servers/qualities for a single movie is left in the provider's own
+  // order.
+  const sortedDirectItems = useMemo(
+    () => (directItemsAreEpisodes ? sortEpisodesChronologically(directItems) : directItems),
+    [directItems, directItemsAreEpisodes],
+  );
+
   const usableDirectItems = useMemo(() => {
-    if (!excludedQualities.length) return directItems;
-    const filtered = directItems.filter(
+    if (!excludedQualities.length) return sortedDirectItems;
+    const filtered = sortedDirectItems.filter(
       (d: any) =>
         !isQualityExcluded(d?.title, excludedQualities) &&
         !isQualityExcluded(d?.quality, excludedQualities),
     );
-    return filtered.length > 0 ? filtered : directItems;
-  }, [directItems, excludedQualities]);
+    return filtered.length > 0 ? filtered : sortedDirectItems;
+  }, [sortedDirectItems, excludedQualities]);
 
   // Closes the race that caused a "flash" of the wrong screen: there is one
   // render frame after `getMetaData` resolves but before the episodes
@@ -551,20 +581,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       } as EpisodeLink & { synopsis?: string; season?: number; episodeNumber?: number; releaseDate?: string };
     });
   }, [episodes, cinemetaMeta, seasonNumber]);
-
-  // Providers without a TMDB/IMDb id often can't group a show into proper
-  // season tabs + an `episodesLink` fetch, so each episode ends up as a flat
-  // "direct link" entry instead of going through a real episode list.
-  // Whether that flat list is actually a set of distinct episodes (needing
-  // per-item resume matching) or just several servers/qualities for one
-  // movie (where every entry legitimately shares the same resume badge)
-  // can't be read off `d.type` alone -- most providers never bother setting
-  // it. `info.type` is set from basic scraping regardless of TMDB/IMDb
-  // enrichment, so -- matching the convention already used elsewhere in
-  // this app (TVInfoScreen, TVDiscoverScreen) -- treat anything not
-  // explicitly `'movie'` as episodes.
-  const directItemsAreEpisodes =
-    usableDirectItems.some((d) => d.type === 'series') || (info?.type || 'series') !== 'movie';
 
   const rows: DetailRow[] = useMemo(() => {
     const hasResumeIdentity = Boolean(resumeHint?.episodeKey || resumeHint?.episodeLink);
