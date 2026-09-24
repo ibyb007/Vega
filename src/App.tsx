@@ -44,6 +44,10 @@ export interface ActiveStreamPayload {
   // Passed straight through to TVPlayerScreen's TheIntroDB lookup.
   tmdbId?: number | string;
   imdbId?: string;
+  // Clean show/movie title + year for TMDB id resolution when the provider
+  // has no tmdbId (see lib/services/tmdbIdResolver.ts).
+  mediaTitle?: string;
+  mediaYear?: string | number;
   headers?: Record<string, string>;
   sourceType?: string;
   subtitles?: TextTracks;
@@ -335,6 +339,8 @@ export default function App() {
                     skip={activeStream.skip}
                     tmdbId={activeStream.tmdbId}
                     imdbId={activeStream.imdbId}
+                    mediaTitle={activeStream.mediaTitle}
+                    mediaYear={activeStream.mediaYear}
                     startPosition={activeStream.startPosition}
                     discoverSource={activeStream.discoverSource}
                     onSelectNextEpisode={(nextEp) => {
