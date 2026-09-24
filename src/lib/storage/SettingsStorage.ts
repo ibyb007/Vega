@@ -13,6 +13,7 @@ const SETTINGS_KEYS = {
   DOH_PROVIDER: 'dohProvider',
   DOH_CUSTOM_URL: 'dohCustomUrl',
   TMDB_API_KEY: 'tmdbApiKey',
+  TMDB_API_KEY_REVISION: 'tmdbApiKeyRevision',
   AUTO_CHECK_UPDATE: 'autoCheckUpdate',
   AUTO_DOWNLOAD_UPDATE: 'autoDownloadUpdate',
   SHOW_MEDIA_CONTROLS: 'showMediaControls',
@@ -118,6 +119,14 @@ export class SettingsStorage {
 
   setTmdbApiKey(key: string): void {
     MMKV.setString(SETTINGS_KEYS.TMDB_API_KEY, key);
+    // Bumped on every change so cached TMDB queries (see useTmdbStory's query
+    // key) refetch with the new key instead of serving results fetched with
+    // the old one.
+    MMKV.setNumber(SETTINGS_KEYS.TMDB_API_KEY_REVISION, this.getTmdbApiKeyRevision() + 1);
+  }
+
+  getTmdbApiKeyRevision(): number {
+    return MMKV.getNumber(SETTINGS_KEYS.TMDB_API_KEY_REVISION) ?? 0;
   }
 
   // Player Settings
