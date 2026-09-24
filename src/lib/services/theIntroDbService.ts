@@ -1,145 +1,194 @@
 // Client for TheIntroDB (https://theintrodb.org) -- a community-verified
-// database of intro/recap/credits/preview timestamps, matched by TMDB id
-// (IMDb as a fallback, less accurate for TV per their own docs).
+// database of intro/recap/credits/preview timestamps.
 //
 // Used by TVPlayerScreen to power the "Skip Intro"/"Skip Recap" popup for
 // streams where the provider itself didn't already supply a `skip` marker
 // (see `SkipInterval` in `../providers/types`).
 //
-// NOTE ON THE CONTRACT: TheIntroDB's public API isn't fully documented
-// anywhere Claude could reach while writing this (no OpenAPI/docs page was
-// fetchable, and the sandbox this was written in can't reach
-// api.theintrodb.org directly to confirm field names against a real
-// response). The request shape below (`tmdb_id`/`imdb_id` + `season`/
-// `episode` query params) matches how their own Jellyfin/Emby/Kodi plugins
-// describe matching content. The response parsing is intentionally
-// tolerant of a few likely field-name variants (see `normalizeSegment`)
-// so that if the real shape differs slightly, fixing it is a matter of
-// adding one more alias below -- not a rewrite. If this needs adjusting,
-// the fastest way to confirm the real shape is a manual curl/Postman call
-// against a known episode (e.g. a popular show's S01E01) and comparing the
-// JSON keys against `normalizeSegment`.
+// Contract (API v3, per the published OpenAPI spec):
+//   GET https://api.theintrodb.org/v3/media
+//     ?tmdb_id=<int> | imdb_id=tt1234567    (tmdb_id preferred; imdb_id is
+//                                            resolved server-side, slower and
+//                                            less accurate for TV)
+//     &season=<int>&episode=<int>           (TV only -- OMIT both for movies;
+//                                            the API infers movie vs tv from
+//                                            their presence)
+//     &duration_ms=<int>                    (optional; picks the matching
+//                                            release: theatrical/extended/...)
+//   200 -> { tmdb_id, type, season?, episode?,
+//            intro?:   [{ start_ms|null, end_ms }],
+//            recap?:   [{ start_ms|null, end_ms }],
+//            credits?: [{ start_ms, end_ms|null }],   // null end = end of media
+//            preview?: [{ start_ms, end_ms|null }] }
+//   404 -> no accepted data for this title/episode (normal, not an error)
+//   429 -> rate/usage limit (unauthenticated: 500 /media requests/day per IP)
 //
-// NOTE ON THE API KEY: TheIntroDB's docs describe the key as only
-// mattering for prioritizing/seeing *your own* pending submissions --
-// reading community-verified segments (all this app needs) should work
-// anonymously. Deliberately NOT hardcoding a personal account key here:
-// this file ships inside the APK, and anything in it can be pulled back
-// out of the compiled bundle. If you want to test with a key locally,
-// paste it into INTRO_DB_API_KEY below on your own machine, but don't
-// commit it -- ship without one unless testing shows reads genuinely
-// require it.
-const INTRO_DB_BASE = 'https://api.theintrodb.org';
-const INTRO_DB_API_KEY: string | undefined = undefined;
+// Notes on the API key: reading accepted community data works anonymously.
+// The key only adds the caller's own *pending* submissions to the result, so
+// this client deliberately ships without one -- anything embedded in the APK
+// can be extracted from the bundle.
+//
+// Because the daily limit is per IP (a whole household shares one) results
+// are cached in memory, including "no data" results, so quality switches and
+// re-opening an episode don't spend quota.
 
+const INTRO_DB_BASE = 'https://api.theintrodb.org/v3';
 const REQUEST_TIMEOUT_MS = 6000;
+const USER_AGENT = 'Vega-TV';
 
 export type IntroDbSegmentType = 'intro' | 'recap' | 'credits' | 'preview';
 
 export interface IntroDbSegment {
   type: IntroDbSegmentType;
+  /** Seconds. */
   from: number;
+  /** Seconds. A null API end (credits/preview = "until end of media") is resolved to the video duration. */
   to: number;
 }
 
 interface FetchIntroDbSegmentsParams {
   tmdbId?: number | string;
   imdbId?: string;
-  // Series only. Omit both for movies.
+  // Series only. Provide BOTH or neither (movie). Both must be >= 1.
   season?: number;
   episode?: number;
+  // Total video duration in seconds, once known. Sent as `duration_ms` so the
+  // API can pick the right release version, and used to resolve open-ended
+  // (null-end) credits/preview segments.
+  durationSec?: number;
 }
 
-const SEGMENT_TYPE_ALIASES: Record<string, IntroDbSegmentType> = {
-  intro: 'intro',
-  opening: 'intro',
-  op: 'intro',
-  recap: 'recap',
-  recap_summary: 'recap',
-  credits: 'credits',
-  outro: 'credits',
-  ending: 'credits',
-  preview: 'preview',
-  trailer: 'preview',
-};
+interface RawSegment {
+  start_ms?: number | null;
+  end_ms?: number | null;
+}
 
-const toSeconds = (val: unknown): number | null => {
-  if (typeof val === 'number' && Number.isFinite(val)) return val;
-  if (typeof val === 'string') {
-    // Accepts plain seconds ("95.5") or clock-style "mm:ss" / "hh:mm:ss".
-    if (/^\d+(\.\d+)?$/.test(val.trim())) return parseFloat(val);
-    const parts = val.trim().split(':').map(Number);
-    if (parts.length >= 2 && parts.every((p) => Number.isFinite(p))) {
-      return parts.reduceRight((acc, p, idx, arr) => acc + p * Math.pow(60, arr.length - 1 - idx), 0);
-    }
-  }
-  return null;
-};
+const SEGMENT_TYPES: IntroDbSegmentType[] = ['intro', 'recap', 'credits', 'preview'];
+const IMDB_ID_RE = /^tt\d{7,8}$/;
 
-// Tolerant of several plausible field-name variants for start/end/type,
-// since the exact TheIntroDB response schema wasn't confirmable while
-// writing this (see the file-level note above).
-const normalizeSegment = (raw: any): IntroDbSegment | null => {
+const isMs = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+
+const normalizeSegment = (
+  type: IntroDbSegmentType,
+  raw: RawSegment,
+  durationSec: number | undefined
+): IntroDbSegment | null => {
   if (!raw || typeof raw !== 'object') return null;
 
-  const rawType = String(
-    raw.type ?? raw.segment_type ?? raw.segmentType ?? raw.label ?? ''
-  ).toLowerCase();
-  const type = SEGMENT_TYPE_ALIASES[rawType];
-  if (!type) return null;
+  // Intro/recap: start may be null/0 ("from the very beginning"), end is required.
+  // Credits/preview: start is required; end may be null ("until end of media").
+  // The API uses 0 to mean "no segment", which the checks below drop.
+  const startOptional = type === 'intro' || type === 'recap';
 
-  const from = toSeconds(raw.from ?? raw.start ?? raw.start_sec ?? raw.startTime ?? raw.startSec);
-  const to = toSeconds(raw.to ?? raw.end ?? raw.end_sec ?? raw.endTime ?? raw.endSec);
-  if (from == null || to == null || to <= from) return null;
+  const startMs = raw.start_ms == null ? (startOptional ? 0 : null) : raw.start_ms;
+  if (!isMs(startMs)) return null;
+  if (!startOptional && startMs <= 0) return null;
 
-  return { type, from, to };
+  let endMs: number | null;
+  if (raw.end_ms == null) {
+    if (startOptional) return null; // end is mandatory for intro/recap
+    if (!durationSec || durationSec <= 0) return null;
+    endMs = Math.round(durationSec * 1000);
+  } else if (isMs(raw.end_ms)) {
+    endMs = raw.end_ms;
+  } else {
+    return null;
+  }
+
+  if (endMs <= startMs) return null;
+  return { type, from: startMs / 1000, to: endMs / 1000 };
 };
 
-const extractSegmentArray = (payload: any): any[] => {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.segments)) return payload.segments;
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload?.results)) return payload.results;
-  return [];
+// Successful lookups (200 and 404) are memoised for the app session.
+// Network errors, timeouts and 429s are NOT cached so a later attempt can retry.
+const cache = new Map<string, IntroDbSegment[]>();
+const CACHE_MAX_ENTRIES = 200;
+
+const remember = (key: string, value: IntroDbSegment[]) => {
+  if (cache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
 };
 
 /**
- * Fetches intro/recap/credits/preview segments for one title (movie) or
- * one episode (series) from TheIntroDB. Never throws -- on any network
- * error, timeout, missing ids, or unrecognized response shape it resolves
- * to `[]` so a lookup failure never breaks playback or crashes the player.
+ * Fetches intro/recap/credits/preview segments for one title (movie) or one
+ * episode (series) from TheIntroDB. Never throws -- on any network error,
+ * timeout, missing/invalid ids, 404, 429 or unrecognised response it resolves
+ * to `[]` so a lookup failure never breaks playback.
  */
 export async function fetchIntroDbSegments({
   tmdbId,
   imdbId,
   season,
   episode,
+  durationSec,
 }: FetchIntroDbSegmentsParams): Promise<IntroDbSegment[]> {
-  if (!tmdbId && !imdbId) return [];
+  const tmdb = Number(tmdbId);
+  const hasTmdb = Number.isInteger(tmdb) && tmdb >= 1;
+  const hasImdb = typeof imdbId === 'string' && IMDB_ID_RE.test(imdbId);
+  if (!hasTmdb && !hasImdb) return [];
+
+  // Series: need a valid season AND episode (API requires >= 1; specials /
+  // season 0 would 400). Without them a series id must not be sent as a movie:
+  // TMDB movie and TV id spaces overlap, so it could match an unrelated film.
+  const isSeries = season != null || episode != null;
+  if (isSeries) {
+    if (!Number.isInteger(season) || !Number.isInteger(episode)) return [];
+    if ((season as number) < 1 || (episode as number) < 1) return [];
+  }
+
+  const durationMs =
+    durationSec && Number.isFinite(durationSec) && durationSec > 0
+      ? Math.round(durationSec * 1000)
+      : undefined;
 
   const params = new URLSearchParams();
-  if (tmdbId) params.set('tmdb_id', String(tmdbId));
-  else if (imdbId) params.set('imdb_id', imdbId);
-  if (season != null) params.set('season', String(season));
-  if (episode != null) params.set('episode', String(episode));
+  if (hasTmdb) params.set('tmdb_id', String(tmdb));
+  else params.set('imdb_id', imdbId as string);
+  if (isSeries) {
+    params.set('season', String(season));
+    params.set('episode', String(episode));
+  }
+  if (durationMs != null) params.set('duration_ms', String(durationMs));
+
+  const key = params.toString();
+  const cached = cache.get(key);
+  if (cached) return cached;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${INTRO_DB_BASE}/v1/segments?${params.toString()}`, {
+    const res = await fetch(`${INTRO_DB_BASE}/media?${key}`, {
       method: 'GET',
-      headers: INTRO_DB_API_KEY ? { 'X-API-Key': INTRO_DB_API_KEY } : undefined,
+      headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
       signal: controller.signal,
     });
 
-    if (!res.ok) return [];
+    if (res.status === 404 || res.status === 204) {
+      remember(key, []); // "no community data for this one" -- don't ask again
+      return [];
+    }
+    if (!res.ok) {
+      if (res.status === 429) console.warn('[theIntroDbService] rate/usage limit hit (429)');
+      return [];
+    }
 
     const payload = await res.json();
-    return extractSegmentArray(payload)
-      .map(normalizeSegment)
-      .filter((s): s is IntroDbSegment => s != null)
-      .sort((a, b) => a.from - b.from);
+    const segments: IntroDbSegment[] = [];
+    for (const type of SEGMENT_TYPES) {
+      const list = payload?.[type];
+      if (!Array.isArray(list)) continue;
+      for (const raw of list) {
+        const seg = normalizeSegment(type, raw, durationSec);
+        if (seg) segments.push(seg);
+      }
+    }
+    segments.sort((a, b) => a.from - b.from);
+    remember(key, segments);
+    return segments;
   } catch (e) {
     console.warn('[theIntroDbService] segment lookup failed:', e);
     return [];
