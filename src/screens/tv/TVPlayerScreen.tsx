@@ -24,7 +24,30 @@ import { providerManager } from '../../lib/services/ProviderManager';
 import { launchVideo } from '../../lib/services/PlayerLauncher';
 import { settingsStorage } from '../../lib/storage';
 import { formatEpisodeLabel as formatSeasonEpisodeLabel } from '../../lib/utils/episodeParsing';
+import { fetchIntroDbSegments } from '../../lib/services/theIntroDbService';
+import type { IntroDbSegment } from '../../lib/services/theIntroDbService';
 import type { EpisodeLink, TextTracks, SkipInterval } from '../../lib/providers/types';
+
+// Folds TheIntroDB's fetched intro/recap segments into whatever the
+// provider's own `skip` array already had, without duplicating a type the
+// provider already supplied (provider data wins -- it came with the exact
+// stream that's playing, TheIntroDB's is matched by title/episode number).
+const mergeSkipIntervals = (
+  provider: SkipInterval[] = [],
+  fetched: IntroDbSegment[]
+): SkipInterval[] => {
+  const hasType = (re: RegExp) => provider.some((s) => re.test(s.title || ''));
+  const additions: SkipInterval[] = [];
+  for (const seg of fetched) {
+    if (seg.type === 'intro' && !hasType(/intro/i)) {
+      additions.push({ title: 'Intro', from: seg.from, to: seg.to });
+    } else if (seg.type === 'recap' && !hasType(/recap/i)) {
+      additions.push({ title: 'Recap', from: seg.from, to: seg.to });
+    }
+  }
+  if (additions.length === 0) return provider;
+  return [...provider, ...additions].sort((a, b) => a.from - b.from);
+};
 
 // A title/episode is treated as "100% watched" for Continue Watching
 // purposes once this many seconds or less remain -- matches the common
@@ -202,6 +225,11 @@ interface TVPlayerScreenProps {
   // it's used to time the "Up Next" popup instead of the 90s-remaining
   // fallback.
   skip?: SkipInterval[];
+  // Used to look up intro/recap timestamps from TheIntroDB when the
+  // provider's own `skip` didn't already supply them. Optional -- when
+  // absent, the Skip Intro/Recap popup simply never appears.
+  tmdbId?: number | string;
+  imdbId?: string;
   startPosition?: number;
   // Present only when this stream was launched from the Discover screen's
   // page-2 results inspector -- threaded straight through to whatever
@@ -233,6 +261,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   servers = [],
   qualities = [],
   skip,
+  tmdbId,
+  imdbId,
   startPosition,
   discoverSource,
   onSelectNextEpisode,
@@ -304,6 +334,19 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // streamUrl-change effect below whenever a new episode actually loads.
   const nextUpTriggeredRef = useRef(false);
 
+  // Skip Intro/Recap popup: holds the interval currently active (if any),
+  // so the label ("Skip Intro" vs "Skip Recap") and the seek target are
+  // both derived from it. Intro/recap sit well before the outro marker/
+  // 90s-remaining window the "Up Next" popup uses, so the two never need
+  // to coordinate over who's visible.
+  const [activeSkipPopup, setActiveSkipPopup] = useState<SkipInterval | null>(null);
+  const skipPopupHideTimer = useRef<NodeJS.Timeout | null>(null);
+  // Every interval's `from` that has already been shown+dismissed (by Back,
+  // by pressing Skip, or by auto-hide), so seeking back into the same
+  // window doesn't re-trigger it -- but a *different* interval (e.g. recap
+  // after intro) still can. Reset whenever a new stream/episode loads.
+  const shownSkipIntervalsRef = useRef<Set<number>>(new Set());
+
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
   // Kept in sync on every render (not just in an effect) so the
@@ -347,8 +390,44 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       currentProgRef.current = { currentTime: 0, duration: 0 };
       nextUpTriggeredRef.current = false;
       setShowNextUpPopup(false);
+      shownSkipIntervalsRef.current = new Set();
+      if (skipPopupHideTimer.current) clearTimeout(skipPopupHideTimer.current);
+      setActiveSkipPopup(null);
     }
   }, [streamUrl, headers, sourceType, skip]);
+
+  // Looks up TheIntroDB for whatever intro/recap markers the provider's
+  // own `skip` array didn't already supply. Runs whenever the stream or
+  // the episode identity changes; a token guards against a slow response
+  // landing after the person has already moved on to a different episode.
+  const introDbFetchTokenRef = useRef(0);
+  useEffect(() => {
+    const token = ++introDbFetchTokenRef.current;
+    if (!tmdbId && !imdbId) return;
+
+    const isSeries = episodes.length > 0;
+    const currentEp = episodes[currentEpisodeIndex] as
+      | (EpisodeItem & { season?: number; episodeNumber?: number })
+      | undefined;
+
+    fetchIntroDbSegments({
+      tmdbId,
+      imdbId,
+      season: isSeries ? currentEp?.season : undefined,
+      episode: isSeries ? currentEp?.episodeNumber : undefined,
+    }).then((segments) => {
+      // Stream/episode moved on before this resolved -- discard.
+      if (introDbFetchTokenRef.current !== token) return;
+      if (segments.length === 0) return;
+      setActiveSkip((prev) => mergeSkipIntervals(prev, segments));
+    });
+  }, [streamUrl, tmdbId, imdbId, currentEpisodeIndex, episodes]);
+
+  useEffect(() => {
+    return () => {
+      if (skipPopupHideTimer.current) clearTimeout(skipPopupHideTimer.current);
+    };
+  }, []);
 
   const videoSource = useMemo(
     () => ({
@@ -642,6 +721,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   activeDialogRef.current = activeDialog;
   const showNextUpPopupRef = useRef(showNextUpPopup);
   showNextUpPopupRef.current = showNextUpPopup;
+  const activeSkipPopupRef = useRef(activeSkipPopup);
+  activeSkipPopupRef.current = activeSkipPopup;
   const showEpisodesListRef = useRef(showEpisodesList);
   showEpisodesListRef.current = showEpisodesList;
   const showControlsRef = useRef(showControls);
@@ -661,7 +742,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     const handleKeyDown = (keyEvent: { keyCode?: number }) => {
       const keyCode = keyEvent?.keyCode;
       if (keyCode == null) return;
-      if (activeDialogRef.current || showNextUpPopupRef.current || showEpisodesListRef.current) return;
+      if (
+        activeDialogRef.current ||
+        showNextUpPopupRef.current ||
+        activeSkipPopupRef.current ||
+        showEpisodesListRef.current
+      )
+        return;
       if (keyCode === KEYCODE_BACK) return;
 
       const isLeft = keyCode === KEYCODE_DPAD_LEFT;
@@ -726,6 +813,15 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   useEffect(() => {
     const handleBackPress = () => {
+      if (activeSkipPopup) {
+        if (skipPopupHideTimer.current) clearTimeout(skipPopupHideTimer.current);
+        shownSkipIntervalsRef.current.add(activeSkipPopup.from);
+        setActiveSkipPopup(null);
+        // Deliberately no resetInactivityTimer() here -- this popup never
+        // woke the control bar in the first place, so dismissing it
+        // shouldn't wake it either.
+        return true;
+      }
       if (showNextUpPopup) {
         setShowNextUpPopup(false);
         resetInactivityTimer();
@@ -761,6 +857,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     activeDialog,
     showControls,
     showNextUpPopup,
+    activeSkipPopup,
     showEpisodesList,
     onClose,
     resetInactivityTimer,
@@ -944,6 +1041,28 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             if (triggerAt >= 0 && prog.currentTime >= triggerAt && duration - prog.currentTime > 1) {
               nextUpTriggeredRef.current = true;
               setShowNextUpPopup(true);
+            }
+          }
+
+          // Skip Intro/Recap popup: fires the moment playback enters an
+          // interval titled "Intro" or "Recap" that hasn't already been
+          // shown+dismissed this episode. Only one shows at a time --
+          // intro and recap windows don't overlap in practice.
+          if (!activeSkipPopupRef.current && !overlayOpenRef.current && !showNextUpPopupRef.current) {
+            const hit = (activeSkip || []).find(
+              (s) =>
+                /intro|recap/i.test(s.title || '') &&
+                !shownSkipIntervalsRef.current.has(s.from) &&
+                prog.currentTime >= s.from &&
+                prog.currentTime < s.to
+            );
+            if (hit) {
+              setActiveSkipPopup(hit);
+              if (skipPopupHideTimer.current) clearTimeout(skipPopupHideTimer.current);
+              skipPopupHideTimer.current = setTimeout(() => {
+                shownSkipIntervalsRef.current.add(hit.from);
+                setActiveSkipPopup(null);
+              }, 15000);
             }
           }
         }}
@@ -1552,6 +1671,55 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         </View>
       </Modal>
 
+      {/* Skip Intro/Recap popup -- appears the moment playback enters an
+          "Intro" or "Recap" interval (provider-supplied `skip`, or
+          TheIntroDB as a fallback). Like the "Up Next" popup above, it's a
+          self-contained modal with no onFocus-driven resetInactivityTimer()
+          calls, so it never wakes the bottom control bar behind it. The
+          button opens already focused (hasTVPreferredFocus) so a bare OK
+          press skips immediately; Back hides it (handled in the hardware
+          back-press effect above) without closing the player. */}
+      <Modal
+        visible={!!activeSkipPopup}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (skipPopupHideTimer.current) clearTimeout(skipPopupHideTimer.current);
+          if (activeSkipPopup) shownSkipIntervalsRef.current.add(activeSkipPopup.from);
+          setActiveSkipPopup(null);
+        }}
+      >
+        <View style={styles.skipPopupOverlay} pointerEvents="box-none">
+          {activeSkipPopup ? (
+            <TVFocusablePressable
+              hasTVPreferredFocus
+              scaleFocused={1.04}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={8}
+              onPress={() => {
+                if (skipPopupHideTimer.current) clearTimeout(skipPopupHideTimer.current);
+                shownSkipIntervalsRef.current.add(activeSkipPopup.from);
+                const seekTo = activeSkipPopup.to;
+                setActiveSkipPopup(null);
+                videoRef.current?.seek(seekTo);
+                setCurrentTime(seekTo);
+                currentProgRef.current.currentTime = seekTo;
+              }}
+              style={styles.skipPopupBtn}
+            >
+              {() => (
+                <View style={styles.nextUpBtnInner}>
+                  <MaterialCommunityIcons name="skip-next" size={18} color="#0A0A0E" />
+                  <Text style={styles.skipPopupBtnText}>
+                    Skip {/recap/i.test(activeSkipPopup.title || '') ? 'Recap' : 'Intro'}
+                  </Text>
+                </View>
+              )}
+            </TVFocusablePressable>
+          ) : null}
+        </View>
+      </Modal>
+
       {/* "Videos" Episode Picker -- scrollable list of every episode in the
           currently active season, each with its Cinemeta/Discover-sourced
           mini-poster and synopsis when available. */}
@@ -1915,6 +2083,26 @@ const styles = StyleSheet.create({
   nextUpPoster: {
     width: 150,
     height: '100%',
+  },
+
+  // ---- Skip Intro/Recap popup --------------------------------------------
+  skipPopupOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
+    padding: 36,
+  },
+  skipPopupBtn: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+  },
+  skipPopupBtnText: {
+    color: '#0A0A0E',
+    fontSize: 15,
+    fontWeight: '800',
   },
 
   // ---- "Videos" episode picker -----------------------------------------
