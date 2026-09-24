@@ -37,7 +37,11 @@ import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { formatEpisodeLabel } from '../../lib/utils/episodeParsing';
-import { resolveCinemetaHero } from '../../lib/services/cinemetaService';
+import {
+  resolveCinemetaHero,
+  completeCinemetaHero,
+  CinemetaHeroData,
+} from '../../lib/services/cinemetaService';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 
@@ -146,6 +150,18 @@ const isEmptyEnrichment = (e: HeroEnrichment) =>
   !e.year &&
   e.genres.length === 0 &&
   e.cast.length === 0;
+
+// Folds what Cinemeta returned into the enrichment being built. The
+// provider's own synopsis/rating (already in `enrichment`) win over
+// Cinemeta's; everything else Cinemeta has is taken.
+const mergeCinemetaHero = (enrichment: HeroEnrichment, hero: CinemetaHeroData) => {
+  if (hero.background) enrichment.backdrop = hero.background;
+  if (!enrichment.description && hero.description) enrichment.description = hero.description;
+  if (!enrichment.rating && hero.rating) enrichment.rating = hero.rating;
+  if (hero.year) enrichment.year = hero.year;
+  if (hero.genres?.length) enrichment.genres = hero.genres;
+  if (hero.cast?.length) enrichment.cast = hero.cast;
+};
 
 // Layers an enrichment over a hero. Every field is "only if we have it", so
 // whatever the base hero already shows (poster fallback, provider synopsis,
@@ -792,6 +808,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           cachedAt: Date.now(),
         };
         let info: any = null;
+        let completion: Promise<CinemetaHeroData> | null = null;
 
         // 1. The provider's own details (synopsis, rating, and the type /
         //    ids / year the Cinemeta lookup below can use). Usually already
@@ -827,12 +844,13 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           if (requestId !== heroRequestIdRef.current) return;
 
           if (hero) {
-            if (hero.background) enrichment.backdrop = hero.background;
-            if (!enrichment.description && hero.description) enrichment.description = hero.description;
-            if (!enrichment.rating && hero.rating) enrichment.rating = hero.rating;
-            if (hero.year) enrichment.year = hero.year;
-            if (hero.genres?.length) enrichment.genres = hero.genres;
-            if (hero.cast?.length) enrichment.cast = hero.cast;
+            mergeCinemetaHero(enrichment, hero);
+            // A title-matched hero comes from a catalog search row: fast,
+            // and it has the backdrop/synopsis/year, but not rating,
+            // genres or cast. Start the full-meta fetch for those now, in
+            // parallel with the backdrop download below, without holding
+            // the first paint back for it.
+            if (!hero.complete) completion = completeCinemetaHero(hero);
           }
         } catch {}
 
@@ -848,16 +866,35 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           }
         }
 
-        // Cache even if focus has moved on (the work is done); only *apply*
-        // if this is still the hero being shown. A provider that failed to
-        // answer isn't cached (nothing learned), so the next focus retries.
-        if (info || enrichment.backdrop) writeHeroEnrichment(enrichKey, enrichment);
-        if (requestId !== heroRequestIdRef.current) return;
-        if (isEmptyEnrichment(enrichment)) return;
+        // First paint: backdrop + synopsis + year, as soon as the image is
+        // in the cache. Only if this is still the hero being shown.
+        if (requestId === heroRequestIdRef.current && !isEmptyEnrichment(enrichment)) {
+          heroHostRef.current?.set((prev) =>
+            prev ? applyEnrichment(prev, enrichment, isHistory) : prev
+          );
+        }
 
-        heroHostRef.current?.set((prev) =>
-          prev ? applyEnrichment(prev, enrichment, isHistory) : prev
-        );
+        // Second paint: rating / genres / cast from the full meta. Awaited
+        // even if focus has moved on -- the download is already under way
+        // and it lets the cache below hold the *finished* result, so
+        // coming back to this card never needs the network again.
+        if (completion) {
+          const full = await completion;
+          // The backdrop was already prefetched (or dropped as dead) above;
+          // don't let the full meta's copy of the same URL undo that.
+          const settledBackdrop = enrichment.backdrop;
+          mergeCinemetaHero(enrichment, full);
+          enrichment.backdrop = settledBackdrop;
+        }
+
+        // A provider that failed to answer isn't cached (nothing learned),
+        // so the next focus retries.
+        if (info || enrichment.backdrop) writeHeroEnrichment(enrichKey, enrichment);
+        if (completion && requestId === heroRequestIdRef.current) {
+          heroHostRef.current?.set((prev) =>
+            prev ? applyEnrichment(prev, enrichment, isHistory) : prev
+          );
+        }
       }, 250);
     },
     [provider?.value]
