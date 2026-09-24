@@ -123,6 +123,10 @@ interface TVDetailsScreenProps {
       // Passed straight through to TVPlayerScreen's TheIntroDB lookup.
       tmdbId?: number | string;
       imdbId?: string;
+      // Clean title + year so the player can work out a tmdbId when the
+      // provider has none (see lib/services/tmdbIdResolver.ts).
+      mediaTitle?: string;
+      mediaYear?: string | number;
       servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
       qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
       headers?: Record<string, string>;
@@ -813,8 +817,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           providerValue: providerId,
           episodes: episodesOverride ?? playerEpisodes,
           currentEpisodeIndex: episodeIdx,
-          tmdbId: info?.tmdbId,
-          imdbId: info?.imdbId,
+          // Provider ids first; otherwise whatever the Cinemeta match this
+          // screen already resolved knows (its `moviedb_id` is the TMDB id).
+          // Anything still missing is worked out in the player by
+          // lib/services/tmdbIdResolver.ts from `mediaTitle`/`mediaYear`.
+          tmdbId: info?.tmdbId || cinemetaMeta?.moviedb_id,
+          imdbId: info?.imdbId || cinemetaMeta?.imdb_id,
+          mediaTitle: cinemetaMeta?.name || info?.title || item?.title,
+          mediaYear: providerYear,
           qualities,
           skip: best.skip,
           headers: best.headers,
@@ -841,6 +851,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       rawEpisodes,
       cinemetaMeta,
       cinemetaSettled,
+      providerYear,
     ],
   );
 
