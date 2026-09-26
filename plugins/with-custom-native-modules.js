@@ -165,7 +165,7 @@ function withCustomNativeModules(config) {
       contents = contents.replace(
         /dependencies\s*\{/,
         match =>
-          `${match}\n    implementation 'org.nanohttpd:nanohttpd:2.3.1'\n    implementation 'org.libtorrent4j:libtorrent4j:2.1.0-39'\n    implementation 'org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39'\n    implementation 'org.libtorrent4j:libtorrent4j-android-x86_64:2.1.0-39'\n`,
+          `${match}\n    implementation 'org.nanohttpd:nanohttpd:2.3.1'\n    implementation 'org.libtorrent4j:libtorrent4j:2.1.0-39'\n    implementation 'org.libtorrent4j:libtorrent4j-android-arm:2.1.0-39'\n    implementation 'org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39'\n    implementation 'org.libtorrent4j:libtorrent4j-android-x86_64:2.1.0-39'\n`,
       );
     }
 
