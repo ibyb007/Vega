@@ -19,6 +19,13 @@ export interface ContinueWatchingItem {
   // not. Undefined for movies (nothing to disambiguate -- a movie's entry
   // is always the one and only thing to resume).
   episodeKey?: string;
+  // Exact label of the season/quality/dub dropdown entry (`activeLink.title`
+  // on the details/discover-results screen) this episode was played from --
+  // e.g. "Hindi S02" for a Movieboxweb show. Lets reopening this entry land
+  // the dropdown back on the same option instead of always defaulting to
+  // the first one. Undefined for entries saved before this field existed,
+  // or for a provider with only one dropdown option to begin with.
+  linkTitle?: string;
   type: string;
   poster?: string;
   background?: string;
