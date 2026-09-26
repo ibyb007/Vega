@@ -266,6 +266,9 @@ export interface DiscoverResumeHint {
   episodeKey?: string;
   episodeLink?: string;
   position?: number;
+  // Exact label of the season/quality/dub dropdown entry (`activeLink.title`)
+  // this episode was played from -- see ContinueWatchingItem.linkTitle.
+  linkTitle?: string;
 }
 
 let pendingDiscoverResumeHint: DiscoverResumeHint | null = null;
@@ -1158,6 +1161,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   }, [resumeHint, activeSourcePost, matchedAddonPosts, resultsLoading, handleSelectSourceCard]);
 
+  // Once that resumed source's own metadata (and its season/quality/dub
+  // dropdown) has loaded, land on the exact entry the episode was
+  // originally played from -- see DiscoverResumeHint.linkTitle. Runs once
+  // per mount; a manual pick afterwards is left alone.
+  const autoSelectedResumeLinkRef = useRef(false);
+  useEffect(() => {
+    if (autoSelectedResumeLinkRef.current) return;
+    if (!resumeHint?.linkTitle) return;
+    if (!sourceInfo?.linkList?.length) return;
+    autoSelectedResumeLinkRef.current = true;
+    const idx = sourceInfo.linkList.findIndex((l) => l.title === resumeHint.linkTitle);
+    if (idx >= 0) {
+      setActiveLinkIndex(idx);
+      if (savedDiscoverState) savedDiscoverState.activeLinkIndex = idx;
+    }
+  }, [resumeHint, sourceInfo]);
+
   const handleBackToSources = useCallback(() => {
     // The episode/link that held focus is about to disappear; hand focus to
     // the Back button (scrolled into view) instead of letting Android pick.
@@ -1519,6 +1539,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           episodeId: canonicalKey,
           startPosition: resumePos,
           providerValue,
+          linkTitle: activeLinkForEnrich?.title,
           episodes: enrichedEpisodesToSend,
           currentEpisodeIndex: episodeIdx,
           qualities,
