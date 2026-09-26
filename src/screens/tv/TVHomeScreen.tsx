@@ -1028,6 +1028,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             episodeKey: item.episodeKey,
             episodeLink: item.episode?.link,
             position: item.position,
+            linkTitle: item.linkTitle,
           });
           return;
         }
@@ -1040,6 +1041,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             episodeLink: item.episode?.link,
             episodeKey: item.episodeKey,
             position: item.position,
+            linkTitle: item.linkTitle,
           },
         });
       } else {
