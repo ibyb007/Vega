@@ -54,6 +54,25 @@ function withCustomNativeModules(config) {
         }
       }
 
+      // Copy jniLibs if present (e.g. libusque.so for WARP mode)
+      const sourceJniDir = path.join(
+        projectRoot,
+        'native-src',
+        'android',
+        'jniLibs',
+      );
+      const targetJniDir = path.join(
+        projectRoot,
+        'android',
+        'app',
+        'src',
+        'main',
+        'jniLibs',
+      );
+      if (fs.existsSync(sourceJniDir)) {
+        fs.cpSync(sourceJniDir, targetJniDir, {recursive: true});
+      }
+
       return cfg;
     },
   ]);
@@ -64,6 +83,7 @@ function withCustomNativeModules(config) {
 
     const packagesToAdd = [
       'DohPackage()',
+      'WarpPackage()',
       'HttpDownloadPackage()',
       'TorrentPackage()',
       'LauncherIconPackage()',
