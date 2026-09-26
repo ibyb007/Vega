@@ -239,6 +239,10 @@ interface TVPlayerScreenProps {
   itemLink?: string;
   episodeId?: string;
   providerValue?: string;
+  // Exact label of the season/quality/dub dropdown entry this stream was
+  // launched from -- threaded straight into whatever Continue Watching
+  // entry this session upserts. See ContinueWatchingItem.linkTitle.
+  linkTitle?: string;
   headers?: Record<string, string>;
   sourceType?: string;
   subtitles?: TextTracks;
@@ -285,6 +289,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   itemLink,
   episodeId,
   providerValue,
+  linkTitle,
   headers,
   sourceType,
   subtitles,
@@ -616,6 +621,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           background: undefined,
           providerValue: providerValue || useContentStore.getState().provider?.value || '',
           infoUrl: itemLink || continueWatchingId,
+          linkTitle,
           discoverSource,
           position: 0,
           duration: 0,
@@ -650,6 +656,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         background: undefined,
         providerValue: providerValue || useContentStore.getState().provider?.value || '',
         infoUrl: itemLink || continueWatchingId,
+        linkTitle,
         discoverSource,
         position: Math.floor(timeSec),
         duration: Math.floor(totalDur),
@@ -665,6 +672,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       title,
       posterUrl,
       providerValue,
+      linkTitle,
       discoverSource,
       upsertContinueWatching,
       removeContinueWatching,
