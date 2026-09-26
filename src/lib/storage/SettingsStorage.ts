@@ -12,6 +12,7 @@ const SETTINGS_KEYS = {
   DOH_ENABLED: 'dohEnabled',
   DOH_PROVIDER: 'dohProvider',
   DOH_CUSTOM_URL: 'dohCustomUrl',
+  WARP_ENABLED: 'warpEnabled',
   TMDB_API_KEY: 'tmdbApiKey',
   TMDB_API_KEY_REVISION: 'tmdbApiKeyRevision',
   AUTO_CHECK_UPDATE: 'autoCheckUpdate',
@@ -110,6 +111,15 @@ export class SettingsStorage {
 
   setDohCustomUrl(url: string): void {
     MMKV.setString(SETTINGS_KEYS.DOH_CUSTOM_URL, url);
+  }
+
+  // Cloudflare WARP
+  isWarpEnabled(): boolean {
+    return MMKV.getBool(SETTINGS_KEYS.WARP_ENABLED, false);
+  }
+
+  setWarpEnabled(enabled: boolean): void {
+    MMKV.setBool(SETTINGS_KEYS.WARP_ENABLED, enabled);
   }
 
   // TMDB Metadata
