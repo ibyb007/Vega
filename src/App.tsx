@@ -37,6 +37,9 @@ export interface ActiveStreamPayload {
   itemLink?: string;
   episodeId?: string;
   providerValue?: string;
+  // Exact dropdown label this stream was launched from -- see
+  // ContinueWatchingItem.linkTitle.
+  linkTitle?: string;
   episodes?: any[];
   currentEpisodeIndex?: number;
   servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
@@ -201,6 +204,7 @@ export default function App() {
         episodeKey?: string;
         episodeLink?: string;
         position?: number;
+        linkTitle?: string;
       },
     ) => {
       if (!discoverItem) return;
@@ -331,6 +335,7 @@ export default function App() {
                     itemLink={activeStream.itemLink}
                     episodeId={activeStream.episodeId}
                     providerValue={activeStream.providerValue || currentProvider?.value}
+                    linkTitle={activeStream.linkTitle}
                     headers={activeStream.headers}
                     sourceType={activeStream.sourceType}
                     subtitles={activeStream.subtitles}
