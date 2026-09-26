@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
+  DevSettings,
   View,
   Text,
   StyleSheet,
@@ -11,12 +12,20 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import Constants from 'expo-constants';
+import * as Updates from 'expo-updates';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
-import { settingsStorage } from '../../lib/storage';
+import { settingsStorage, clearAllMMKVStorage } from '../../lib/storage';
 import { syncDohSettings, DOH_PROVIDERS } from '../../lib/services/dohService';
+import {
+  isWarpSupported,
+  getWarpStatus,
+  toggleWarp,
+} from '../../lib/services/warpService';
+import { clearAppCache } from '../../lib/clearAppCache';
+import { showAppDialog } from '../../lib/zustand/appDialogStore';
 import useThemeStore from '../../lib/zustand/themeStore';
 import useSettingsStore, { AudioBoostProfile } from '../../lib/zustand/settingsStore';
 
@@ -110,6 +119,11 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   const [selectedPlayer, setSelectedPlayer] = useState<'exo' | 'vlc' | 'system'>('exo');
   const [excludedQualities, setExcludedQualities] = useState<string[]>([]);
 
+  const [warpEnabled, setWarpEnabled] = useState(false);
+  const [isWarpBusy, setIsWarpBusy] = useState(false);
+  const [warpPort, setWarpPort] = useState<number | null>(null);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+
   // Custom TMDB key. `savedTmdbKey` mirrors what's in storage; the rest is
   // the edit dialog's own state. A key saved here takes priority over the
   // one bundled at build time (see `getTmdbApiKey()` in useTmdbStory.ts).
@@ -147,9 +161,16 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
       setActiveDohProvider(provider);
       setSelectedPlayer(player);
       setExcludedQualities(excluded);
+      setWarpEnabled(settingsStorage?.isWarpEnabled ? settingsStorage.isWarpEnabled() : false);
     } catch (e) {
       console.warn('[TVSettingsScreen] Init error:', e);
     }
+
+    getWarpStatus()
+      .then((res) => {
+        if (res.running && res.port) setWarpPort(res.port);
+      })
+      .catch(() => {});
   }, []);
 
   const handleSelectAudioProfile = (profile: AudioBoostProfile) => {
@@ -180,6 +201,74 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     }
     await syncDohSettings().catch((e) => console.warn('[DoH] Sync error:', e));
     ToastAndroid.show(`DNS Provider set to ${providerId}`, ToastAndroid.SHORT);
+  };
+
+  const toggleWarpMode = async () => {
+    if (isWarpBusy) return;
+    const nextState = !warpEnabled;
+    setIsWarpBusy(true);
+    setWarpEnabled(nextState);
+
+    try {
+      if (nextState) {
+        ToastAndroid.show('Connecting to Cloudflare WARP...', ToastAndroid.SHORT);
+      }
+      const res = await toggleWarp(nextState);
+      if (nextState && res.running) {
+        setWarpPort(res.port || null);
+        ToastAndroid.show(`WARP connected (Port ${res.port})`, ToastAndroid.SHORT);
+      } else if (!nextState) {
+        setWarpPort(null);
+        ToastAndroid.show('WARP disconnected', ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      setWarpEnabled(false);
+      setWarpPort(null);
+      settingsStorage?.setWarpEnabled?.(false);
+      ToastAndroid.show(`WARP error: ${e?.message || 'Failed to connect'}`, ToastAndroid.LONG);
+    } finally {
+      setIsWarpBusy(false);
+    }
+  };
+
+  const handleClearCache = async () => {
+    if (isClearingCache) return;
+    setIsClearingCache(true);
+    try {
+      await clearAppCache();
+      ToastAndroid.show('App cache cleared', ToastAndroid.SHORT);
+    } catch (e) {
+      console.warn('[TVSettingsScreen] Clear cache error:', e);
+      ToastAndroid.show('Failed to clear cache', ToastAndroid.SHORT);
+    } finally {
+      setIsClearingCache(false);
+    }
+  };
+
+  const eraseAllLocalData = async () => {
+    clearAllMMKVStorage();
+    if (Updates.isEnabled) {
+      await Updates.reloadAsync();
+      return;
+    }
+    DevSettings.reload('All MMKV storage erased');
+  };
+
+  const confirmEraseAllLocalData = () => {
+    showAppDialog({
+      title: 'Erase all local data?',
+      message:
+        'This permanently erases every Vega MMKV store, including settings, installed provider data, Watchlist, Continue watching, download records, and cached state. This cannot be undone. Downloaded media files on disk are not deleted.',
+      variant: 'error',
+      actions: [
+        { label: 'Cancel' },
+        {
+          label: 'Erase everything',
+          variant: 'destructive',
+          onPress: eraseAllLocalData,
+        },
+      ],
+    });
   };
 
   const handleSelectPlayer = (player: 'exo' | 'vlc' | 'system') => {
@@ -412,6 +501,61 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
         </View>
       )}
 
+      <TVFocusablePressable
+        key={keyFor('warp-toggle')}
+        ref={registerItem('warp-toggle')}
+        hasTVPreferredFocus={shouldPreferFocus('warp-toggle', false)}
+        onFocus={() => (lastFocusedSettingsKey = 'warp-toggle')}
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        onPress={toggleWarpMode}
+        style={[styles.settingCard, { marginTop: 12 }]}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View style={[styles.iconContainer, { backgroundColor: warpEnabled ? primaryColor : '#252530' }]}>
+              <MaterialCommunityIcons name="cloud-outline" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={styles.settingTitle}>WARP Mode</Text>
+                {warpEnabled && warpPort ? (
+                  <View
+                    style={{
+                      marginLeft: 8,
+                      paddingHorizontal: 6,
+                      paddingVertical: 2,
+                      borderRadius: 4,
+                      backgroundColor: 'rgba(138, 92, 246, 0.25)',
+                    }}
+                  >
+                    <Text style={{ color: primaryColor, fontSize: 10, fontWeight: '700' }}>
+                      Active :{warpPort}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={styles.settingSubtitle}>
+                Tunnels all app traffic, including video playback, through Cloudflare WARP -- helps
+                when your ISP throttles specific streaming hosts
+              </Text>
+            </View>
+            {isWarpBusy ? (
+              <ActivityIndicator size="small" color={primaryColor} />
+            ) : (
+              <Switch
+                value={warpEnabled}
+                onValueChange={toggleWarpMode}
+                disabled={isWarpBusy}
+                thumbColor={warpEnabled ? primaryColor : '#9CA3AF'}
+                trackColor={{ false: '#374151', true: 'rgba(138, 92, 246, 0.4)' }}
+              />
+            )}
+          </View>
+        )}
+      </TVFocusablePressable>
+
       {/* Video Player Selection Section */}
       <Text style={styles.sectionHeader}>Default Video Player</Text>
       {[
@@ -628,6 +772,69 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
           </View>
         </View>
       </Modal>
+
+      {/* Data Management Section */}
+      <Text style={styles.sectionHeader}>Data Management</Text>
+
+      <TVFocusablePressable
+        key={keyFor('clear-cache')}
+        ref={registerItem('clear-cache')}
+        hasTVPreferredFocus={shouldPreferFocus('clear-cache', false)}
+        onFocus={() => (lastFocusedSettingsKey = 'clear-cache')}
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        onPress={handleClearCache}
+        style={styles.settingCard}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View style={[styles.iconContainer, { backgroundColor: '#252530' }]}>
+              <MaterialCommunityIcons name="broom" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <Text style={styles.settingTitle}>Clear Cache</Text>
+              <Text style={styles.settingSubtitle}>
+                Frees up space by removing temporary and cached files. Active downloads and buffered
+                playback segments are kept.
+              </Text>
+            </View>
+            {isClearingCache ? (
+              <ActivityIndicator size="small" color={primaryColor} />
+            ) : (
+              <MaterialCommunityIcons name="chevron-right" size={22} color="#9CA3AF" />
+            )}
+          </View>
+        )}
+      </TVFocusablePressable>
+
+      <TVFocusablePressable
+        key={keyFor('erase-data')}
+        ref={registerItem('erase-data')}
+        hasTVPreferredFocus={shouldPreferFocus('erase-data', false)}
+        onFocus={() => (lastFocusedSettingsKey = 'erase-data')}
+        scaleFocused={1.02}
+        focusedBorderColor="#EF4444"
+        borderRadius={12}
+        onPress={confirmEraseAllLocalData}
+        style={[styles.settingCard, { marginTop: 12 }]}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View style={[styles.iconContainer, { backgroundColor: 'rgba(239, 68, 68, 0.15)' }]}>
+              <MaterialCommunityIcons name="delete-forever-outline" size={24} color="#F87171" />
+            </View>
+            <View style={styles.textContainer}>
+              <Text style={[styles.settingTitle, { color: '#F87171' }]}>Erase All Local Data</Text>
+              <Text style={styles.settingSubtitle}>
+                Wipes settings, watchlist, providers, downloads records and every other saved app
+                store. This cannot be undone.
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={22} color="#F87171" />
+          </View>
+        )}
+      </TVFocusablePressable>
     </ScrollView>
   );
 };
