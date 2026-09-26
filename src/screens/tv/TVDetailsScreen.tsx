@@ -98,6 +98,104 @@ interface DetailRow {
   episodesOverride?: EpisodeLink[];
 }
 
+// Extracted out of the main component and wrapped in React.memo so that,
+// on a long episode list, an unrelated re-render of TVDetailsScreen (a
+// season/quality switch, the picker opening, a scroll-position side effect,
+// etc.) doesn't force every single row to re-run its render function --
+// only the row(s) whose own props actually changed do. `row` itself is a
+// stable object reference (from the `rows` useMemo below) as long as the
+// underlying data hasn't changed, so the default shallow prop comparison is
+// enough; `onPress`/`onLayout` are passed down as the single stable
+// callbacks the parent already memoizes, rather than a fresh closure per
+// row, so they never trip that comparison either.
+const EpisodeRow = React.memo(function EpisodeRow({
+  row,
+  isFocusTarget,
+  focusNonce,
+  resumePosition,
+  onPress,
+  onLayout,
+}: {
+  row: DetailRow;
+  isFocusTarget: boolean;
+  focusNonce: number;
+  resumePosition?: number;
+  onPress: (row: DetailRow) => void;
+  onLayout: (key: string, y: number) => void;
+}) {
+  return (
+    <TVFocusablePressable
+      // Nonce suffix only on the target row -- forces just that one to
+      // remount (and re-fire `hasTVPreferredFocus`) when a season/quality
+      // switch or a return from the player needs a forced refocus,
+      // without touching every other row's identity.
+      key={`row-${row.key}-${row.index}${isFocusTarget ? `-f${focusNonce}` : ''}`}
+      hasTVPreferredFocus={isFocusTarget}
+      onLayout={(e) => onLayout(row.key, e.nativeEvent.layout.y)}
+      scaleFocused={1.02}
+      focusedBorderColor="#8A5CF6"
+      borderRadius={row.isEpisode ? 8 : 10}
+      onPress={() => onPress(row)}
+      style={row.isEpisode ? styles.episodeCard : styles.sourceRow}
+    >
+      {({ focused }) => (
+        <View style={styles.episodeInner}>
+          {row.isEpisode ? (
+            row.thumb ? (
+              <View style={styles.episodeThumbWrap}>
+                <Image
+                  source={{ uri: row.thumb }}
+                  style={styles.episodeThumb}
+                  resizeMode="cover"
+                  // Skips the fade-in transition on Android -- cheap enough
+                  // on its own, but adds up across a long list of thumbs
+                  // mounting in quick succession while scrolling.
+                  fadeDuration={0}
+                />
+                <View style={styles.episodeThumbPlayOverlay}>
+                  <MaterialCommunityIcons name="play" size={16} color="#FFFFFF" />
+                </View>
+              </View>
+            ) : (
+              <MaterialCommunityIcons name="play-circle-outline" size={22} color="#8A5CF6" />
+            )
+          ) : (
+            <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
+              <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
+            </View>
+          )}
+          <View style={styles.episodeTextWrap}>
+            <Text numberOfLines={1} style={row.isEpisode ? styles.episodeText : styles.sourceText}>
+              {row.title}
+            </Text>
+            {!!row.releaseDate && (
+              <Text numberOfLines={1} style={styles.episodeReleaseText}>
+                {row.releaseDate}
+              </Text>
+            )}
+            {!!row.overview && (
+              <Text numberOfLines={2} style={styles.episodeOverviewText}>
+                {row.overview}
+              </Text>
+            )}
+          </View>
+          {!!row.sizeLabel && (
+            <View style={styles.sizeBadge}>
+              <Text style={styles.sizeBadgeText}>{row.sizeLabel}</Text>
+            </View>
+          )}
+          {row.isResumeTarget && resumePosition ? (
+            <Text style={styles.resumeBadge}>
+              Resume {Math.floor(resumePosition / 60)}:
+              {String(Math.floor(resumePosition % 60)).padStart(2, '0')}
+            </Text>
+          ) : null}
+        </View>
+      )}
+    </TVFocusablePressable>
+  );
+});
+
 interface ResumeHint {
   episodeLink?: string;
   // Stable "S{season}E{episode}" key -- see ContinueWatchingItem.episodeKey.
@@ -105,6 +203,12 @@ interface ResumeHint {
   // fallback for entries saved before this key existed.
   episodeKey?: string;
   position?: number;
+  // Exact label of the season/quality/dub dropdown entry (`activeLink.title`)
+  // that was active when this episode was played -- see
+  // ContinueWatchingItem.linkTitle. Lets a Continue Watching press land back
+  // on the same entry instead of always defaulting to the first one. Absent
+  // on entries saved before this field existed.
+  linkTitle?: string;
 }
 
 interface TVDetailsScreenProps {
@@ -133,6 +237,9 @@ interface TVDetailsScreenProps {
       sourceType?: string;
       subtitles?: TextTracks;
       startPosition?: number;
+      // Exact dropdown label active when this stream was launched -- see
+      // ResumeHint.linkTitle.
+      linkTitle?: string;
     }
   ) => void;
 }
@@ -178,6 +285,20 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [seasonIndex, setSeasonIndex] = useState(restored?.seasonIndex ?? 0);
   const [rawEpisodes, setEpisodes] = useState<EpisodeLink[]>(restored?.rawEpisodes ?? []);
   const [episodesLoading, setEpisodesLoading] = useState(false);
+
+  // ---- Movieboxweb: split its all-seasons-in-one-list dubs into a real
+  // season picker ----------------------------------------------------------
+  // Movieboxweb's dropdown normally has one entry per audio dub ("Original",
+  // "Hindi", ...), and each dub's episode fetch returns *every* season
+  // flattened into one list instead of a per-season one. `movieBoxSeasons`
+  // holds the distinct season numbers found in that flattened list, once
+  // known (null = not detected yet for this title); `linkList` below uses it
+  // to expand the dropdown into one entry per dub+season ("Original S01",
+  // "Original S02", "Hindi S01", ...) -- same grouping the fetched episode
+  // list already sorts into, just made pickable. Provider-specific by
+  // design: other providers with a similarly flattened list are left alone.
+  const isMovieBoxWeb = providerId === 'movieBoxWeb';
+  const [movieBoxSeasons, setMovieBoxSeasons] = useState<number[] | null>(null);
 
   // This whole screen is one flat ScrollView, and the season/quality
   // picker now lives in its own Modal (see `seasonPickerVisible` below)
@@ -255,6 +376,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       if (initialItemKeyRef.current !== itemKey) {
         initialItemKeyRef.current = itemKey;
         setSeasonIndex(0);
+        setMovieBoxSeasons(null);
       }
     };
 
@@ -393,7 +515,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // the unfiltered list if every entry would otherwise be excluded, so
   // there's always something pickable.
   const rawLinkList: Link[] = info?.linkList || [];
-  const linkList: Link[] = useMemo(() => {
+  const dubLinkList: Link[] = useMemo(() => {
     if (!excludedQualities.length) return rawLinkList;
     const filtered = rawLinkList.filter(
       (l) =>
@@ -402,11 +524,81 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     );
     return filtered.length > 0 ? filtered : rawLinkList;
   }, [rawLinkList, excludedQualities]);
+  // Movieboxweb only, and only once a flattened multi-season list has
+  // actually been detected (see the effect below) -- expands each dub entry
+  // into one per season it contains, in "<dub> S01, <dub> S02, ..." order,
+  // dub by dub. Every other provider (and a single-season Movieboxweb show)
+  // passes `dubLinkList` straight through unchanged.
+  const linkList: (Link & { __movieBoxSeason?: number })[] = useMemo(() => {
+    if (!isMovieBoxWeb || !movieBoxSeasons || movieBoxSeasons.length <= 1) return dubLinkList;
+    const expanded: (Link & { __movieBoxSeason?: number })[] = [];
+    for (const dub of dubLinkList) {
+      if (!dub.episodesLink) {
+        expanded.push(dub);
+        continue;
+      }
+      for (const season of movieBoxSeasons) {
+        expanded.push({
+          ...dub,
+          title: `${dub.title} S${String(season).padStart(2, '0')}`,
+          __movieBoxSeason: season,
+        });
+      }
+    }
+    return expanded;
+  }, [dubLinkList, isMovieBoxWeb, movieBoxSeasons]);
   // A restored selection can only be out of range if the provider's list
   // changed underneath us -- fall back to the last entry rather than none.
   const activeIndex = Math.min(seasonIndex, Math.max(linkList.length - 1, 0));
   const activeLink = linkList[activeIndex];
   const hasEpisodesLink = !!activeLink?.episodesLink;
+
+  // Detects Movieboxweb's flattened multi-season list the first time a dub's
+  // episodes come back, and expands the dropdown above accordingly. Runs
+  // once per title (guarded by `movieBoxSeasons !== null`) -- switching dubs
+  // afterwards reuses the already-known season count instead of
+  // re-detecting. On a fresh (non-restored) detection, nudges `seasonIndex`
+  // from "dub index" to "that dub's first season" so the list expanding
+  // underneath doesn't leave the picker pointing at an unrelated entry; a
+  // restored session already has a seasonIndex scaled for the expanded list,
+  // so it's left untouched.
+  useEffect(() => {
+    if (!isMovieBoxWeb || movieBoxSeasons !== null || rawEpisodes.length === 0) return;
+    const seasons = Array.from(
+      new Set(rawEpisodes.map((ep) => parseSeasonNumber(ep.title) ?? 1)),
+    ).sort((a, b) => a - b);
+    setMovieBoxSeasons(seasons);
+    if (seasons.length > 1 && !restored) {
+      setSeasonIndex((prev) => prev * seasons.length);
+    }
+  }, [isMovieBoxWeb, movieBoxSeasons, rawEpisodes, restored]);
+
+  // Only the episodes for the currently-picked season, when the active
+  // dropdown entry is one of Movieboxweb's expanded per-season virtual
+  // entries; every other case (including plain Movieboxweb before
+  // expansion) passes the fetched list straight through.
+  const seasonFilteredEpisodes = useMemo(() => {
+    const season = activeLink?.__movieBoxSeason;
+    if (season == null) return rawEpisodes;
+    return rawEpisodes.filter((ep) => (parseSeasonNumber(ep.title) ?? 1) === season);
+  }, [rawEpisodes, activeLink]);
+
+  // Ready to trust `linkList` for a one-time resume-hint match below: either
+  // this isn't a Movieboxweb series at all (nothing to expand), or the
+  // expansion above has already run.
+  const linkListReady = !isMovieBoxWeb || !hasEpisodesLinkAnywhere || movieBoxSeasons !== null;
+  // Applies at most once per mount: if this screen was opened from Continue
+  // Watching (not a return-from-player restore, which already knows its own
+  // seasonIndex), land the dropdown on the exact entry that episode was
+  // played from -- see ResumeHint.linkTitle.
+  const resumeLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    if (resumeLinkAppliedRef.current || !linkListReady) return;
+    resumeLinkAppliedRef.current = true;
+    if (restored || !resumeHint?.linkTitle) return;
+    const idx = linkList.findIndex((l) => l.title === resumeHint.linkTitle);
+    if (idx >= 0) setSeasonIndex(idx);
+  }, [linkList, linkListReady, resumeHint?.linkTitle, restored]);
 
   // 2. Once we know which season/link is selected, fetch its episode list
   //    (series) -- movies use `directLinks` directly, no extra fetch needed.
@@ -465,14 +657,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // sets one) and the title text. Falls back to the unfiltered list if
   // everything would otherwise be excluded.
   const episodes: EpisodeLink[] = useMemo(() => {
-    if (!excludedQualities.length) return rawEpisodes;
-    const filtered = rawEpisodes.filter(
+    if (!excludedQualities.length) return seasonFilteredEpisodes;
+    const filtered = seasonFilteredEpisodes.filter(
       (ep: any) =>
         !isQualityExcluded(ep?.quality, excludedQualities) &&
         !isQualityExcluded(ep?.title, excludedQualities),
     );
-    return filtered.length > 0 ? filtered : rawEpisodes;
-  }, [rawEpisodes, excludedQualities]);
+    return filtered.length > 0 ? filtered : seasonFilteredEpisodes;
+  }, [seasonFilteredEpisodes, excludedQualities]);
 
   // Providers without a TMDB/IMDb id often can't group a show into proper
   // season tabs + an `episodesLink` fetch, so each episode ends up as a flat
@@ -831,6 +1023,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           itemLink: item?.link,
           episodeId: episodeKey,
           providerValue: providerId,
+          linkTitle: activeLink?.title,
           episodes: episodesOverride ?? playerEpisodes,
           currentEpisodeIndex: episodeIdx,
           // Provider ids first; otherwise whatever the Cinemeta match this
@@ -975,6 +1168,22 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     cinemetaMeta?.description || info?.synopsis || 'Select an episode or source below to start streaming.';
 
   // ---- Row rendering -------------------------------------------------------
+  const handleRowPress = useCallback(
+    (row: DetailRow) =>
+      resolveAndPlay(
+        row.link,
+        row.playTitle,
+        row.playType,
+        row.index,
+        row.stableKey,
+        row.episodesOverride,
+        row.key,
+      ),
+    [resolveAndPlay],
+  );
+  const handleRowLayout = useCallback((key: string, y: number) => {
+    rowLayoutsRef.current[key] = y;
+  }, []);
   const renderRow = (row: DetailRow) => {
     const isFocusTarget = restoreActive
       ? restoredRow
@@ -985,79 +1194,15 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       : row.isDefaultFocus;
 
     return (
-      <TVFocusablePressable
-        // Nonce suffix only on the target row -- forces just that one to
-        // remount (and re-fire `hasTVPreferredFocus`) when a season/quality
-        // switch or a return from the player needs a forced refocus,
-        // without touching every other row's identity.
+      <EpisodeRow
         key={`row-${row.key}-${row.index}${isFocusTarget ? `-f${episodeFocusNonce}` : ''}`}
-        hasTVPreferredFocus={isFocusTarget}
-        onLayout={(e) => {
-          rowLayoutsRef.current[row.key] = e.nativeEvent.layout.y;
-        }}
-        scaleFocused={1.02}
-        focusedBorderColor="#8A5CF6"
-        borderRadius={row.isEpisode ? 8 : 10}
-        onPress={() =>
-          resolveAndPlay(
-            row.link,
-            row.playTitle,
-            row.playType,
-            row.index,
-            row.stableKey,
-            row.episodesOverride,
-            row.key,
-          )
-        }
-        style={row.isEpisode ? styles.episodeCard : styles.sourceRow}
-      >
-        {({ focused }) => (
-          <View style={styles.episodeInner}>
-            {row.isEpisode ? (
-              row.thumb ? (
-                <View style={styles.episodeThumbWrap}>
-                  <Image source={{ uri: row.thumb }} style={styles.episodeThumb} resizeMode="cover" />
-                  <View style={styles.episodeThumbPlayOverlay}>
-                    <MaterialCommunityIcons name="play" size={16} color="#FFFFFF" />
-                  </View>
-                </View>
-              ) : (
-                <MaterialCommunityIcons name="play-circle-outline" size={22} color="#8A5CF6" />
-              )
-            ) : (
-              <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
-                <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
-              </View>
-            )}
-            <View style={styles.episodeTextWrap}>
-              <Text numberOfLines={1} style={row.isEpisode ? styles.episodeText : styles.sourceText}>
-                {row.title}
-              </Text>
-              {!!row.releaseDate && (
-                <Text numberOfLines={1} style={styles.episodeReleaseText}>
-                  {row.releaseDate}
-                </Text>
-              )}
-              {!!row.overview && (
-                <Text numberOfLines={2} style={styles.episodeOverviewText}>
-                  {row.overview}
-                </Text>
-              )}
-            </View>
-            {!!row.sizeLabel && (
-              <View style={styles.sizeBadge}>
-                <Text style={styles.sizeBadgeText}>{row.sizeLabel}</Text>
-              </View>
-            )}
-            {row.isResumeTarget && resumeHint?.position ? (
-              <Text style={styles.resumeBadge}>
-                Resume {Math.floor(resumeHint.position / 60)}:
-                {String(Math.floor(resumeHint.position % 60)).padStart(2, '0')}
-              </Text>
-            ) : null}
-          </View>
-        )}
-      </TVFocusablePressable>
+        row={row}
+        isFocusTarget={isFocusTarget}
+        focusNonce={episodeFocusNonce}
+        resumePosition={row.isResumeTarget ? resumeHint?.position : undefined}
+        onPress={handleRowPress}
+        onLayout={handleRowLayout}
+      />
     );
   };
 
