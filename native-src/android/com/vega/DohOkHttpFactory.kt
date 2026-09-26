@@ -9,7 +9,13 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.io.File
+import java.io.IOException
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ProxySelector
+import java.net.SocketAddress
+import java.net.URI
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
@@ -41,6 +47,12 @@ class DohOkHttpFactory(private val cacheDir: File) : OkHttpClientFactory {
 
     @Volatile
     var customUrl: String? = null
+
+    // Local port of the Cloudflare WARP HTTP proxy (see WarpModule), or null
+    // when WARP isn't running. Set/cleared by WarpModule as it starts/stops
+    // the tunnel; read here on every request via the ProxySelector below.
+    @Volatile
+    var warpProxyPort: Int? = null
 
     private var cachedDoh: DnsOverHttps? = null
     private var lastConfigKey: String = ""
@@ -95,6 +107,24 @@ class DohOkHttpFactory(private val cacheDir: File) : OkHttpClientFactory {
         return OkHttpClient.Builder()
             .dns(DynamicDns())
             .cookieJar(ReactCookieJarContainer())
+            .proxySelector(object : ProxySelector() {
+                override fun select(uri: URI?): List<Proxy> {
+                    val host = uri?.host?.lowercase()
+                    if (host != null && (host == "127.0.0.1" || host == "localhost")) {
+                        return listOf(Proxy.NO_PROXY)
+                    }
+                    val warpPort = warpProxyPort
+                    if (warpPort != null && warpPort > 0) {
+                        Log.d(TAG, "Routing ${uri?.host} through WARP HTTP proxy on port $warpPort")
+                        return listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", warpPort)))
+                    }
+                    return listOf(Proxy.NO_PROXY)
+                }
+
+                override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {
+                    Log.w(TAG, "Proxy connection failed for $uri: ${ioe?.message}")
+                }
+            })
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
