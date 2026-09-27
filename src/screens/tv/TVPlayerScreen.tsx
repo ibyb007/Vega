@@ -10,6 +10,7 @@ import {
   BackHandler,
   ScrollView,
   findNodeHandle,
+  useWindowDimensions,
 } from 'react-native';
 import Video, { VideoRef, SelectedTrackType, ResizeMode, BufferingStrategyType } from 'react-native-video';
 import LinearGradient from 'react-native-linear-gradient';
@@ -79,7 +80,16 @@ const mergeSkipIntervals = (
 // purposes once this many seconds or less remain -- matches the common
 // "mark as watched near the credits" behaviour instead of only counting an
 // exact onEnd fire (which streaks/seeking/IO recovery can skip past).
-const NEARLY_COMPLETE_THRESHOLD_SECONDS = 200;
+//
+// It's also treated as complete the moment playback enters the "Outro"
+// marker (see `skip`/`activeSkip`), whichever of the two comes first --
+// some episodes' credits start well before this fallback window, and that
+// same marker is what the "Up Next" popup itself uses to appear early.
+// Keeping both mechanisms on the same completion condition means clicking
+// "Play Now" on Up Next always mark this episode as finished, advances
+// Continue Watching to the next episode immediately, and lines up with
+// the resume/"finished" state TVDetailsScreen shows for it.
+const NEARLY_COMPLETE_THRESHOLD_SECONDS = 180;
 
 // Android hardware key codes used by the global listener below.
 // (react-native-keyevent reports raw Android KeyEvent.KEYCODE_* values.)
@@ -310,6 +320,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   onClose,
 }) => {
   const videoRef = useRef<VideoRef>(null);
+  // Drives the subtitles/audio/server/quality dialog's dynamic sizing --
+  // same approach as TVDetailsScreen's Season/Quality picker.
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
 
   // Audio Profile state from zustand
   const audioBoostProfile = useSettingsStore((state) => state.audioBoostProfile);
@@ -577,12 +590,21 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       const isSeries = episodes.length > 0;
       const remaining = totalDur - timeSec;
 
-      // 200 seconds or less left counts as "100% watched": a movie drops
-      // off the row entirely, a series episode hands the row over to
-      // whatever's next (so Continue Watching always points at something
-      // there's actually more of to watch) -- rather than lingering on an
-      // entry the person has effectively already finished.
-      if (remaining <= NEARLY_COMPLETE_THRESHOLD_SECONDS) {
+      // Same "Outro" marker the Up Next popup uses to appear (see the
+      // outro-fallback effect above) -- once playback has reached it, the
+      // episode counts as finished even if that's well outside the
+      // 180-seconds-remaining window below (a long epilogue/credits
+      // sequence can start much earlier than that).
+      const outroMarker = (activeSkip || []).find((s) => /outro/i.test(s.title || ''));
+      const isInOutro = !!outroMarker && timeSec >= outroMarker.from;
+
+      // 180 seconds or less left (or already into the outro) counts as
+      // "100% watched": a movie drops off the row entirely, a series
+      // episode hands the row over to whatever's next (so Continue
+      // Watching always points at something there's actually more of to
+      // watch) -- rather than lingering on an entry the person has
+      // effectively already finished.
+      if (remaining <= NEARLY_COMPLETE_THRESHOLD_SECONDS || isInOutro) {
         if (!isSeries) {
           removeContinueWatching(continueWatchingId);
           return;
@@ -639,6 +661,21 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           }
         : { title, link: continueWatchingId };
 
+      // Stable "S{season}E{episode}" for *this* episode, same format
+      // TVDetailsScreen derives per-row -- computed straight from
+      // `episodes[currentEpisodeIndex]` (which always tracks whichever
+      // episode is actually playing, including after advancing via Up
+      // Next/onEnd/the "Videos" list) rather than the `episodeId` prop,
+      // which is only ever set once, when the player was first launched,
+      // and would otherwise keep tagging every later episode in this
+      // session with the episode it was originally opened on -- silently
+      // breaking the "Resume" badge/row match on TVDetailsScreen for
+      // every episode after the first.
+      const currentEpisodeStableKey =
+        currentEpisode?.season != null && currentEpisode?.episodeNumber != null
+          ? `S${currentEpisode.season}E${currentEpisode.episodeNumber}`
+          : undefined;
+
       upsertContinueWatching({
         id: continueWatchingId,
         title,
@@ -647,7 +684,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         episode,
         // Only meaningful for series -- a movie has nothing to
         // disambiguate, so leave it unset rather than storing a stray key.
-        episodeKey: isSeries ? episodeId || undefined : undefined,
+        // `episodeId` is kept only as a fallback for callers that don't
+        // enrich episodes with season/episodeNumber.
+        episodeKey: isSeries ? currentEpisodeStableKey || episodeId || undefined : undefined,
         type: isSeries ? 'series' : 'movie',
         poster: posterUrl,
         // See the comment on the other upsertContinueWatching call above --
@@ -669,6 +708,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       episodeId,
       episodes,
       currentEpisodeIndex,
+      activeSkip,
       title,
       posterUrl,
       providerValue,
@@ -1550,22 +1590,63 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         }}
       >
         <View style={styles.dialogBackdrop}>
-          <View style={styles.dialogBox}>
-            <Text style={styles.dialogTitle}>
-              {activeDialog === 'subtitles' && 'Subtitles'}
-              {activeDialog === 'audio' && 'Audio Tracks'}
-              {activeDialog === 'server' && 'Select Server'}
-              {activeDialog === 'quality' && 'Select Quality'}
-            </Text>
+          {/* Shrink-wraps its content up to 70% of the screen width (same
+              rule as TVDetailsScreen's Season/Quality picker) -- a short
+              list (e.g. two subtitle tracks) gets a compact card, a long
+              one scrolls inside it; long labels wrap instead of
+              truncating. */}
+          <View
+            style={[
+              styles.dialogBox,
+              {
+                maxWidth: Math.min(windowWidth * 0.7, 900),
+                maxHeight: windowHeight * 0.8,
+              },
+            ]}
+          >
+            <View style={styles.dialogHeader}>
+              <MaterialCommunityIcons
+                name={
+                  activeDialog === 'subtitles'
+                    ? 'closed-caption-outline'
+                    : activeDialog === 'audio'
+                    ? 'volume-high'
+                    : activeDialog === 'server'
+                    ? 'server-network'
+                    : 'quality-high'
+                }
+                size={22}
+                color="#A78BFA"
+              />
+              <View style={styles.dialogHeaderText}>
+                <Text style={styles.dialogTitle}>
+                  {activeDialog === 'subtitles' && 'Subtitles'}
+                  {activeDialog === 'audio' && 'Audio Tracks'}
+                  {activeDialog === 'server' && 'Select Server'}
+                  {activeDialog === 'quality' && 'Select Quality'}
+                </Text>
+                <Text style={styles.dialogSubtitle}>
+                  {activeDialog === 'subtitles' && `${textTracks.length + 1} options`}
+                  {activeDialog === 'audio' && `${audioTracks.length} options`}
+                  {activeDialog === 'server' && `${servers.length} options`}
+                  {activeDialog === 'quality' && `${usableQualities.length} options`}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.dialogDivider} />
 
-            <ScrollView contentContainerStyle={styles.dialogList}>
+            <ScrollView
+              style={styles.dialogListScroll}
+              contentContainerStyle={styles.dialogList}
+              showsVerticalScrollIndicator={false}
+            >
               {activeDialog === 'subtitles' && (
                 <>
                   <TVFocusablePressable
                     hasTVPreferredFocus={true}
-                    scaleFocused={1.03}
+                    scaleFocused={1.02}
                     focusedBorderColor="#8A5CF6"
-                    borderRadius={8}
+                    borderRadius={10}
                     onPress={() => {
                       userChoseSubtitleRef.current = true;
                       setSelectedSub({ type: SelectedTrackType.DISABLED });
@@ -1577,116 +1658,205 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                       selectedSub.type === SelectedTrackType.DISABLED && styles.dialogItemSelected,
                     ]}
                   >
-                    {() => <Text style={styles.dialogItemText}>Off / Disabled</Text>}
-                  </TVFocusablePressable>
-                  {textTracks.map((trk, i) => (
-                    <TVFocusablePressable
-                      key={`sub-${i}`}
-                      scaleFocused={1.03}
-                      focusedBorderColor="#8A5CF6"
-                      borderRadius={8}
-                      onPress={() => {
-                        userChoseSubtitleRef.current = true;
-                        setSelectedSub({ type: SelectedTrackType.INDEX, value: i });
-                        setActiveDialog(null);
-                        resetInactivityTimer();
-                      }}
-                      style={[
-                        styles.dialogItem,
-                        selectedSub.value === i && styles.dialogItemSelected,
-                      ]}
-                    >
-                      {() => (
-                        <Text style={styles.dialogItemText}>
-                          {describeTrack(trk, `Subtitle Track ${i + 1}`)}
+                    {() => (
+                      <View style={styles.dialogItemInner}>
+                        {/* Full label, wrapped -- never truncated. */}
+                        <Text
+                          style={[
+                            styles.dialogItemText,
+                            selectedSub.type === SelectedTrackType.DISABLED &&
+                              styles.dialogItemTextSelected,
+                          ]}
+                        >
+                          Off / Disabled
                         </Text>
-                      )}
-                    </TVFocusablePressable>
-                  ))}
+                        {selectedSub.type === SelectedTrackType.DISABLED && (
+                          <MaterialCommunityIcons
+                            name="check-circle"
+                            size={20}
+                            color="#A78BFA"
+                            style={styles.dialogItemCheck}
+                          />
+                        )}
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                  {textTracks.map((trk, i) => {
+                    const isSelected = selectedSub.value === i;
+                    return (
+                      <TVFocusablePressable
+                        key={`sub-${i}`}
+                        scaleFocused={1.02}
+                        focusedBorderColor="#8A5CF6"
+                        borderRadius={10}
+                        onPress={() => {
+                          userChoseSubtitleRef.current = true;
+                          setSelectedSub({ type: SelectedTrackType.INDEX, value: i });
+                          setActiveDialog(null);
+                          resetInactivityTimer();
+                        }}
+                        style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
+                      >
+                        {() => (
+                          <View style={styles.dialogItemInner}>
+                            <Text
+                              style={[
+                                styles.dialogItemText,
+                                isSelected && styles.dialogItemTextSelected,
+                              ]}
+                            >
+                              {describeTrack(trk, `Subtitle Track ${i + 1}`)}
+                            </Text>
+                            {isSelected && (
+                              <MaterialCommunityIcons
+                                name="check-circle"
+                                size={20}
+                                color="#A78BFA"
+                                style={styles.dialogItemCheck}
+                              />
+                            )}
+                          </View>
+                        )}
+                      </TVFocusablePressable>
+                    );
+                  })}
                 </>
               )}
 
               {activeDialog === 'audio' &&
-                audioTracks.map((trk, i) => (
-                  <TVFocusablePressable
-                    key={`audio-${i}`}
-                    hasTVPreferredFocus={i === 0}
-                    scaleFocused={1.03}
-                    focusedBorderColor="#8A5CF6"
-                    borderRadius={8}
-                    onPress={() => {
-                      setSelectedAudio({ type: SelectedTrackType.INDEX, value: i });
-                      setActiveDialog(null);
-                      resetInactivityTimer();
-                    }}
-                    style={[
-                      styles.dialogItem,
-                      selectedAudio.value === i && styles.dialogItemSelected,
-                    ]}
-                  >
-                    {() => (
-                      <Text style={styles.dialogItemText}>
-                        {describeTrack(trk, `Audio Track ${i + 1}`)}
-                      </Text>
-                    )}
-                  </TVFocusablePressable>
-                ))}
+                audioTracks.map((trk, i) => {
+                  const isSelected = selectedAudio.value === i;
+                  return (
+                    <TVFocusablePressable
+                      key={`audio-${i}`}
+                      hasTVPreferredFocus={i === 0}
+                      scaleFocused={1.02}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={10}
+                      onPress={() => {
+                        setSelectedAudio({ type: SelectedTrackType.INDEX, value: i });
+                        setActiveDialog(null);
+                        resetInactivityTimer();
+                      }}
+                      style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
+                    >
+                      {() => (
+                        <View style={styles.dialogItemInner}>
+                          <Text
+                            style={[
+                              styles.dialogItemText,
+                              isSelected && styles.dialogItemTextSelected,
+                            ]}
+                          >
+                            {describeTrack(trk, `Audio Track ${i + 1}`)}
+                          </Text>
+                          {isSelected && (
+                            <MaterialCommunityIcons
+                              name="check-circle"
+                              size={20}
+                              color="#A78BFA"
+                              style={styles.dialogItemCheck}
+                            />
+                          )}
+                        </View>
+                      )}
+                    </TVFocusablePressable>
+                  );
+                })}
 
               {/* Server Options */}
               {activeDialog === 'server' &&
-                servers.map((srv, i) => (
-                  <TVFocusablePressable
-                    key={`server-${i}`}
-                    hasTVPreferredFocus={i === 0}
-                    scaleFocused={1.03}
-                    focusedBorderColor="#8A5CF6"
-                    borderRadius={8}
-                    onPress={() => {
-                      const resumeAt = currentProgRef.current.currentTime || currentTime;
-                      pendingRecoverySeekRef.current = resumeAt;
-                      setActiveMediaUrl(srv.url);
-                      setActiveHeaders(srv.headers);
-                      setActiveSourceType(srv.sourceType);
-                      onSelectServer?.(srv.url);
-                      setActiveDialog(null);
-                      resetInactivityTimer();
-                    }}
-                    style={[
-                      styles.dialogItem,
-                      activeMediaUrl === srv.url && styles.dialogItemSelected,
-                    ]}
-                  >
-                    {() => <Text style={styles.dialogItemText}>{srv.name}</Text>}
-                  </TVFocusablePressable>
-                ))}
+                servers.map((srv, i) => {
+                  const isSelected = activeMediaUrl === srv.url;
+                  return (
+                    <TVFocusablePressable
+                      key={`server-${i}`}
+                      hasTVPreferredFocus={i === 0}
+                      scaleFocused={1.02}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={10}
+                      onPress={() => {
+                        const resumeAt = currentProgRef.current.currentTime || currentTime;
+                        pendingRecoverySeekRef.current = resumeAt;
+                        setActiveMediaUrl(srv.url);
+                        setActiveHeaders(srv.headers);
+                        setActiveSourceType(srv.sourceType);
+                        onSelectServer?.(srv.url);
+                        setActiveDialog(null);
+                        resetInactivityTimer();
+                      }}
+                      style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
+                    >
+                      {() => (
+                        <View style={styles.dialogItemInner}>
+                          <Text
+                            style={[
+                              styles.dialogItemText,
+                              isSelected && styles.dialogItemTextSelected,
+                            ]}
+                          >
+                            {srv.name}
+                          </Text>
+                          {isSelected && (
+                            <MaterialCommunityIcons
+                              name="check-circle"
+                              size={20}
+                              color="#A78BFA"
+                              style={styles.dialogItemCheck}
+                            />
+                          )}
+                        </View>
+                      )}
+                    </TVFocusablePressable>
+                  );
+                })}
 
               {/* Quality Options */}
               {activeDialog === 'quality' &&
-                usableQualities.map((q, i) => (
-                  <TVFocusablePressable
-                    key={`quality-${i}`}
-                    hasTVPreferredFocus={i === 0}
-                    scaleFocused={1.03}
-                    focusedBorderColor="#8A5CF6"
-                    borderRadius={8}
-                    onPress={() => {
-                      const resumeAt = currentProgRef.current.currentTime || currentTime;
-                      pendingRecoverySeekRef.current = resumeAt;
-                      setActiveMediaUrl(q.url);
-                      setActiveHeaders(q.headers);
-                      setActiveSourceType(q.sourceType);
-                      onSelectQuality?.(q.url);
-                      setActiveDialog(null);
-                      resetInactivityTimer();
-                    }}
-                    style={[
-                      styles.dialogItem,
-                      activeMediaUrl === q.url && styles.dialogItemSelected,
-                    ]}
-                  >
-                    {() => <Text style={styles.dialogItemText}>{q.name}</Text>}
-                  </TVFocusablePressable>
-                ))}
+                usableQualities.map((q, i) => {
+                  const isSelected = activeMediaUrl === q.url;
+                  return (
+                    <TVFocusablePressable
+                      key={`quality-${i}`}
+                      hasTVPreferredFocus={i === 0}
+                      scaleFocused={1.02}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={10}
+                      onPress={() => {
+                        const resumeAt = currentProgRef.current.currentTime || currentTime;
+                        pendingRecoverySeekRef.current = resumeAt;
+                        setActiveMediaUrl(q.url);
+                        setActiveHeaders(q.headers);
+                        setActiveSourceType(q.sourceType);
+                        onSelectQuality?.(q.url);
+                        setActiveDialog(null);
+                        resetInactivityTimer();
+                      }}
+                      style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
+                    >
+                      {() => (
+                        <View style={styles.dialogItemInner}>
+                          <Text
+                            style={[
+                              styles.dialogItemText,
+                              isSelected && styles.dialogItemTextSelected,
+                            ]}
+                          >
+                            {q.name}
+                          </Text>
+                          {isSelected && (
+                            <MaterialCommunityIcons
+                              name="check-circle"
+                              size={20}
+                              color="#A78BFA"
+                              style={styles.dialogItemCheck}
+                            />
+                          )}
+                        </View>
+                      )}
+                    </TVFocusablePressable>
+                  );
+                })}
             </ScrollView>
           </View>
         </View>
@@ -2074,44 +2244,100 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  // Subtitles/audio/server/quality dialog -- deliberately mirrors
+  // TVDetailsScreen's Season/Quality picker (pickerOverlay/pickerBox/
+  // seasonPickerOption* there): a light dim backdrop, a shrink-wrapped
+  // 0.7-opacity card sized off the window (see the inline maxWidth/
+  // maxHeight above), and rows whose labels wrap instead of truncating.
   dialogBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   dialogBox: {
-    width: 480,
-    maxHeight: 380,
-    backgroundColor: '#13131A',
-    borderRadius: 14,
-    padding: 20,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    minWidth: 380,
+    backgroundColor: 'rgba(19, 19, 26, 0.7)',
+    borderRadius: 18,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    elevation: 12,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+  },
+  dialogHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  dialogHeaderText: {
+    flexShrink: 1,
   },
   dialogTitle: {
     color: '#FFFFFF',
     fontSize: 18,
     fontWeight: '800',
-    marginBottom: 14,
   },
+  dialogSubtitle: {
+    color: '#B4B9C4',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  dialogDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginTop: 14,
+    marginBottom: 10,
+  },
+  dialogListScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  // Breathing room so a focused (scaled-up) row isn't clipped by the list.
   dialogList: {
-    gap: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
   },
   dialogItem: {
-    backgroundColor: '#1E1E28',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 10,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    marginBottom: 8,
   },
   dialogItemSelected: {
+    backgroundColor: 'rgba(138, 92, 246, 0.28)',
     borderColor: '#8A5CF6',
     borderWidth: 1.5,
-    backgroundColor: 'rgba(138, 92, 246, 0.2)',
+  },
+  dialogItemInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   dialogItemText: {
-    color: '#FFFFFF',
-    fontSize: 14,
+    color: '#E5E7EB',
+    fontSize: 15,
+    lineHeight: 21,
     fontWeight: '600',
+    // Full label, wrapped -- never truncated -- and shrinks to make room
+    // for the check icon on the selected row instead of pushing it off.
+    flexShrink: 1,
+  },
+  dialogItemTextSelected: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  dialogItemCheck: {
+    flexShrink: 0,
   },
 
   // ---- "Up Next" popup ----------------------------------------------
