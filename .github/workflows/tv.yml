@@ -1,199 +1,326 @@
-name: Build Android TV Release APK
+package com.vega
 
-# Controls how each run is labeled in the Actions run list (not just the
-# static workflow name above) -- a canary dispatch shows up as its own
-# "Build Canary APK" run instead of blending in with stable release runs.
-run-name: ${{ inputs.channel == 'canary' && 'Build Canary APK' || 'Build Android TV Release APK' }}
+import android.util.Log
+import android.content.Context
+import android.net.ConnectivityManager
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.LifecycleEventListener
+import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactContextBaseJavaModule
+import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.ReactPackage
+import com.facebook.react.uimanager.ViewManager
+import com.facebook.react.modules.network.OkHttpClientProvider
+import java.io.File
+import java.net.ServerSocket
+import java.util.concurrent.TimeUnit
 
-on:
-  workflow_dispatch:
-    inputs:
-      channel:
-        description: 'Release channel'
-        type: choice
-        options:
-          - stable
-          - canary
-        default: stable
+private const val TAG = "WarpModule"
 
-permissions:
-  contents: write
+class WarpModule(reactContext: ReactApplicationContext) :
+    ReactContextBaseJavaModule(reactContext), LifecycleEventListener {
 
-# Avoid two manual runs racing to publish/overwrite releases out of order.
-concurrency:
-  group: build-tv-${{ github.ref_name }}
-  cancel-in-progress: false
+    init {
+        reactContext.addLifecycleEventListener(this)
+    }
 
-jobs:
-  build-tv:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+    override fun getName(): String = "WarpModule"
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    @Volatile
+    private var warpProcess: Process? = null
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
+    @Volatile
+    private var currentPort: Int? = null
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: 'zulu'
-          java-version: 17
+    private fun getBinaryFile(): File {
+        val nativeLib = File(reactApplicationContext.applicationInfo.nativeLibraryDir, "libusque.so")
+        if (nativeLib.exists()) {
+            if (!nativeLib.canExecute()) {
+                nativeLib.setExecutable(true, false)
+            }
+            return nativeLib
+        }
 
-      - name: Setup Gradle Build Cache
-        uses: gradle/actions/setup-gradle@v4
+        val fallback = File(reactApplicationContext.filesDir, "libusque.so")
+        if (!fallback.exists() || fallback.length() == 0L) {
+            try {
+                val apkPath = reactApplicationContext.applicationInfo.sourceDir
+                if (apkPath != null) {
+                    val apkFile = File(apkPath)
+                    if (apkFile.exists()) {
+                        java.util.zip.ZipFile(apkFile).use { zip ->
+                            // Try the device's actual ABIs first (in preference order), then fall
+                            // back to any bundled variant, since we now ship both arm64-v8a and
+                            // armeabi-v7a builds of usque.
+                            val candidates = android.os.Build.SUPPORTED_ABIS.toList() +
+                                listOf("arm64-v8a", "armeabi-v7a")
+                            val entry = candidates
+                                .distinct()
+                                .firstNotNullOfOrNull { abi -> zip.getEntry("lib/$abi/libusque.so") }
+                                ?: zip.getEntry("lib/arm64/libusque.so")
+                            if (entry != null) {
+                                zip.getInputStream(entry).use { input ->
+                                    fallback.outputStream().use { output ->
+                                        input.copyTo(output)
+                                    }
+                                }
+                                fallback.setExecutable(true, false)
+                                Log.i(TAG, "Extracted libusque.so from APK to ${fallback.absolutePath}")
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to extract libusque.so fallback from APK: ${e.message}")
+            }
+        }
 
-      - name: Extract Version & Generate Auto-Incremented Code
-        id: release_meta
-        run: |
-          # Keep manual version from package.json/app.config.js
-          VERSION_NAME=$(node -p "require('./package.json').version || '4.0.6'")
+        if (fallback.exists()) {
+            fallback.setExecutable(true, false)
+            return fallback
+        }
 
-          # Automatically increment versionCode above 192 (e.g., Run 103 -> 203)
-          VERSION_CODE=$((100 + ${{ github.run_number }}))
-          RUN_ATTEMPT=${{ github.run_attempt }}
+        return nativeLib
+    }
 
-          # Only trigger left is workflow_dispatch, so the channel input is
-          # always present -- "stable" unless explicitly switched to
-          # "canary" in the run dialog.
-          CHANNEL="${{ inputs.channel }}"
+    private fun getWarpDir(): File {
+        val dir = File(reactApplicationContext.filesDir, "warp")
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
+        return dir
+    }
 
-          # Ensure unique tag name across runs and re-run attempts.
-          # "-kotlin" sits right next to the version so it's visible on the
-          # tag, the release title, and every APK filename below. Canary
-          # builds get their own "-canary-" segment so they never collide
-          # with a stable tag/filename and are unmistakable at a glance.
-          if [ "$CHANNEL" = "canary" ]; then
-            TAG_SUFFIX="kotlin-tv-canary"
-            RELEASE_LABEL="Vega TV Canary"
-          else
-            TAG_SUFFIX="kotlin-tv"
-            RELEASE_LABEL="Vega TV"
-          fi
+    private fun getConfigFile(): File {
+        return File(getWarpDir(), "config.json")
+    }
 
-          if [ "$RUN_ATTEMPT" -gt 1 ]; then
-            TAG_NAME="v${VERSION_NAME}-${TAG_SUFFIX}-${{ github.run_number }}.${RUN_ATTEMPT}"
-          else
-            TAG_NAME="v${VERSION_NAME}-${TAG_SUFFIX}-${{ github.run_number }}"
-          fi
+    private fun flushConnections() {
+        try {
+            OkHttpClientProvider.getOkHttpClient().connectionPool.evictAll()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to evict connection pool: ${e.message}")
+        }
+    }
 
-          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
-          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
-          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "release_name=$RELEASE_LABEL $TAG_NAME" >> $GITHUB_OUTPUT
+    // Android apps generally can't read /etc/resolv.conf, so the bundled
+    // libusque.so (built with CGO_ENABLED=0, no cgo resolver available)
+    // falls back to Go's hardcoded loopback nameservers and fails DNS
+    // lookups entirely (e.g. registering with Cloudflare). We work around
+    // this by reading the device's actual configured DNS servers and
+    // passing them in via the USQUE_DNS_SERVERS env var, which our
+    // patched usque build uses to bypass /etc/resolv.conf altogether.
+    // Some devices report a local private-DNS proxy address here instead
+    // of a real resolver, so we filter loopback addresses out and always
+    // append public fallbacks to guarantee at least one working server.
+    private fun getUsqueDnsServersEnv(): String {
+        val servers = LinkedHashSet<String>()
+        try {
+            val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val network = cm?.activeNetwork
+            val linkProperties = network?.let { cm.getLinkProperties(it) }
+            linkProperties?.dnsServers?.forEach { addr ->
+                if (!addr.isLoopbackAddress) {
+                    val host = addr.hostAddress
+                    if (!host.isNullOrBlank()) {
+                        servers.add(if (addr.hostAddress?.contains(':') == true) "[$host]:53" else "$host:53")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read device DNS servers: ${e.message}")
+        }
+        // Public fallbacks in case the device reports nothing usable (or a
+        // Private DNS / DoT proxy address that isn't a plain port-53 server).
+        servers.add("1.1.1.1:53")
+        servers.add("8.8.8.8:53")
+        return servers.joinToString(",")
+    }
 
-          # Canary is a prerelease and must never become the repo's
-          # highlighted "Latest release" -- both flags are required:
-          # prerelease alone still lets `make_latest: true`/auto-detection
-          # promote it, and make_latest:false alone would still show it
-          # without the Pre-release badge. Together, it's only visible by
-          # opening the full Releases list.
-          if [ "$CHANNEL" = "canary" ]; then
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-            echo "make_latest=false" >> $GITHUB_OUTPUT
-          else
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-            echo "make_latest=true" >> $GITHUB_OUTPUT
-          fi
+    private fun stopInternal() {
+        try {
+            val proc = warpProcess
+            if (proc != null && proc.isAlive) {
+                proc.destroy()
+                proc.waitFor(2, TimeUnit.SECONDS)
+                if (proc.isAlive) {
+                    proc.destroyForcibly()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping WARP process: ${e.message}")
+        } finally {
+            warpProcess = null
+            currentPort = null
+            DohOkHttpFactory.instance?.warpProxyPort = null
+            flushConnections()
+        }
+    }
 
-          git fetch --tags origin 2>/dev/null || true
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"* %s (%h)")
-          else
-            CHANGELOG=$(git log --pretty=format:"* %s (%h)" -n 10)
-          fi
+    @ReactMethod
+    fun startWarp(promise: Promise) {
+        Thread {
+            try {
+                if (warpProcess?.isAlive == true && currentPort != null) {
+                    val result = Arguments.createMap().apply {
+                        putBoolean("running", true)
+                        putInt("port", currentPort!!)
+                    }
+                    promise.resolve(result)
+                    return@Thread
+                }
 
-          if [ -z "$CHANGELOG" ]; then
-            CHANGELOG="* TV optimizations and bug fixes."
-          fi
+                val binary = getBinaryFile()
+                if (!binary.exists()) {
+                    promise.reject("WARP_BINARY_NOT_FOUND", "libusque.so not found at ${binary.absolutePath}")
+                    return@Thread
+                }
 
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+                val configFile = getConfigFile()
+                val dnsServersEnv = getUsqueDnsServersEnv()
+                if (!configFile.exists() || configFile.length() == 0L) {
+                    Log.i(TAG, "Registering Cloudflare WARP account non-interactively (-a)...")
+                    val regPb = ProcessBuilder(binary.absolutePath, "-c", configFile.absolutePath, "register", "-a")
+                    regPb.directory(getWarpDir())
+                    regPb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
+                    regPb.redirectErrorStream(true)
+                    val regProc = regPb.start()
 
-      - name: Install dependencies
-        run: npm ci
+                    var regOutput = StringBuilder()
+                    val readerThread = Thread {
+                        try {
+                            regProc.inputStream.bufferedReader().forEachLine { line ->
+                                Log.d("WarpRegister", line)
+                                regOutput.append(line).append("\n")
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    readerThread.start()
 
-      - name: Generate Android Native Project
-        env:
-          APP_VARIANT: standalone
-          APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
-        run: npx expo prebuild --platform android --clean --no-install
+                    val finished = regProc.waitFor(20, TimeUnit.SECONDS)
+                    if (!finished) {
+                        regProc.destroyForcibly()
+                        promise.reject("WARP_REGISTRATION_TIMEOUT", "WARP registration timed out after 20s")
+                        return@Thread
+                    }
+                    readerThread.join(1000)
 
-      - name: Decode Release Keystore
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
+                    val exitCode = regProc.exitValue()
+                    if (exitCode != 0 || !configFile.exists() || configFile.length() == 0L) {
+                        promise.reject("WARP_REGISTRATION_FAILED", "Failed to register WARP client (exit $exitCode): $regOutput")
+                        return@Thread
+                    }
+                    Log.i(TAG, "WARP registration completed successfully")
+                }
 
-      - name: Make gradlew executable
-        run: chmod +x android/gradlew
+                val port = try {
+                    ServerSocket(0).use { it.localPort }
+                } catch (e: Exception) {
+                    8086
+                }
 
-      - name: Build Android TV Release APKs
-        working-directory: ./android
-        env:
-          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
-          APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
-          MYAPP_UPLOAD_STORE_FILE: "release.keystore"
-          MYAPP_UPLOAD_STORE_PASSWORD: "${{ secrets.KEYSTORE_PASSWORD }}"
-          MYAPP_UPLOAD_KEY_ALIAS: "${{ secrets.KEY_ALIAS }}"
-          MYAPP_UPLOAD_KEY_PASSWORD: "${{ secrets.KEY_PASSWORD }}"
-        run: |
-          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+                val pb = ProcessBuilder(
+                    binary.absolutePath,
+                    "-c", configFile.absolutePath,
+                    "http-proxy",
+                    "-b", "127.0.0.1",
+                    "-p", port.toString()
+                )
+                pb.directory(getWarpDir())
+                pb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
+                pb.redirectErrorStream(true)
+                val proc = pb.start()
+                warpProcess = proc
+                currentPort = port
 
-      - name: Prepare APK Artifacts
-        run: |
-          mkdir -p output_apks
-          TAG="${{ steps.release_meta.outputs.tag_name }}"
+                var isListening = false
+                val logLines = StringBuilder()
+                Thread {
+                    try {
+                        proc.inputStream.bufferedReader().forEachLine { line ->
+                            Log.d("WarpProcess", line)
+                            logLines.append(line).append("\n")
+                            if (line.contains("listening on", ignoreCase = true) || line.contains("HTTP proxy", ignoreCase = true)) {
+                                isListening = true
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }.start()
 
-          find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" | while read -r file; do
-            filename=$(basename "$file")
-            if [[ "$filename" == *"arm64-v8a"* ]]; then
-              cp "$file" "output_apks/Vega-TV-${TAG}-arm64-v8a.apk"
-            elif [[ "$filename" == *"armeabi-v7a"* ]]; then
-              cp "$file" "output_apks/Vega-TV-${TAG}-armeabi-v7a.apk"
-            else
-              cp "$file" "output_apks/Vega-TV-${TAG}-universal.apk"
-            fi
-          done
-          ls -la output_apks/
+                var waitedMs = 0
+                while (waitedMs < 2500 && proc.isAlive && !isListening) {
+                    Thread.sleep(100)
+                    waitedMs += 100
+                }
 
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Vega-TV-${{ steps.release_meta.outputs.channel }}-APKs
-          path: output_apks/*.apk
-          if-no-files-found: error
+                if (!proc.isAlive) {
+                    warpProcess = null
+                    currentPort = null
+                    promise.reject("WARP_START_FAILED", "WARP proxy process terminated immediately: $logLines")
+                    return@Thread
+                }
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_meta.outputs.tag_name }}
-          name: ${{ steps.release_meta.outputs.release_name }}
-          make_latest: ${{ steps.release_meta.outputs.make_latest }}
-          prerelease: ${{ steps.release_meta.outputs.prerelease }}
-          body: |
-            ${{ steps.release_meta.outputs.channel == 'canary' && '> ⚠️ **Canary build** -- a manually-triggered test build. May be unstable; not shown as the repo''s Latest release.' || '' }}
+                DohOkHttpFactory.instance?.warpProxyPort = port
+                flushConnections()
 
-            ## What's Changed
-            ${{ steps.release_meta.outputs.changelog }}
+                val result = Arguments.createMap().apply {
+                    putBoolean("running", true)
+                    putInt("port", port)
+                }
+                promise.resolve(result)
+            } catch (e: Exception) {
+                stopInternal()
+                promise.reject("WARP_ERROR", e.message, e)
+            }
+        }.start()
+    }
 
-            ---
-            * **Channel**: `${{ steps.release_meta.outputs.channel }}`
-            * **App Version**: `${{ steps.release_meta.outputs.version_name }}`
-            * **Build Code (versionCode)**: `${{ steps.release_meta.outputs.version_code }}`
-            * **Target Architecture**: Android TV (`armeabi-v7a`, `arm64-v8a`)
-          files: output_apks/*.apk
-          generate_release_notes: false
-          draft: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    @ReactMethod
+    fun stopWarp(promise: Promise) {
+        Thread {
+            try {
+                stopInternal()
+                val result = Arguments.createMap().apply {
+                    putBoolean("running", false)
+                }
+                promise.resolve(result)
+            } catch (e: Exception) {
+                promise.reject("WARP_ERROR", e.message, e)
+            }
+        }.start()
+    }
+
+    @ReactMethod
+    fun getStatus(promise: Promise) {
+        val isRunning = warpProcess?.isAlive == true
+        val result = Arguments.createMap().apply {
+            putBoolean("running", isRunning)
+            currentPort?.let { putInt("port", it) }
+        }
+        promise.resolve(result)
+    }
+
+    override fun onHostResume() {}
+
+    override fun onHostPause() {}
+
+    override fun onHostDestroy() {
+        stopInternal()
+    }
+
+    override fun onCatalystInstanceDestroy() {
+        stopInternal()
+    }
+}
+
+class WarpPackage : ReactPackage {
+    override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
+        return listOf(WarpModule(reactContext))
+    }
+
+    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+        return emptyList()
+    }
+}
