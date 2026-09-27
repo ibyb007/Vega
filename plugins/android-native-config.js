@@ -8,6 +8,17 @@ const withAndroidNativeConfig = config => {
     const application = manifestConfig.modResults.manifest.application?.[0];
     if (application?.$) {
       application.$['android:usesCleartextTraffic'] = 'true';
+      // Force native libraries to be physically extracted to a real,
+      // executable-permitted directory (applicationInfo.nativeLibraryDir)
+      // at install time, instead of the modern default of storing them
+      // uncompressed inside the APK and mmap'ing them in place. WarpModule
+      // needs to `exec()` libusque.so as a subprocess (it's not just
+      // dlopen'd), and Android's W^X policy blocks executing anything from
+      // app-private storage the app wrote itself (e.g. filesDir) on
+      // Android 10+ -- nativeLibraryDir is the one location that's
+      // exempted from that restriction, but only when the lib was
+      // actually extracted there, which requires this flag.
+      application.$['android:extractNativeLibs'] = 'true';
     }
 
     return manifestConfig;
