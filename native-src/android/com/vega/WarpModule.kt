@@ -1,6 +1,8 @@
 package com.vega
 
 import android.util.Log
+import android.content.Context
+import android.net.ConnectivityManager
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.NativeModule
@@ -103,6 +105,40 @@ class WarpModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    // Android apps generally can't read /etc/resolv.conf, so the bundled
+    // libusque.so (built with CGO_ENABLED=0, no cgo resolver available)
+    // falls back to Go's hardcoded loopback nameservers and fails DNS
+    // lookups entirely (e.g. registering with Cloudflare). We work around
+    // this by reading the device's actual configured DNS servers and
+    // passing them in via the USQUE_DNS_SERVERS env var, which our
+    // patched usque build uses to bypass /etc/resolv.conf altogether.
+    // Some devices report a local private-DNS proxy address here instead
+    // of a real resolver, so we filter loopback addresses out and always
+    // append public fallbacks to guarantee at least one working server.
+    private fun getUsqueDnsServersEnv(): String {
+        val servers = LinkedHashSet<String>()
+        try {
+            val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val network = cm?.activeNetwork
+            val linkProperties = network?.let { cm.getLinkProperties(it) }
+            linkProperties?.dnsServers?.forEach { addr ->
+                if (!addr.isLoopbackAddress) {
+                    val host = addr.hostAddress
+                    if (!host.isNullOrBlank()) {
+                        servers.add(if (addr.hostAddress?.contains(':') == true) "[$host]:53" else "$host:53")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read device DNS servers: ${e.message}")
+        }
+        // Public fallbacks in case the device reports nothing usable (or a
+        // Private DNS / DoT proxy address that isn't a plain port-53 server).
+        servers.add("1.1.1.1:53")
+        servers.add("8.8.8.8:53")
+        return servers.joinToString(",")
+    }
+
     private fun stopInternal() {
         try {
             val proc = warpProcess
@@ -143,10 +179,12 @@ class WarpModule(reactContext: ReactApplicationContext) :
                 }
 
                 val configFile = getConfigFile()
+                val dnsServersEnv = getUsqueDnsServersEnv()
                 if (!configFile.exists() || configFile.length() == 0L) {
                     Log.i(TAG, "Registering Cloudflare WARP account non-interactively (-a)...")
                     val regPb = ProcessBuilder(binary.absolutePath, "-c", configFile.absolutePath, "register", "-a")
                     regPb.directory(getWarpDir())
+                    regPb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
                     regPb.redirectErrorStream(true)
                     val regProc = regPb.start()
 
@@ -191,6 +229,7 @@ class WarpModule(reactContext: ReactApplicationContext) :
                     "-p", port.toString()
                 )
                 pb.directory(getWarpDir())
+                pb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
                 pb.redirectErrorStream(true)
                 val proc = pb.start()
                 warpProcess = proc
