@@ -356,6 +356,20 @@ export default function App() {
                       // list; falls back to a plain +1 advance otherwise.
                       const nextIndex =
                         nextEp.targetIndex ?? (activeStream.currentEpisodeIndex ?? 0) + 1;
+                      // `episodeId` must track whichever episode is
+                      // actually playing -- it's persisted into Continue
+                      // Watching as the per-episode resume key (see
+                      // TVPlayerScreen's syncProgressToStore), so leaving
+                      // it pinned to the episode the player was first
+                      // launched with breaks the "Resume" match on
+                      // TVDetailsScreen for every episode after that one.
+                      const nextEpisodeMeta = activeStream.episodes?.[nextIndex] as
+                        | { season?: number; episodeNumber?: number }
+                        | undefined;
+                      const nextEpisodeId =
+                        nextEpisodeMeta?.season != null && nextEpisodeMeta?.episodeNumber != null
+                          ? `S${nextEpisodeMeta.season}E${nextEpisodeMeta.episodeNumber}`
+                          : activeStream.episodeId;
                       setActiveStream((prev) =>
                         prev
                           ? {
@@ -363,6 +377,7 @@ export default function App() {
                               url: nextEp.url || prev.url,
                               title: nextEp.title || prev.title,
                               currentEpisodeIndex: nextIndex,
+                              episodeId: nextEpisodeId,
                               headers: nextEp.headers,
                               sourceType: nextEp.sourceType,
                               subtitles: nextEp.subtitles,
