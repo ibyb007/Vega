@@ -226,6 +226,12 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
       setWarpPort(null);
       settingsStorage?.setWarpEnabled?.(false);
       ToastAndroid.show(`WARP error: ${e?.message || 'Failed to connect'}`, ToastAndroid.LONG);
+      showAppDialog({
+        title: 'WARP failed to start',
+        message: e?.message || 'Failed to connect to Cloudflare WARP.',
+        variant: 'error',
+        actions: [{ label: 'OK' }],
+      });
     } finally {
       setIsWarpBusy(false);
     }
