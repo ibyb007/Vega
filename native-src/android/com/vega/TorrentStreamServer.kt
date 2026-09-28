@@ -9,7 +9,8 @@ import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
 
-class TorrentStreamServer : NanoHTTPD(0) {
+// Bound to loopback only: the stream must not be reachable from the LAN.
+class TorrentStreamServer : NanoHTTPD("127.0.0.1", 0) {
 
     companion object {
         private const val TAG = "TorrentStreamServer"
@@ -21,7 +22,8 @@ class TorrentStreamServer : NanoHTTPD(0) {
     var sessionManager: org.libtorrent4j.SessionManager? = null
 
     private data class TorrentEntry(val saveDir: File)
-    private val torrents = mutableMapOf<String, TorrentEntry>()
+    // Accessed from NanoHTTPD worker threads and the RN module thread.
+    private val torrents = java.util.concurrent.ConcurrentHashMap<String, TorrentEntry>()
 
     fun registerTorrent(infoHash: String, saveDir: File) {
         torrents[infoHash] = TorrentEntry(saveDir)
@@ -188,7 +190,7 @@ class TorrentStreamServer : NanoHTTPD(0) {
         response.addHeader("Content-Length", contentLength.toString())
         response.addHeader("Connection", "keep-alive")
 
-        Log.d(TAG, "Response ready: 206, Content-Length=$contentLength, Content-Range=bytes $start-$end/$fileSize")
+        Log.d(TAG, "Response ready: ${if (requestedRange != null) 206 else 200}, Content-Length=$contentLength, Content-Range=bytes $start-$end/$fileSize")
         return response
     }
 
