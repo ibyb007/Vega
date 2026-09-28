@@ -12,7 +12,13 @@ import {
   findNodeHandle,
   useWindowDimensions,
 } from 'react-native';
-import Video, { VideoRef, SelectedTrackType, ResizeMode, BufferingStrategyType } from 'react-native-video';
+import Video, {
+  VideoRef,
+  SelectedTrackType,
+  SelectedVideoTrackType,
+  ResizeMode,
+  BufferingStrategyType,
+} from 'react-native-video';
 import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import Svg, { Path } from 'react-native-svg';
@@ -139,6 +145,120 @@ const isQualityExcluded = (
   });
 };
 
+// ---- Quality badge helpers -------------------------------------------------
+// Same idea as the mobile app's getQualityIconName()/formatQuality(), but the
+// TV control bar shows a text badge: 4K / QHD / FHD / HD / SD.
+type QualityTier = '4K' | 'QHD' | 'FHD' | 'HD' | 'SD';
+
+const tierFromDimensions = (
+  height?: number | string,
+  width?: number | string,
+): QualityTier | null => {
+  const h = Number(height) || 0;
+  const w = Number(width) || 0;
+  if (h <= 0 && w <= 0) return null;
+
+  let tier: QualityTier =
+    h >= 1500 ? '4K' : h >= 1200 ? 'QHD' : h >= 1000 ? 'FHD' : h >= 500 ? 'HD' : 'SD';
+  if (h <= 0) {
+    // Only a width is known.
+    tier = w >= 3400 ? '4K' : w >= 2400 ? 'QHD' : w >= 1800 ? 'FHD' : w >= 1200 ? 'HD' : 'SD';
+  } else if (w >= 3400 && tier !== '4K') {
+    tier = '4K';
+  } else if (w >= 1800 && (tier === 'HD' || tier === 'SD')) {
+    // Letterboxed / scope encodes (e.g. 1920x800) are still Full HD.
+    tier = 'FHD';
+  }
+  return tier;
+};
+
+const tierFromLabel = (label?: string | number | null): QualityTier | null => {
+  const s = String(label ?? '').trim().toLowerCase();
+  if (!s || s === 'auto') return null;
+  if (/8k|4320|4k|uhd|2160/.test(s)) return '4K';
+  if (/qhd|1440|\b2k\b/.test(s)) return 'QHD';
+  if (/fhd|1080/.test(s)) return 'FHD';
+  if (/\bhd\b|720/.test(s)) return 'HD';
+  if (/\bsd\b|576|480|360|240|144/.test(s)) return 'SD';
+  const n = Number(s.match(/\d+/)?.[0]);
+  return n >= 100 ? tierFromDimensions(n) : null;
+};
+
+const formatQualityText = (quality: string): string => {
+  const q = quality.trim();
+  return /^\d{3,4}$/.test(q) ? `${q}p` : q.toUpperCase();
+};
+
+// Provider tags for a stream (mirrors the mobile server list).
+const extractStreamTags = (stream: any): string[] => {
+  const raw: any[] = Array.isArray(stream?.tags)
+    ? stream.tags
+    : typeof stream?.tag === 'string'
+    ? [stream.tag]
+    : [];
+  const quality = String(stream?.quality ?? '').trim().toLowerCase();
+  return raw
+    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .filter((t) => Boolean(t) && t.toLowerCase() !== quality);
+};
+
+const describeVideoTrack = (track: any) => {
+  const title = track?.height
+    ? `${track.height}p`
+    : track?.width
+    ? `${track.width}p`
+    : 'Standard';
+  const bitrate = Number(track?.bitrate) || 0;
+  const bitrateText = bitrate
+    ? bitrate >= 1000000
+      ? `${(bitrate / 1000000).toFixed(1)} Mbps`
+      : `${Math.round(bitrate / 1000)} kbps`
+    : undefined;
+  const detail = [
+    bitrateText,
+    track?.width && track?.height ? `${track.width}x${track.height}` : undefined,
+    track?.codecs ? `${track.codecs}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return { title, detail, tier: tierFromDimensions(track?.height, track?.width) };
+};
+
+// Full-width row body shared by the source and video-track rows in the
+// dialog: wrapped title, optional chips, optional detail line, check mark.
+const DialogRowBody: React.FC<{
+  title: string;
+  chips?: string[];
+  detail?: string;
+  selected: boolean;
+}> = ({ title, chips = [], detail, selected }) => (
+  <View style={styles.dialogItemInner}>
+    <View style={styles.dialogItemBody}>
+      <Text style={[styles.dialogItemText, selected && styles.dialogItemTextSelected]}>
+        {title}
+      </Text>
+      {chips.length > 0 && (
+        <View style={styles.dialogChipRow}>
+          {chips.map((c, idx) => (
+            <View key={`${c}-${idx}`} style={styles.dialogChip}>
+              <Text style={styles.dialogChipText}>{c}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+      {!!detail && <Text style={styles.dialogItemDetail}>{detail}</Text>}
+    </View>
+    {selected && (
+      <MaterialCommunityIcons
+        name="check-circle"
+        size={20}
+        color="#A78BFA"
+        style={styles.dialogItemCheck}
+      />
+    )}
+  </View>
+);
+
 const describeTrack = (trk: any, fallbackLabel: string): string => {
   if (!trk) return fallbackLabel;
   const rawTitle = (trk?.title || trk?.label || '').trim();
@@ -230,11 +350,22 @@ interface EpisodeItem {
   skip?: SkipInterval[];
 }
 
+interface StreamOption {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  sourceType?: string;
+  // Extra info shown in the picker (same fields the mobile server list shows).
+  server?: string;
+  quality?: string;
+  tags?: string[];
+}
+
 interface ResolvedNextEpisode extends EpisodeItem {
   headers?: Record<string, string>;
   sourceType?: string;
   subtitles?: TextTracks;
-  qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
+  qualities?: StreamOption[];
   // Absolute index into `episodes` this resolves to. Omitted for a plain
   // "advance to the next one" (defaults to `currentEpisodeIndex + 1`);
   // set explicitly when jumping to an arbitrary episode picked from the
@@ -258,8 +389,8 @@ interface TVPlayerScreenProps {
   subtitles?: TextTracks;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
-  servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
-  qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
+  servers?: StreamOption[];
+  qualities?: StreamOption[];
   // Intro/outro/recap markers for the *currently playing* stream (from the
   // provider's `Stream.skip`). When an interval titled "Outro" is present,
   // it's used to time the "Up Next" popup instead of the 90s-remaining
@@ -422,6 +553,95 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     );
     return filtered.length > 0 ? filtered : qualities;
   }, [qualities, excludedQualities]);
+
+  // Video (resolution) tracks reported by the player, like the mobile app's
+  // Quality tab -- plus the decoded size, used to label the quality button.
+  const [videoTracks, setVideoTracks] = useState<any[]>([]);
+  const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null);
+  const [selectedVideoTrack, setSelectedVideoTrack] = useState<any>({
+    type: SelectedVideoTrackType.AUTO,
+  });
+  // null = Auto (adaptive); otherwise an index into `videoTracks`.
+  const [selectedTrackListIdx, setSelectedTrackListIdx] = useState<number | null>(null);
+
+  const processVideoTracks = useCallback((tracks: any[]) => {
+    if (!tracks || tracks.length === 0) return;
+    const seen = new Set<string>();
+    const unique = tracks.filter((t) => {
+      const key = `${t.bitrate}-${t.height || t.width}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    unique.sort(
+      (a, b) => (b.height || 0) - (a.height || 0) || (b.bitrate || 0) - (a.bitrate || 0),
+    );
+    const active = unique.find((t) => t.selected);
+    if (active?.height) {
+      setVideoSize((prev) =>
+        prev?.height === active.height && prev?.width === active.width
+          ? prev
+          : { width: active.width || 0, height: active.height },
+      );
+    }
+    setVideoTracks((prev) => {
+      const k = (list: any[]) =>
+        list.map((t) => `${t.index}:${t.height}:${t.width}:${t.bitrate}`).join('|');
+      return k(prev) === k(unique) ? prev : unique;
+    });
+  }, []);
+
+  // A new source means new tracks: clear the old ones so the quality button
+  // never shows the previous stream's resolution while the next one loads.
+  useEffect(() => {
+    setVideoTracks([]);
+    setVideoSize(null);
+    setSelectedVideoTrack({ type: SelectedVideoTrackType.AUTO });
+    setSelectedTrackListIdx(null);
+  }, [activeMediaUrl]);
+
+  // Text for the quality button: 4K / QHD / FHD / HD / SD. Prefers what the
+  // player is actually decoding, then the provider's own quality tag.
+  const qualityBadge = useMemo(() => {
+    const activeOption =
+      qualities.find((q) => q.url === activeMediaUrl) ||
+      servers.find((s) => s.url === activeMediaUrl);
+    const chosen = selectedTrackListIdx != null ? videoTracks[selectedTrackListIdx] : undefined;
+    const track =
+      chosen ??
+      (videoTracks.length === 1 ? videoTracks[0] : undefined) ??
+      videoTracks.find((t) => t.selected);
+    const fromPlayer = tierFromDimensions(
+      Number(track?.height) || Number(videoSize?.height) || 0,
+      Number(track?.width) || Number(videoSize?.width) || 0,
+    );
+    if (fromPlayer) return fromPlayer;
+    const label = activeOption?.quality || (!activeOption?.server ? activeOption?.name : undefined);
+    return tierFromLabel(label) || 'Auto';
+  }, [qualities, servers, activeMediaUrl, selectedTrackListIdx, videoTracks, videoSize]);
+
+  const hasTrackChoices = videoTracks.length > 1;
+  const qualityOptionCount = usableQualities.length + (hasTrackChoices ? videoTracks.length + 1 : 0);
+
+  // Title + chips for a source row: server name with its quality/tags as
+  // chips, like the mobile app's server list (falls back to the old label
+  // for entries that carry no extra info).
+  const buildSourceRow = (opt: StreamOption, i: number) => {
+    const hasServer = !!opt.server?.trim();
+    const title = hasServer ? opt.server!.trim() : opt.name || `Source ${i + 1}`;
+    const tier = tierFromLabel(opt.quality);
+    const chips: string[] = [];
+    if (opt.quality) {
+      const qText = formatQualityText(String(opt.quality));
+      if (hasServer) {
+        chips.push(tier && tier.toLowerCase() !== qText.toLowerCase() ? `${tier} · ${qText}` : qText);
+      } else if (tier && tier.toLowerCase() !== title.toLowerCase()) {
+        chips.push(tier);
+      }
+    }
+    (opt.tags || []).forEach((t) => chips.push(t));
+    return { title, chips };
+  };
 
   const prevStreamUrlRef = useRef(streamUrl);
   const pendingRecoverySeekRef = useRef<number | null>(null);
@@ -1036,7 +1256,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     }
 
     setResolvingNextEpisode(true);
-    ToastAndroid.show(`Loading: ${targetTitle}`, ToastAndroid.SHORT);
+    ToastAndroid.show(
+      `Loading: ${formatSeasonEpisodeLabel(targetEp.season, targetEp.episodeNumber, targetEp.title, targetTitle)}`,
+      ToastAndroid.SHORT,
+    );
     try {
       const streams = await providerManager.getStream({
         link: targetEp.link,
@@ -1055,6 +1278,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         url: s.link,
         headers: s.headers,
         sourceType: s.type,
+        server: s.server,
+        quality: s.quality,
+        tags: extractStreamTags(s),
       }));
 
       onSelectNextEpisode?.({
@@ -1111,6 +1337,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         bufferingStrategy={BufferingStrategyType.DEPENDING_ON_MEMORY}
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
+        selectedVideoTrack={selectedVideoTrack}
         textTracks={subtitles}
         audioBoostGain={audioBoostGain}
         subtitleStyle={{
@@ -1125,6 +1352,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           setDuration(totalDur);
           currentProgRef.current.duration = totalDur;
           if (meta.audioTracks?.length) setAudioTracks(meta.audioTracks);
+          if (meta.naturalSize?.height) {
+            setVideoSize({ width: meta.naturalSize.width || 0, height: meta.naturalSize.height });
+          }
+          if (meta.videoTracks?.length) processVideoTracks(meta.videoTracks);
           if (meta.textTracks?.length) {
             setTextTracks(meta.textTracks);
             autoSelectEnglishSubtitle(meta.textTracks);
@@ -1145,6 +1376,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               currentProgRef.current.currentTime = startPosition;
             }
           }
+        }}
+        onVideoTracks={(e: any) => {
+          if (e?.videoTracks?.length) processVideoTracks(e.videoTracks);
         }}
         onAudioTracks={(e: any) => {
           if (e?.audioTracks?.length) setAudioTracks(e.audioTracks);
@@ -1309,10 +1543,14 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           <View style={styles.controlsContent}>
             {/* Title */}
             <Text numberOfLines={1} style={styles.mediaTitle}>
-              {episodes[currentEpisodeIndex]?.title &&
-              episodes[currentEpisodeIndex].title !== title
-                ? `${title} • ${episodes[currentEpisodeIndex].title}`
-                : title}
+              {(() => {
+                const ep = episodes[currentEpisodeIndex];
+                if (!ep || (!ep.title && ep.season == null)) return title;
+                if (ep.title === title) return title;
+                // "Lanterns.S01E01-Pilot" (falls back to the plain episode
+                // name when the season/episode numbers aren't known).
+                return `${title}.${formatSeasonEpisodeLabel(ep.season, ep.episodeNumber, ep.title, 'Episode')}`;
+              })()}
             </Text>
 
             {/* Seekbar Container */}
@@ -1527,19 +1765,23 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 </TVFocusablePressable>
               )}
 
-              {/* Quality Selector */}
-              {usableQualities.length > 0 && (
-                <TVFocusablePressable
-                  scaleFocused={1.12}
-                  focusedBorderColor="#8A5CF6"
-                  borderRadius={8}
-                  onFocus={() => resetInactivityTimer()}
-                  onPress={() => setActiveDialog('quality')}
-                  style={styles.controlBtn}
-                >
-                  {() => <MaterialCommunityIcons name="tune-variant" size={22} color="#FFFFFF" />}
-                </TVFocusablePressable>
-              )}
+              {/* Quality Selector -- label follows the playing stream:
+                  4K / QHD / FHD / HD / SD (Auto until it's known). */}
+              <TVFocusablePressable
+                scaleFocused={1.08}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={8}
+                onFocus={() => resetInactivityTimer()}
+                onPress={() => setActiveDialog('quality')}
+                style={styles.controlPillBtn}
+              >
+                {() => (
+                  <View style={styles.pillInner}>
+                    <MaterialCommunityIcons name="tune-variant" size={20} color="#FFFFFF" />
+                    <Text style={styles.pillText}>{qualityBadge}</Text>
+                  </View>
+                )}
+              </TVFocusablePressable>
 
               {/* Episodes List */}
               {episodes.length > 0 && (
@@ -1629,7 +1871,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   {activeDialog === 'subtitles' && `${textTracks.length + 1} options`}
                   {activeDialog === 'audio' && `${audioTracks.length} options`}
                   {activeDialog === 'server' && `${servers.length} options`}
-                  {activeDialog === 'quality' && `${usableQualities.length} options`}
+                  {activeDialog === 'quality' &&
+                    (qualityOptionCount > 0 ? `${qualityOptionCount} options` : 'No options')}
                 </Text>
               </View>
             </View>
@@ -1768,6 +2011,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               {activeDialog === 'server' &&
                 servers.map((srv, i) => {
                   const isSelected = activeMediaUrl === srv.url;
+                  const row = buildSourceRow(srv, i);
                   return (
                     <TVFocusablePressable
                       key={`server-${i}`}
@@ -1788,75 +2032,131 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                       style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
                     >
                       {() => (
-                        <View style={styles.dialogItemInner}>
-                          <Text
-                            style={[
-                              styles.dialogItemText,
-                              isSelected && styles.dialogItemTextSelected,
-                            ]}
-                          >
-                            {srv.name}
-                          </Text>
-                          {isSelected && (
-                            <MaterialCommunityIcons
-                              name="check-circle"
-                              size={20}
-                              color="#A78BFA"
-                              style={styles.dialogItemCheck}
-                            />
-                          )}
-                        </View>
+                        <DialogRowBody title={row.title} chips={row.chips} selected={isSelected} />
                       )}
                     </TVFocusablePressable>
                   );
                 })}
 
-              {/* Quality Options */}
-              {activeDialog === 'quality' &&
-                usableQualities.map((q, i) => {
-                  const isSelected = activeMediaUrl === q.url;
-                  return (
-                    <TVFocusablePressable
-                      key={`quality-${i}`}
-                      hasTVPreferredFocus={i === 0}
-                      scaleFocused={1.02}
-                      focusedBorderColor="#8A5CF6"
-                      borderRadius={10}
-                      onPress={() => {
-                        const resumeAt = currentProgRef.current.currentTime || currentTime;
-                        pendingRecoverySeekRef.current = resumeAt;
-                        setActiveMediaUrl(q.url);
-                        setActiveHeaders(q.headers);
-                        setActiveSourceType(q.sourceType);
-                        onSelectQuality?.(q.url);
-                        setActiveDialog(null);
-                        resetInactivityTimer();
-                      }}
-                      style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
-                    >
-                      {() => (
-                        <View style={styles.dialogItemInner}>
-                          <Text
-                            style={[
-                              styles.dialogItemText,
-                              isSelected && styles.dialogItemTextSelected,
-                            ]}
-                          >
-                            {q.name}
-                          </Text>
-                          {isSelected && (
-                            <MaterialCommunityIcons
-                              name="check-circle"
-                              size={20}
-                              color="#A78BFA"
-                              style={styles.dialogItemCheck}
-                            />
-                          )}
-                        </View>
+              {/* Quality Options: the sources (server + quality + tags) and,
+                  when the stream reports several resolutions, the video
+                  tracks -- same two lists as the mobile Server/Quality tabs. */}
+              {activeDialog === 'quality' && (
+                <>
+                  {usableQualities.length > 0 && hasTrackChoices && (
+                    <Text style={styles.dialogSectionLabel}>Sources</Text>
+                  )}
+                  {usableQualities.map((q, i) => {
+                    const isSelected = activeMediaUrl === q.url;
+                    const row = buildSourceRow(q, i);
+                    return (
+                      <TVFocusablePressable
+                        key={`quality-${i}`}
+                        hasTVPreferredFocus={i === 0}
+                        scaleFocused={1.02}
+                        focusedBorderColor="#8A5CF6"
+                        borderRadius={10}
+                        onPress={() => {
+                          const resumeAt = currentProgRef.current.currentTime || currentTime;
+                          pendingRecoverySeekRef.current = resumeAt;
+                          setActiveMediaUrl(q.url);
+                          setActiveHeaders(q.headers);
+                          setActiveSourceType(q.sourceType);
+                          onSelectQuality?.(q.url);
+                          setActiveDialog(null);
+                          resetInactivityTimer();
+                        }}
+                        style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
+                      >
+                        {() => (
+                          <DialogRowBody title={row.title} chips={row.chips} selected={isSelected} />
+                        )}
+                      </TVFocusablePressable>
+                    );
+                  })}
+
+                  {hasTrackChoices && (
+                    <>
+                      {usableQualities.length > 0 && (
+                        <Text style={styles.dialogSectionLabel}>Video quality</Text>
                       )}
-                    </TVFocusablePressable>
-                  );
-                })}
+                      <TVFocusablePressable
+                        hasTVPreferredFocus={usableQualities.length === 0}
+                        scaleFocused={1.02}
+                        focusedBorderColor="#8A5CF6"
+                        borderRadius={10}
+                        onPress={() => {
+                          setSelectedVideoTrack({ type: SelectedVideoTrackType.AUTO });
+                          setSelectedTrackListIdx(null);
+                          setActiveDialog(null);
+                          resetInactivityTimer();
+                        }}
+                        style={[
+                          styles.dialogItem,
+                          selectedTrackListIdx === null && styles.dialogItemSelected,
+                        ]}
+                      >
+                        {() => (
+                          <DialogRowBody
+                            title="Auto"
+                            detail="Adaptive bitrate"
+                            selected={selectedTrackListIdx === null}
+                          />
+                        )}
+                      </TVFocusablePressable>
+
+                      {videoTracks.map((track: any, i: number) => {
+                        const isSelected = selectedTrackListIdx === i;
+                        const info = describeVideoTrack(track);
+                        return (
+                          <TVFocusablePressable
+                            key={`vtrack-${i}`}
+                            scaleFocused={1.02}
+                            focusedBorderColor="#8A5CF6"
+                            borderRadius={10}
+                            onPress={() => {
+                              if (typeof track.index === 'number' && track.index >= 0) {
+                                setSelectedVideoTrack({
+                                  type: SelectedVideoTrackType.INDEX,
+                                  value: String(track.index),
+                                });
+                              } else if (track.height) {
+                                setSelectedVideoTrack({
+                                  type: SelectedVideoTrackType.RESOLUTION,
+                                  value: String(track.height),
+                                });
+                              }
+                              setSelectedTrackListIdx(i);
+                              setActiveDialog(null);
+                              resetInactivityTimer();
+                            }}
+                            style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
+                          >
+                            {() => (
+                              <DialogRowBody
+                                title={info.title}
+                                chips={info.tier ? [info.tier] : []}
+                                detail={info.detail}
+                                selected={isSelected}
+                              />
+                            )}
+                          </TVFocusablePressable>
+                        );
+                      })}
+                    </>
+                  )}
+
+                  {usableQualities.length === 0 && !hasTrackChoices && (
+                    <Text style={styles.dialogEmptyText}>
+                      {videoTracks.length === 1
+                        ? 'This stream has a single quality'
+                        : videoSize
+                        ? 'No quality options reported for this stream'
+                        : 'Loading video tracks...'}
+                    </Text>
+                  )}
+                </>
+              )}
             </ScrollView>
           </View>
         </View>
@@ -2338,6 +2638,53 @@ const styles = StyleSheet.create({
   },
   dialogItemCheck: {
     flexShrink: 0,
+  },
+  // Body of a picker row: wrapped title, optional chips + detail line.
+  dialogItemBody: {
+    flexShrink: 1,
+  },
+  dialogChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  dialogChip: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  dialogChipText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  dialogItemDetail: {
+    color: 'rgba(255, 255, 255, 0.55)',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
+  },
+  dialogSectionLabel: {
+    color: '#B4B9C4',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginTop: 6,
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  dialogEmptyText: {
+    color: '#B4B9C4',
+    fontSize: 14,
+    lineHeight: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
   },
 
   // ---- "Up Next" popup ----------------------------------------------
