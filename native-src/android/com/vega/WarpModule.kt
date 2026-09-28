@@ -22,6 +22,15 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "WarpModule"
 
+// The bundled usque is a static GOOS=linux Go binary. Unlike a GOOS=android
+// build, Go's x509 package then looks for CA roots only in Linux paths
+// (/etc/ssl/certs, ...) that don't exist on Android, so every HTTPS call fails
+// with "certificate signed by unknown authority". SSL_CERT_DIR (honoured by Go
+// on Linux, colon-separated, missing dirs ignored) points it at Android's real
+// system trust store. Android 14 moved that store into the conscrypt APEX and
+// leaves /system/etc/security/cacerts as a compatibility path.
+private const val ANDROID_CA_DIRS = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
+
 class WarpModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext), LifecycleEventListener {
 
@@ -198,6 +207,7 @@ class WarpModule(reactContext: ReactApplicationContext) :
                     val regPb = ProcessBuilder(binary.absolutePath, "-c", configFile.absolutePath, "register", "-a")
                     regPb.directory(getWarpDir())
                     regPb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
+                    regPb.environment()["SSL_CERT_DIR"] = ANDROID_CA_DIRS
                     val proxyUrl = "http://127.0.0.1:${regProxy.port}"
                     regPb.environment()["HTTPS_PROXY"] = proxyUrl
                     regPb.environment()["https_proxy"] = proxyUrl
@@ -251,6 +261,7 @@ class WarpModule(reactContext: ReactApplicationContext) :
                 )
                 pb.directory(getWarpDir())
                 pb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
+                pb.environment()["SSL_CERT_DIR"] = ANDROID_CA_DIRS
                 pb.redirectErrorStream(true)
                 val proc = pb.start()
                 warpProcess = proc
