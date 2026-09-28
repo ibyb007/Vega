@@ -14,10 +14,12 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ProxySelector
+import java.net.Socket
 import java.net.SocketAddress
 import java.net.URI
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 
 private const val TAG = "DohOkHttpFactory"
 
@@ -53,6 +55,15 @@ class DohOkHttpFactory(private val cacheDir: File) : OkHttpClientFactory {
     // the tunnel; read here on every request via the ProxySelector below.
     @Volatile
     var warpProxyPort: Int? = null
+
+    // Local port of the ByeDPI (ciadpi) SOCKS5 listener, or null when it
+    // isn't running. Unlike WARP, this isn't routed via ProxySelector --
+    // OkHttp still resolves DNS itself (via DoH above), and ByeDpiSocket
+    // below tunnels the already-resolved IP through ByeDPI's SOCKS5 port,
+    // which is what lets ByeDPI apply its TLS-fragmentation tricks per
+    // connection without giving up DoH-based DNS resolution.
+    @Volatile
+    var byeDpiProxyPort: Int? = null
 
     private var cachedDoh: DnsOverHttps? = null
     private var lastConfigKey: String = ""
@@ -107,6 +118,7 @@ class DohOkHttpFactory(private val cacheDir: File) : OkHttpClientFactory {
         return OkHttpClient.Builder()
             .dns(DynamicDns())
             .cookieJar(ReactCookieJarContainer())
+            .socketFactory(ByeDpiSocketFactory())
             .proxySelector(object : ProxySelector() {
                 override fun select(uri: URI?): List<Proxy> {
                     val host = uri?.host?.lowercase()
@@ -142,6 +154,152 @@ private class FallbackDns(private val primary: DnsOverHttps) : Dns {
         } catch (e: Exception) {
             Log.w(TAG, "DoH error for $hostname, falling back to system DNS", e)
             Dns.SYSTEM.lookup(hostname)
+        }
+    }
+}
+
+class ByeDpiSocketFactory : SocketFactory() {
+    override fun createSocket(): Socket {
+        return ByeDpiSocket()
+    }
+
+    override fun createSocket(host: String?, port: Int): Socket {
+        val socket = ByeDpiSocket()
+        socket.connect(InetSocketAddress(host, port))
+        return socket
+    }
+
+    override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket {
+        val socket = ByeDpiSocket()
+        socket.bind(InetSocketAddress(localHost, localPort))
+        socket.connect(InetSocketAddress(host, port))
+        return socket
+    }
+
+    override fun createSocket(host: InetAddress?, port: Int): Socket {
+        val socket = ByeDpiSocket()
+        socket.connect(InetSocketAddress(host, port))
+        return socket
+    }
+
+    override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket {
+        val socket = ByeDpiSocket()
+        socket.bind(InetSocketAddress(localAddress, localPort))
+        socket.connect(InetSocketAddress(address, port))
+        return socket
+    }
+}
+
+class ByeDpiSocket : Socket() {
+
+    override fun connect(endpoint: SocketAddress?, timeout: Int) {
+        val byeDpiPort = DohOkHttpFactory.instance?.byeDpiProxyPort
+        val inetEndpoint = endpoint as? InetSocketAddress
+
+        val hostAddress = inetEndpoint?.address
+        val hostName = inetEndpoint?.hostString?.lowercase()
+        val isLocal = hostName == "127.0.0.1" || hostName == "localhost" ||
+                hostAddress?.isLoopbackAddress == true
+
+        if (byeDpiPort == null || byeDpiPort <= 0 || isLocal || inetEndpoint == null) {
+            super.connect(endpoint, timeout)
+            return
+        }
+
+        // 1. Connect underlying socket to local ByeDPI proxy
+        super.connect(InetSocketAddress("127.0.0.1", byeDpiPort), timeout)
+
+        val oldSoTimeout = soTimeout
+        soTimeout = if (timeout > 0) timeout else 10000
+
+        try {
+            val input = getInputStream()
+            val output = getOutputStream()
+
+            // 2. SOCKS5 greeting: VER=5, NMETHODS=1, METHOD=0 (No Authentication)
+            output.write(byteArrayOf(0x05, 0x01, 0x00))
+            output.flush()
+
+            val greetingResp = ByteArray(2)
+            readFully(input, greetingResp)
+            if (greetingResp[0] != 0x05.toByte() || greetingResp[1] != 0x00.toByte()) {
+                throw IOException("SOCKS5 greeting failed: ver=${greetingResp[0]}, auth=${greetingResp[1]}")
+            }
+
+            // 3. SOCKS5 request: VER=5, CMD=1 (CONNECT), RSV=0, ATYP
+            val targetPort = inetEndpoint.port
+            val targetIp = hostAddress?.address
+
+            if (targetIp != null) {
+                // Pass the DoH-resolved IP directly (IPv4 or IPv6) so ByeDPI skips local DNS
+                val isIpv4 = targetIp.size == 4
+                val atyp = if (isIpv4) 0x01.toByte() else 0x04.toByte()
+                val req = ByteArray(4 + targetIp.size + 2)
+                req[0] = 0x05
+                req[1] = 0x01
+                req[2] = 0x00
+                req[3] = atyp
+                System.arraycopy(targetIp, 0, req, 4, targetIp.size)
+                req[req.size - 2] = (targetPort ushr 8).toByte()
+                req[req.size - 1] = (targetPort and 0xFF).toByte()
+                output.write(req)
+                output.flush()
+            } else {
+                val domainBytes = (inetEndpoint.hostString ?: "").toByteArray(Charsets.UTF_8)
+                val req = ByteArray(4 + 1 + domainBytes.size + 2)
+                req[0] = 0x05
+                req[1] = 0x01
+                req[2] = 0x00
+                req[3] = 0x03.toByte() // DOMAIN
+                req[4] = domainBytes.size.toByte()
+                System.arraycopy(domainBytes, 0, req, 5, domainBytes.size)
+                req[req.size - 2] = (targetPort ushr 8).toByte()
+                req[req.size - 1] = (targetPort and 0xFF).toByte()
+                output.write(req)
+                output.flush()
+            }
+
+            // 4. SOCKS5 response header: VER, REP, RSV, ATYP
+            val respHeader = ByteArray(4)
+            readFully(input, respHeader)
+            val rep = respHeader[1].toInt() and 0xFF
+            if (rep != 0x00) {
+                throw IOException("SOCKS5 connect error code: $rep")
+            }
+
+            // Consume bound address
+            when (respHeader[3].toInt() and 0xFF) {
+                0x01 -> { // IPv4: 4 bytes IP + 2 bytes port
+                    val bnd = ByteArray(6)
+                    readFully(input, bnd)
+                }
+                0x03 -> { // Domain: 1 byte len + len bytes + 2 bytes port
+                    val len = input.read()
+                    if (len < 0) throw java.io.EOFException("Unexpected EOF reading SOCKS5 domain length")
+                    val bnd = ByteArray(len + 2)
+                    readFully(input, bnd)
+                }
+                0x04 -> { // IPv6: 16 bytes IP + 2 bytes port
+                    val bnd = ByteArray(18)
+                    readFully(input, bnd)
+                }
+                else -> {
+                    throw IOException("Unsupported SOCKS5 ATYP: ${respHeader[3]}")
+                }
+            }
+        } finally {
+            soTimeout = oldSoTimeout
+        }
+    }
+
+    private fun readFully(input: java.io.InputStream, buffer: ByteArray) {
+        var offset = 0
+        while (offset < buffer.size) {
+            val bytesRead = input.read(buffer, offset, buffer.size - offset)
+            if (bytesRead < 0) {
+                throw java.io.EOFException("Unexpected EOF during SOCKS5 handshake")
+            }
+            offset += bytesRead
         }
     }
 }
