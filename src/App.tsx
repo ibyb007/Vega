@@ -43,8 +43,8 @@ export interface ActiveStreamPayload {
   linkTitle?: string;
   episodes?: any[];
   currentEpisodeIndex?: number;
-  servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
-  qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
+  servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
+  qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
   skip?: SkipInterval[];
   // Passed straight through to TVPlayerScreen's TheIntroDB lookup.
   tmdbId?: number | string;
@@ -377,7 +377,11 @@ export default function App() {
                           ? {
                               ...prev,
                               url: nextEp.url || prev.url,
-                              title: nextEp.title || prev.title,
+                              // Keep the series/movie title: the player and
+                              // Continue Watching derive "Series.S01E02-Name"
+                              // from it plus the episode's own season/number/
+                              // name -- overwriting it with the episode name
+                              // is what dropped the series name.
                               currentEpisodeIndex: nextIndex,
                               episodeId: nextEpisodeId,
                               headers: nextEp.headers,
