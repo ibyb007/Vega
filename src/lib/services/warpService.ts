@@ -1,7 +1,7 @@
 import {NativeModules, Platform, ToastAndroid} from 'react-native';
 import {settingsStorage} from '../storage';
 
-const {WarpModule} = NativeModules;
+const {WarpModule, ByeDpiModule} = NativeModules;
 
 export interface WarpStatus {
   running: boolean;
@@ -36,6 +36,12 @@ export const getWarpStatus = async (): Promise<WarpStatus> => {
 export const toggleWarp = async (enabled: boolean): Promise<WarpStatus> => {
   settingsStorage.setWarpEnabled(enabled);
   if (enabled) {
+    // Mutually exclusive with ByeDPI -- both tunnel all app traffic through
+    // a local proxy, so only one can usefully be active at a time.
+    settingsStorage.setByeDpiEnabled(false);
+    if (ByeDpiModule) {
+      ByeDpiModule.stopByeDpi().catch(() => {});
+    }
     return await startWarp();
   }
   return await stopWarp();
