@@ -1446,6 +1446,19 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           url: s.link,
           headers: s.headers,
           sourceType: s.type,
+          server: s.server,
+          quality: s.quality,
+          tags: (() => {
+            const raw: any[] = Array.isArray((s as any).tags)
+              ? (s as any).tags
+              : typeof (s as any).tag === 'string'
+              ? [(s as any).tag]
+              : [];
+            const q = String(s.quality ?? '').trim().toLowerCase();
+            return raw
+              .map((t) => (typeof t === 'string' ? t.trim() : ''))
+              .filter((t) => Boolean(t) && t.toLowerCase() !== q);
+          })(),
         }));
 
         const episodesToSend =
