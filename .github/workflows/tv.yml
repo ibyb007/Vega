@@ -163,29 +163,35 @@ jobs:
       - name: Build ciadpi (ByeDPI Anti-DPI) for Android
         # Upstream: https://github.com/hufrea/byedpi -- a small, dependency-free
         # C SOCKS5 proxy that applies TLS-fragmentation/desync tricks per
-        # connection. Built here from pinned source for both ABIs (statically
-        # linked, so it runs fine on-device without needing the NDK/bionic
-        # libc) rather than committing binaries, for the same reproducibility
-        # reasons as the libusque build above.
+        # connection. Built with a musl toolchain (Zig's bundled clang, from
+        # PyPI) as static-PIE, the same shape as the ciadpi shipped in the
+        # original mobile app. Do NOT switch this back to a glibc cross-compiler
+        # (gcc-aarch64-linux-gnu etc.): glibc-static binaries start up
+        # differently (extra syscalls) and did not start inside the Android app
+        # sandbox, while musl-static ones do.
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          python3 -m venv /tmp/zigenv
+          /tmp/zigenv/bin/pip install --quiet ziglang==0.16.0
+          ZIGCC="/tmp/zigenv/bin/python -m ziglang cc"
           BYEDPI_TAG="v0.17.3"
           git clone --quiet --depth 1 --branch "$BYEDPI_TAG" https://github.com/hufrea/byedpi.git /tmp/byedpi-src
           cd /tmp/byedpi-src
           SRC="packets.c main.c conev.c proxy.c desync.c mpool.c extend.c"
-          CFLAGS="-D_DEFAULT_SOURCE -I. -std=c99 -O2 -Wall -Wno-unused -Wextra -Wno-unused-parameter -pedantic -static -s"
+          CFLAGS="-D_DEFAULT_SOURCE -I. -std=c99 -O2 -w -s -fPIE -pie -static"
 
           build_abi() {
-            local cc="$1" abi="$2"
-            echo "Building libciadpi.so for $abi"
-            mkdir -p "$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi"
-            "$cc" $CFLAGS -o "$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi/libciadpi.so" $SRC
+            local target="$1" extra="$2" abi="$3"
+            local out="$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi/libciadpi.so"
+            echo "Building libciadpi.so for $abi ($target)"
+            mkdir -p "$(dirname "$out")"
+            $ZIGCC -target "$target" $extra $CFLAGS -o "$out" $SRC
+            file "$out"
+            file "$out" | grep -q "statically linked\|static-pie" || { echo "ERROR: $abi build is not static"; exit 1; }
           }
 
-          build_abi aarch64-linux-gnu-gcc arm64-v8a
-          build_abi arm-linux-gnueabihf-gcc armeabi-v7a
+          build_abi aarch64-linux-musl "" arm64-v8a
+          build_abi arm-linux-musleabihf "-mcpu=generic+v7a" armeabi-v7a
 
       - name: Generate Android Native Project
         env:
