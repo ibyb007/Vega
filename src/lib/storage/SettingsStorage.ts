@@ -13,6 +13,8 @@ const SETTINGS_KEYS = {
   DOH_PROVIDER: 'dohProvider',
   DOH_CUSTOM_URL: 'dohCustomUrl',
   WARP_ENABLED: 'warpEnabled',
+  BYEDPI_ENABLED: 'byedpiEnabled',
+  BYEDPI_CMD_ARGS: 'byedpiCmdArgs',
   TMDB_API_KEY: 'tmdbApiKey',
   TMDB_API_KEY_REVISION: 'tmdbApiKeyRevision',
   AUTO_CHECK_UPDATE: 'autoCheckUpdate',
@@ -120,6 +122,23 @@ export class SettingsStorage {
 
   setWarpEnabled(enabled: boolean): void {
     MMKV.setBool(SETTINGS_KEYS.WARP_ENABLED, enabled);
+  }
+
+  // ByeDPI Anti-DPI
+  isByeDpiEnabled(): boolean {
+    return MMKV.getBool(SETTINGS_KEYS.BYEDPI_ENABLED, true);
+  }
+
+  setByeDpiEnabled(enabled: boolean): void {
+    MMKV.setBool(SETTINGS_KEYS.BYEDPI_ENABLED, enabled);
+  }
+
+  getByeDpiCmdArgs(): string {
+    return MMKV.getString(SETTINGS_KEYS.BYEDPI_CMD_ARGS) || '';
+  }
+
+  setByeDpiCmdArgs(args: string): void {
+    MMKV.setString(SETTINGS_KEYS.BYEDPI_CMD_ARGS, args);
   }
 
   // TMDB Metadata
