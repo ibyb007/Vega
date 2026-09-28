@@ -33,6 +33,7 @@ import { settingsStorage } from '../../lib/storage';
 import { formatEpisodeLabel as formatSeasonEpisodeLabel } from '../../lib/utils/episodeParsing';
 import { fetchIntroDbSegments } from '../../lib/services/theIntroDbService';
 import { resolveTmdbId } from '../../lib/services/tmdbIdResolver';
+import { useTorrentPlayback } from '../../lib/hooks/useTorrentPlayback';
 import type { IntroDbSegment } from '../../lib/services/theIntroDbService';
 import type { EpisodeLink, TextTracks, SkipInterval } from '../../lib/providers/types';
 
@@ -755,14 +756,36 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     };
   }, []);
 
+  // Torrent sources (magnet links) can't be handed to ExoPlayer directly: the
+  // native libtorrent engine downloads them and serves the chosen file over
+  // http://127.0.0.1, and *that* URL is what the player opens. `activeMediaUrl`
+  // stays the original link so the source/quality dialogs keep highlighting
+  // the right row.
+  const torrent = useTorrentPlayback(activeMediaUrl, activeSourceType, {
+    season: episodes[currentEpisodeIndex]?.season,
+    episode: episodes[currentEpisodeIndex]?.episodeNumber,
+  });
+  const playableUrl = torrent.isTorrent ? torrent.playableUrl : activeMediaUrl || streamUrl;
+  const torrentFailed = torrent.isTorrent && torrent.phase === 'error';
+  const torrentWaiting = torrent.isTorrent && !torrent.playableUrl && !torrentFailed;
+  const torrentRetryRef = useRef(0);
+  useEffect(() => {
+    torrentRetryRef.current = 0;
+  }, [activeMediaUrl]);
+  useEffect(() => {
+    if (torrentFailed && torrent.error) {
+      ToastAndroid.show(`Torrent error: ${torrent.error}`, ToastAndroid.LONG);
+    }
+  }, [torrentFailed, torrent.error]);
+
   const videoSource = useMemo(
     () => ({
-      uri: activeMediaUrl || streamUrl,
-      headers: activeHeaders,
+      uri: playableUrl || '',
+      headers: torrent.isTorrent ? undefined : activeHeaders,
       ...(activeSourceType === 'm3u8' ? { type: 'm3u8' as const } : {}),
       ...(activeSourceType === 'mpd' ? { type: 'mpd' as const } : {}),
     }),
-    [activeMediaUrl, streamUrl, activeHeaders, activeSourceType]
+    [playableUrl, torrent.isTorrent, activeHeaders, activeSourceType]
   );
 
   const autoSelectEnglishSubtitle = useCallback((tracks: any[]) => {
@@ -1221,7 +1244,11 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   ]);
 
   const openInVLC = async () => {
-    await launchVideo(activeMediaUrl || streamUrl, title, 'vlc', activeHeaders);
+    if (torrent.isTorrent && !torrent.playableUrl) {
+      ToastAndroid.show('Torrent is not ready yet', ToastAndroid.SHORT);
+      return;
+    }
+    await launchVideo(playableUrl || activeMediaUrl || streamUrl, title, 'vlc', activeHeaders);
   };
 
   // Resolves and plays an arbitrary episode by its absolute index into
@@ -1327,6 +1354,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   return (
     <View style={styles.container}>
+      {!!playableUrl && (
       <Video
         ref={videoRef}
         source={videoSource}
@@ -1453,6 +1481,24 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             return;
           }
 
+          // Torrent source: the local stream server is just waiting on peers.
+          // Re-open the same file (resuming where we were) instead of falling
+          // through to the generic recovery below, which would swap the chosen
+          // torrent for whatever the provider lists first.
+          if (torrent.isTorrent) {
+            if (torrentRetryRef.current < 3) {
+              torrentRetryRef.current += 1;
+              pendingRecoverySeekRef.current = currentProgRef.current.currentTime;
+              setBuffering(true);
+              ToastAndroid.show('Waiting for peers, retrying...', ToastAndroid.SHORT);
+              torrent.reloadPlayer();
+              return;
+            }
+            ToastAndroid.show('Torrent stalled - try another source', ToastAndroid.LONG);
+            setBuffering(false);
+            return;
+          }
+
           const recoveryLink = episodes[currentEpisodeIndex]?.link || itemLink;
           if (isIoError && recoveryLink && providerValue && recoveryAttemptsRef.current < 2) {
             recoveryAttemptsRef.current += 1;
@@ -1483,10 +1529,18 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           setBuffering(false);
         }}
       />
+      )}
 
-      {buffering && (
+      {(buffering || torrentWaiting || torrentFailed) && (
         <View style={styles.centerLoading}>
-          <ActivityIndicator size="large" color="#8A5CF6" />
+          {!torrentFailed && <ActivityIndicator size="large" color="#8A5CF6" />}
+          {torrent.isTorrent && (torrentFailed || !!torrent.statusText) && (
+            <Text style={styles.torrentStatusText}>
+              {torrentFailed
+                ? `Couldn't start torrent: ${torrent.error}\nPress OK to pick another source.`
+                : torrent.statusText}
+            </Text>
+          )}
         </View>
       )}
 
@@ -2390,6 +2444,14 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  torrentStatusText: {
+    marginTop: 16,
+    maxWidth: 720,
+    paddingHorizontal: 24,
+    color: '#E5E7EB',
+    fontSize: 20,
+    textAlign: 'center',
   },
   controlsWrapper: {
     position: 'absolute',
