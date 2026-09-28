@@ -13,6 +13,8 @@ export interface TorrentAddResult {
   infoHash: string;
   state: string;
   hasMetadata: boolean;
+  /** Set by addTorrentForStream when the torrent already existed (e.g. a download). */
+  foreign?: boolean;
   name?: string;
   totalSize?: number;
   files?: TorrentFile[];
@@ -70,6 +72,15 @@ class TorrentManager {
       options?.output_folder || null,
       options?.file_name || null,
     );
+  }
+
+  /**
+   * Adds a magnet for streaming: cached under the app's cache dir, never
+   * queued behind other torrents, and safe to remove with deleteTorrent().
+   */
+  async addTorrentForStream(magnet: string): Promise<TorrentAddResult> {
+    await this.init();
+    return await TorrentModule.addTorrentForStream(magnet);
   }
 
   async getStats(infoHash: string): Promise<TorrentStats> {
