@@ -43,6 +43,20 @@ import type { Info, Link, EpisodeLink, TextTracks } from '../../lib/providers/ty
 const toPlayerChoice = (pref: 'exo' | 'vlc' | 'system'): PlayerChoice =>
   pref === 'vlc' ? 'vlc' : pref === 'system' ? 'external' : 'exoplayer';
 
+// Provider tags for a stream (mirrors the mobile app's server list): the
+// `tags` array or a single `tag`, minus anything that just repeats the quality.
+const extractStreamTags = (stream: any): string[] => {
+  const raw: any[] = Array.isArray(stream?.tags)
+    ? stream.tags
+    : typeof stream?.tag === 'string'
+    ? [stream.tag]
+    : [];
+  const quality = String(stream?.quality ?? '').trim().toLowerCase();
+  return raw
+    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .filter((t) => Boolean(t) && t.toLowerCase() !== quality);
+};
+
 // Check against Settings' excluded qualities (Settings -> Quality). Handles
 // "1080", "1080p", "4k", "2160p" etc. -- same helper used by
 // TVDiscoverScreen/TVPlayerScreen so a quality excluded there is excluded
@@ -231,8 +245,8 @@ interface TVDetailsScreenProps {
       // provider has none (see lib/services/tmdbIdResolver.ts).
       mediaTitle?: string;
       mediaYear?: string | number;
-      servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
-      qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string }[];
+      servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
+      qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
       headers?: Record<string, string>;
       sourceType?: string;
       subtitles?: TextTracks;
@@ -999,6 +1013,11 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           url: s.link,
           headers: s.headers,
           sourceType: s.type,
+          // Shown in the player's quality picker (server name, quality and
+          // provider tags), like the mobile app's server list.
+          server: s.server,
+          quality: s.quality,
+          tags: extractStreamTags(s),
         }));
 
         // This screen is about to be unmounted by the player -- leave
