@@ -24,6 +24,14 @@ import {
   getWarpStatus,
   toggleWarp,
 } from '../../lib/services/warpService';
+import {
+  BYEDPI_PRESETS,
+  DEFAULT_BYEDPI_ARGS,
+  getByeDpiStatus,
+  startByeDpi,
+  stopByeDpi,
+  toggleByeDpi,
+} from '../../lib/services/byeDpiService';
 import { clearAppCache } from '../../lib/clearAppCache';
 import { showAppDialog } from '../../lib/zustand/appDialogStore';
 import useThemeStore from '../../lib/zustand/themeStore';
@@ -124,6 +132,11 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   const [warpPort, setWarpPort] = useState<number | null>(null);
   const [isClearingCache, setIsClearingCache] = useState(false);
 
+  const [byeDpiEnabled, setByeDpiEnabled] = useState(false);
+  const [isByeDpiBusy, setIsByeDpiBusy] = useState(false);
+  const [byeDpiPort, setByeDpiPort] = useState<number | null>(null);
+  const [byeDpiArgs, setByeDpiArgs] = useState(DEFAULT_BYEDPI_ARGS);
+
   // Custom TMDB key. `savedTmdbKey` mirrors what's in storage; the rest is
   // the edit dialog's own state. A key saved here takes priority over the
   // one bundled at build time (see `getTmdbApiKey()` in useTmdbStory.ts).
@@ -161,7 +174,13 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
       setActiveDohProvider(provider);
       setSelectedPlayer(player);
       setExcludedQualities(excluded);
-      setWarpEnabled(settingsStorage?.isWarpEnabled ? settingsStorage.isWarpEnabled() : false);
+      const warpOn = settingsStorage?.isWarpEnabled ? settingsStorage.isWarpEnabled() : false;
+      setWarpEnabled(warpOn);
+      // WARP and AntiDPI are mutually exclusive; WARP wins if both flags are set.
+      const byeOn = settingsStorage?.isByeDpiEnabled ? settingsStorage.isByeDpiEnabled() : true;
+      setByeDpiEnabled(byeOn && !warpOn);
+      const storedArgs = settingsStorage?.getByeDpiCmdArgs ? settingsStorage.getByeDpiCmdArgs() : '';
+      setByeDpiArgs(storedArgs || DEFAULT_BYEDPI_ARGS);
     } catch (e) {
       console.warn('[TVSettingsScreen] Init error:', e);
     }
@@ -169,6 +188,11 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     getWarpStatus()
       .then((res) => {
         if (res.running && res.port) setWarpPort(res.port);
+      })
+      .catch(() => {});
+    getByeDpiStatus()
+      .then((res) => {
+        if (res.running && res.port) setByeDpiPort(res.port);
       })
       .catch(() => {});
   }, []);
@@ -203,11 +227,76 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     ToastAndroid.show(`DNS Provider set to ${providerId}`, ToastAndroid.SHORT);
   };
 
+  const showByeDpiError = (e: any) => {
+    ToastAndroid.show(`AntiDPI error: ${e?.message || 'Failed to start'}`, ToastAndroid.LONG);
+    showAppDialog({
+      title: 'AntiDPI failed to start',
+      message: e?.message || 'Failed to start ByeDPI.',
+      variant: 'error',
+      actions: [{ label: 'OK' }],
+    });
+  };
+
+  const toggleByeDpiMode = async () => {
+    if (isByeDpiBusy) return;
+    const nextState = !byeDpiEnabled;
+    setIsByeDpiBusy(true);
+    setByeDpiEnabled(nextState);
+    if (nextState) {
+      // Mutually exclusive with WARP (native side is stopped by toggleByeDpi).
+      setWarpEnabled(false);
+      setWarpPort(null);
+    }
+    try {
+      const res = await toggleByeDpi(nextState, byeDpiArgs);
+      if (nextState && res.running) {
+        setByeDpiPort(res.port || null);
+        ToastAndroid.show(`AntiDPI enabled (Port ${res.port})`, ToastAndroid.SHORT);
+      } else if (!nextState) {
+        setByeDpiPort(null);
+        ToastAndroid.show('AntiDPI disabled', ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      setByeDpiEnabled(false);
+      setByeDpiPort(null);
+      settingsStorage?.setByeDpiEnabled?.(false);
+      showByeDpiError(e);
+    } finally {
+      setIsByeDpiBusy(false);
+    }
+  };
+
+  const handleSelectByeDpiPreset = async (args: string) => {
+    if (isByeDpiBusy) return;
+    setByeDpiArgs(args);
+    settingsStorage?.setByeDpiCmdArgs?.(args);
+    if (!byeDpiEnabled) return;
+    setIsByeDpiBusy(true);
+    try {
+      await stopByeDpi();
+      const res = await startByeDpi(args);
+      setByeDpiPort(res.port || null);
+      ToastAndroid.show('AntiDPI strategy applied', ToastAndroid.SHORT);
+    } catch (e: any) {
+      setByeDpiEnabled(false);
+      setByeDpiPort(null);
+      settingsStorage?.setByeDpiEnabled?.(false);
+      showByeDpiError(e);
+    } finally {
+      setIsByeDpiBusy(false);
+    }
+  };
+
   const toggleWarpMode = async () => {
     if (isWarpBusy) return;
     const nextState = !warpEnabled;
     setIsWarpBusy(true);
     setWarpEnabled(nextState);
+    if (nextState) {
+      // Mutually exclusive with AntiDPI (native side is stopped by toggleWarp).
+      setByeDpiEnabled(false);
+      setByeDpiPort(null);
+    }
 
     try {
       if (nextState) {
@@ -561,6 +650,102 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
           </View>
         )}
       </TVFocusablePressable>
+
+      <TVFocusablePressable
+        key={keyFor('byedpi-toggle')}
+        ref={registerItem('byedpi-toggle')}
+        hasTVPreferredFocus={shouldPreferFocus('byedpi-toggle', false)}
+        onFocus={() => (lastFocusedSettingsKey = 'byedpi-toggle')}
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        onPress={toggleByeDpiMode}
+        style={[styles.settingCard, { marginTop: 12 }]}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View style={[styles.iconContainer, { backgroundColor: byeDpiEnabled ? primaryColor : '#252530' }]}>
+              <MaterialCommunityIcons name="shield-half-full" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={styles.settingTitle}>AntiDPI Mode</Text>
+                {byeDpiEnabled && byeDpiPort ? (
+                  <View
+                    style={{
+                      marginLeft: 8,
+                      paddingHorizontal: 6,
+                      paddingVertical: 2,
+                      borderRadius: 4,
+                      backgroundColor: 'rgba(138, 92, 246, 0.25)',
+                    }}
+                  >
+                    <Text style={{ color: primaryColor, fontSize: 10, fontWeight: '700' }}>
+                      Active :{byeDpiPort}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={styles.settingSubtitle}>
+                Splits and reorders TLS packets on-device so your ISP's deep packet inspection can't
+                single out blocked hosts. No server in the middle, so speed is unaffected. Turning
+                this on turns WARP off.
+              </Text>
+            </View>
+            {isByeDpiBusy ? (
+              <ActivityIndicator size="small" color={primaryColor} />
+            ) : (
+              <Switch
+                value={byeDpiEnabled}
+                onValueChange={toggleByeDpiMode}
+                disabled={isByeDpiBusy}
+                thumbColor={byeDpiEnabled ? primaryColor : '#9CA3AF'}
+                trackColor={{ false: '#374151', true: 'rgba(138, 92, 246, 0.4)' }}
+              />
+            )}
+          </View>
+        )}
+      </TVFocusablePressable>
+
+      {byeDpiEnabled && (
+        <View style={styles.subGroup}>
+          <Text style={styles.subGroupTitle}>AntiDPI Strategy</Text>
+          {BYEDPI_PRESETS.map((preset) => {
+            const isSelected = byeDpiArgs.trim() === preset.args;
+            const rowKey = `byedpi-preset-${preset.id}`;
+            return (
+              <TVFocusablePressable
+                key={keyFor(rowKey)}
+                ref={registerItem(rowKey)}
+                hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
+                onFocus={() => (lastFocusedSettingsKey = rowKey)}
+                scaleFocused={1.02}
+                focusedBorderColor={primaryColor}
+                borderRadius={10}
+                onPress={() => handleSelectByeDpiPreset(preset.args)}
+                style={[
+                  styles.optionCard,
+                  isSelected && { borderColor: primaryColor, backgroundColor: 'rgba(138, 92, 246, 0.12)' },
+                ]}
+              >
+                {() => (
+                  <View style={styles.optionRow}>
+                    <View style={styles.optionTextContainer}>
+                      <Text style={[styles.optionTitle, isSelected && { color: primaryColor, fontWeight: '700' }]}>
+                        {preset.name}
+                      </Text>
+                      <Text style={styles.optionDesc}>{preset.description}</Text>
+                    </View>
+                    <View style={[styles.radioCircle, isSelected && { borderColor: primaryColor }]}>
+                      {isSelected && <View style={[styles.radioDot, { backgroundColor: primaryColor }]} />}
+                    </View>
+                  </View>
+                )}
+              </TVFocusablePressable>
+            );
+          })}
+        </View>
+      )}
 
       {/* Video Player Selection Section */}
       <Text style={styles.sectionHeader}>Default Video Player</Text>
