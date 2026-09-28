@@ -14,7 +14,10 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.uimanager.ViewManager
 import com.facebook.react.modules.network.OkHttpClientProvider
 import java.io.File
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "WarpModule"
@@ -182,9 +185,24 @@ class WarpModule(reactContext: ReactApplicationContext) :
                 val dnsServersEnv = getUsqueDnsServersEnv()
                 if (!configFile.exists() || configFile.length() == 0L) {
                     Log.i(TAG, "Registering Cloudflare WARP account non-interactively (-a)...")
+                    // usque's Go DNS resolver can't find a nameserver on Android
+                    // (no /etc/resolv.conf), so it can't resolve
+                    // api.cloudflareclient.com. Go's http client honors
+                    // HTTPS_PROXY, so route registration through a tiny in-app
+                    // CONNECT proxy: Android's own resolver does the lookup and
+                    // the binary never needs DNS for this step, even if it is
+                    // an older build without the USQUE_DNS_SERVERS patch.
+                    val regProxy = LocalConnectProxy()
+                    regProxy.start()
+                    try {
                     val regPb = ProcessBuilder(binary.absolutePath, "-c", configFile.absolutePath, "register", "-a")
                     regPb.directory(getWarpDir())
                     regPb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
+                    val proxyUrl = "http://127.0.0.1:${regProxy.port}"
+                    regPb.environment()["HTTPS_PROXY"] = proxyUrl
+                    regPb.environment()["https_proxy"] = proxyUrl
+                    regPb.environment()["HTTP_PROXY"] = proxyUrl
+                    regPb.environment()["http_proxy"] = proxyUrl
                     regPb.redirectErrorStream(true)
                     val regProc = regPb.start()
 
@@ -209,10 +227,13 @@ class WarpModule(reactContext: ReactApplicationContext) :
 
                     val exitCode = regProc.exitValue()
                     if (exitCode != 0 || !configFile.exists() || configFile.length() == 0L) {
-                        promise.reject("WARP_REGISTRATION_FAILED", "Failed to register WARP client (exit $exitCode): $regOutput")
+                        promise.reject("WARP_REGISTRATION_FAILED", "Failed to register WARP client (exit $exitCode, proxy=127.0.0.1:${regProxy.port}, dns=$dnsServersEnv): $regOutput")
                         return@Thread
                     }
                     Log.i(TAG, "WARP registration completed successfully")
+                    } finally {
+                        regProxy.shutdown()
+                    }
                 }
 
                 val port = try {
@@ -322,5 +343,109 @@ class WarpPackage : ReactPackage {
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
         return emptyList()
+    }
+}
+
+// Minimal HTTP CONNECT proxy used only while registering the WARP account.
+// Hostnames are resolved with Android's system resolver, so the bundled Go
+// binary (which has no working DNS on Android) never has to.
+private class LocalConnectProxy : Thread("WarpRegisterProxy") {
+    private val server = ServerSocket(0, 20, InetAddress.getByName("127.0.0.1"))
+    val port: Int get() = server.localPort
+
+    @Volatile
+    private var running = true
+
+    init {
+        isDaemon = true
+    }
+
+    override fun run() {
+        while (running) {
+            val client = try {
+                server.accept()
+            } catch (_: Exception) {
+                break
+            }
+            Thread { handle(client) }.apply { isDaemon = true }.start()
+        }
+    }
+
+    fun shutdown() {
+        running = false
+        try {
+            server.close()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun readHead(input: java.io.InputStream): String? {
+        val sb = StringBuilder()
+        while (sb.length < 8192) {
+            val b = input.read()
+            if (b < 0) return null
+            sb.append(b.toChar())
+            if (sb.endsWith("\r\n\r\n")) return sb.toString()
+        }
+        return null
+    }
+
+    private fun handle(client: Socket) {
+        var upstream: Socket? = null
+        try {
+            client.soTimeout = 20000
+            val head = readHead(client.getInputStream()) ?: return
+            val parts = head.lineSequence().first().split(" ")
+            if (parts.size < 2 || !parts[0].equals("CONNECT", ignoreCase = true)) {
+                client.getOutputStream().write("HTTP/1.1 405 Method Not Allowed\r\n\r\n".toByteArray())
+                return
+            }
+            val hostPort = parts[1]
+            val idx = hostPort.lastIndexOf(':')
+            val host = if (idx > 0) hostPort.substring(0, idx).trim('[', ']') else hostPort
+            val port = if (idx > 0) hostPort.substring(idx + 1).toIntOrNull() ?: 443 else 443
+
+            var lastErr: Exception? = null
+            for (addr in InetAddress.getAllByName(host)) {
+                try {
+                    val s = Socket()
+                    s.connect(InetSocketAddress(addr, port), 10000)
+                    upstream = s
+                    break
+                } catch (e: Exception) {
+                    lastErr = e
+                }
+            }
+            val up = upstream
+            if (up == null) {
+                client.getOutputStream().write("HTTP/1.1 502 Bad Gateway\r\n\r\n".toByteArray())
+                Log.w(TAG, "Register proxy could not reach $host:$port: ${lastErr?.message}")
+                return
+            }
+            client.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
+            client.getOutputStream().flush()
+            client.soTimeout = 0
+
+            val t = Thread {
+                try {
+                    up.getInputStream().copyTo(client.getOutputStream())
+                } catch (_: Exception) {
+                } finally {
+                    try { client.close() } catch (_: Exception) {}
+                    try { up.close() } catch (_: Exception) {}
+                }
+            }
+            t.isDaemon = true
+            t.start()
+            try {
+                client.getInputStream().copyTo(up.getOutputStream())
+            } catch (_: Exception) {
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Register proxy error: ${e.message}")
+        } finally {
+            try { client.close() } catch (_: Exception) {}
+            try { upstream?.close() } catch (_: Exception) {}
+        }
     }
 }
