@@ -213,8 +213,27 @@ class ByeDpiModule(reactContext: ReactApplicationContext) :
                 }
 
                 if (!proc.isAlive || !isListening) {
+                    // Capture HOW it ended before stopInternal() kills it. Java
+                    // reports death-by-signal as 128 + signal number.
+                    val state = if (!proc.isAlive) {
+                        val code = proc.exitValue()
+                        val sig = when (code) {
+                            132 -> " (SIGILL: illegal instruction)"
+                            134 -> " (SIGABRT)"
+                            135 -> " (SIGBUS)"
+                            139 -> " (SIGSEGV: crashed)"
+                            159 -> " (SIGSYS: blocked syscall)"
+                            else -> ""
+                        }
+                        "process exited with code $code$sig"
+                    } else {
+                        "process is running but never opened the port within 3s"
+                    }
                     stopInternal()
-                    promise.reject("BYEDPI_START_FAILED", "ByeDPI failed to start or listen on port $port: $logLines")
+                    promise.reject(
+                        "BYEDPI_START_FAILED",
+                        "ByeDPI failed to start on port $port: $state. ABI=${android.os.Build.SUPPORTED_ABIS.firstOrNull()}, binary=${binary.absolutePath}. Output: ${logLines.toString().trim().ifEmpty { "(none)" }}"
+                    )
                     return@Thread
                 }
 
