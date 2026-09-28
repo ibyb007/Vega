@@ -13,6 +13,12 @@ class TorrentModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
     companion object {
         private const val TAG = "TorrentModule"
         private const val STREAM_STARTUP_BYTES = 8L * 1024L * 1024L
+        // prepareVideoFile waits for this much of the file head before resolving,
+        // so the player starts with data flowing instead of stalling on piece 2.
+        private const val STREAM_WARMUP_BYTES = 2L * 1024L * 1024L
+        // Tail of the file (MP4 moov atom / MKV cues) is fetched early, not awaited.
+        private const val STREAM_TAIL_BYTES = 2L * 1024L * 1024L
+        private const val STREAM_TAIL_MAX_PIECE = 8L * 1024L * 1024L
         private var sessionManager: SessionManager? = null
         private var streamServer: TorrentStreamServer? = null
         private val torrentHandles = mutableMapOf<String, TorrentHandle>()
@@ -66,6 +72,38 @@ class TorrentModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
 
     @ReactMethod
     fun addTorrent(magnetOrUrl: String, outputFolder: String?, fileName: String?, promise: Promise) {
+        addTorrentInternal(magnetOrUrl, outputFolder, fileName, false, promise)
+    }
+
+    /**
+     * Streaming variant of addTorrent: files go to the app cache dir, and the
+     * torrent is taken out of libtorrent's auto-managed queue so it can never
+     * sit paused behind other torrents while the player waits on it.
+     * Remove it afterwards with deleteTorrent(infoHash, true).
+     */
+    @ReactMethod
+    fun addTorrentForStream(magnetOrUrl: String, promise: Promise) {
+        val dir = File(reactApplicationContext.cacheDir, "torrent-stream").absolutePath
+        addTorrentInternal(magnetOrUrl, dir, null, true, promise)
+    }
+
+    private fun discardTorrent(sm: SessionManager, infoHash: String) {
+        try {
+            val th = sm.find(Sha1Hash.parseHex(infoHash))
+            if (th != null && th.isValid) sm.remove(th)
+        } catch (_: Exception) {}
+        streamServer?.unregisterTorrent(infoHash)
+        torrentHandles.remove(infoHash)
+        torrentSavePaths.remove(infoHash)
+    }
+
+    private fun addTorrentInternal(
+        magnetOrUrl: String,
+        outputFolder: String?,
+        fileName: String?,
+        streaming: Boolean,
+        promise: Promise
+    ) {
         Thread {
             try {
                 val expectedHash = if (magnetOrUrl.startsWith("magnet:")) {
@@ -92,8 +130,13 @@ class TorrentModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
                 if (existing != null && existing.isValid) {
                     try {
                         if (existing.status().hasMetadata()) {
-                            server.registerTorrent(expectedHash!!, File(downloadDir))
-                            promise.resolve(buildTorrentInfo(existing))
+                            // The torrent may have been added elsewhere (e.g. a download)
+                            // with a different save dir -- the server must read from there.
+                            val realDir = torrentSavePaths[expectedHash!!] ?: downloadDir
+                            server.registerTorrent(expectedHash, File(realDir))
+                            val info = buildTorrentInfo(existing)
+                            if (streaming && realDir != downloadDir) info.putBoolean("foreign", true)
+                            promise.resolve(info)
                             return@Thread
                         }
                     } catch (e: Exception) {
@@ -123,6 +166,13 @@ class TorrentModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
                                 try {
                                     torrentHandles[alertHash] = th
                                     torrentSavePaths[alertHash] = downloadDir
+                                    if (streaming) {
+                                        // download(magnet, dir, flags) ORs flags into the defaults, so
+                                        // AUTO_MANAGED can only be cleared on the handle. A queue-paused
+                                        // torrent stays paused after that, hence resume().
+                                        th.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                                        th.resume()
+                                    }
                                     if (th.status().hasMetadata()) {
                                         metadataLatch.countDown()
                                     }
@@ -175,11 +225,13 @@ class TorrentModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
                 sm.removeListener(listener)
 
                 if (addError != null) {
+                    if (streaming && expectedHash != null) discardTorrent(sm, expectedHash)
                     promise.reject("ADD_ERROR", addError)
                     return@Thread
                 }
 
                 if (!gotMetadata) {
+                    if (streaming && expectedHash != null) discardTorrent(sm, expectedHash)
                     promise.reject("TIMEOUT", "Timed out waiting for torrent metadata")
                     return@Thread
                 }
@@ -326,6 +378,8 @@ class TorrentModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
                 val startPiece = (fileOffset / pieceLength).toInt()
                 val startupEndOffset = fileOffset + minOf(fileSize, STREAM_STARTUP_BYTES) - 1L
                 val startupEndPiece = (startupEndOffset / pieceLength).toInt()
+                val warmEndOffset = fileOffset + minOf(fileSize, STREAM_WARMUP_BYTES) - 1L
+                val warmEndPiece = (warmEndOffset / pieceLength).toInt()
 
                 th.unsetFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
                 val filePriorities = Priority.array(Priority.IGNORE, fs.numFiles())
@@ -339,14 +393,34 @@ class TorrentModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
                     }
                 }
 
+                // Tail of the file: MP4 moov / MKV cues are needed for the first seek
+                // (and for moov-at-end MP4s, to start at all). Queue it behind the
+                // head via later deadlines, but don't block on it. Skipped for huge
+                // pieces where the tail would cost tens of MB.
+                if (fileSize > STREAM_STARTUP_BYTES * 2 && pieceLength <= STREAM_TAIL_MAX_PIECE) {
+                    val tailStartOffset = fileOffset + fileSize - minOf(fileSize, STREAM_TAIL_BYTES)
+                    val tailStartPiece = (tailStartOffset / pieceLength).toInt()
+                    val tailEndPiece = ((fileOffset + fileSize - 1L) / pieceLength).toInt()
+                    for (pieceIndex in tailStartPiece..tailEndPiece) {
+                        if (pieceIndex > startupEndPiece && !th.havePiece(pieceIndex)) {
+                            th.piecePriority(pieceIndex, Priority.SIX)
+                            th.setPieceDeadline(pieceIndex, 8000 + (pieceIndex - tailStartPiece) * 250)
+                        }
+                    }
+                }
+
                 Log.d(
                     TAG,
-                    "prepareVideoFile: file=$fileIndex, pieces=$startPiece-$startupEndPiece, startupBytes=${minOf(fileSize, STREAM_STARTUP_BYTES)}"
+                    "prepareVideoFile: file=$fileIndex, pieces=$startPiece-$startupEndPiece, warmup=$startPiece-$warmEndPiece, startupBytes=${minOf(fileSize, STREAM_STARTUP_BYTES)}"
                 )
 
                 var waitCount = 0
                 while (th.isValid && waitCount < 3000) {
-                    if (th.havePiece(startPiece)) {
+                    var warm = true
+                    for (pieceIndex in startPiece..warmEndPiece) {
+                        if (!th.havePiece(pieceIndex)) { warm = false; break }
+                    }
+                    if (warm) {
                         promise.resolve(true)
                         return@Thread
                     }
