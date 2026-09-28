@@ -160,6 +160,33 @@ jobs:
           build_abi arm64 "" arm64-v8a
           build_abi arm 7 armeabi-v7a
 
+      - name: Build ciadpi (ByeDPI Anti-DPI) for Android
+        # Upstream: https://github.com/hufrea/byedpi -- a small, dependency-free
+        # C SOCKS5 proxy that applies TLS-fragmentation/desync tricks per
+        # connection. Built here from pinned source for both ABIs (statically
+        # linked, so it runs fine on-device without needing the NDK/bionic
+        # libc) rather than committing binaries, for the same reproducibility
+        # reasons as the libusque build above.
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          BYEDPI_TAG="v0.17.3"
+          git clone --quiet --depth 1 --branch "$BYEDPI_TAG" https://github.com/hufrea/byedpi.git /tmp/byedpi-src
+          cd /tmp/byedpi-src
+          SRC="packets.c main.c conev.c proxy.c desync.c mpool.c extend.c"
+          CFLAGS="-D_DEFAULT_SOURCE -I. -std=c99 -O2 -Wall -Wno-unused -Wextra -Wno-unused-parameter -pedantic -static -s"
+
+          build_abi() {
+            local cc="$1" abi="$2"
+            echo "Building libciadpi.so for $abi"
+            mkdir -p "$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi"
+            "$cc" $CFLAGS -o "$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi/libciadpi.so" $SRC
+          }
+
+          build_abi aarch64-linux-gnu-gcc arm64-v8a
+          build_abi arm-linux-gnueabihf-gcc armeabi-v7a
+
       - name: Generate Android Native Project
         env:
           APP_VARIANT: standalone
