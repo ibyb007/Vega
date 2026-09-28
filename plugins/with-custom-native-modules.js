@@ -84,6 +84,7 @@ function withCustomNativeModules(config) {
     const packagesToAdd = [
       'DohPackage()',
       'WarpPackage()',
+      'ByeDpiPackage()',
       'HttpDownloadPackage()',
       'TorrentPackage()',
       'LauncherIconPackage()',
