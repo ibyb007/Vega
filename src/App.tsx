@@ -12,6 +12,7 @@ import ProviderSandboxHost from './components/ProviderSandboxHost';
 import AppDialogHost from './components/AppDialogHost';
 import { syncDohSettings } from './lib/services/dohService';
 import { syncWarpSettings } from './lib/services/warpService';
+import { syncByeDpiSettings } from './lib/services/byeDpiService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
 import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks, SkipInterval } from './lib/providers/types';
@@ -162,6 +163,7 @@ export default function App() {
     BootSplash.hide({ fade: false }).catch(() => {});
     syncDohSettings().catch((e) => console.warn('[DoH] Startup error:', e));
     syncWarpSettings().catch((e) => console.warn('[WARP] Startup error:', e));
+    syncByeDpiSettings().catch((e) => console.warn('[ByeDPI] Startup error:', e));
     try {
       updateProvidersService.startAutomaticUpdateCheck();
     } catch (e) {
