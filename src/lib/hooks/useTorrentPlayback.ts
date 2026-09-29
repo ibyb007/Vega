@@ -8,19 +8,26 @@ import type {TorrentFile} from '../torrentManager';
  *
  * ExoPlayer cannot play `magnet:` URIs. The native TorrentModule (libtorrent4j)
  * downloads the torrent and TorrentStreamServer serves one file of it over
- * http://127.0.0.1:<port>/stream/<hash>/<fileIndex>/<name>. This hook drives
- * that flow:
+ * http://127.0.0.1:<port>/stream/<hash>/<fileIndex>/<name>. This is the same
+ * flow the mobile app's Player.tsx uses, on the existing native module
+ * unchanged:
  *
- *   addTorrentForStream -> pick the right video file -> prepareVideoFile
- *   (wait for the first pieces) -> getStreamUrl
+ *   addTorrent -> pick the video file -> prepareVideoFile (wait for the first
+ *   piece) -> getStreamUrl
  *
- * and removes the torrent (and its cached files) when the source changes or the
+ * The torrent (and its files) is removed when the source changes or the
  * player unmounts.
  */
 
-const VIDEO_EXT = /\.(mkv|mp4|m4v|avi|mov|webm|ts|m2ts|wmv|flv|mpg|mpeg)$/i;
-// Native addTorrent already gives up on metadata after 45s; this bounds the
-// "wait for first video pieces" step (native side would wait up to 5 min).
+const VIDEO_EXT = /\.(mkv|mp4|m4v|avi|mov|webm|ts|wmv|flv)$/i;
+// Placeholder hashes some providers emit for "no real torrent" (same guard as
+// the mobile player).
+const DUMMY_HASHES = [
+  'd41d0cfbf8baa3ce04a7074b0c486243dd5fbd00',
+  'd41d8cd98f00b204e9800998ecf8427e',
+];
+// addTorrent gives up on metadata after 45s natively; this bounds the "wait
+// for the first video piece" step (natively it would wait up to 5 minutes).
 const PREPARE_TIMEOUT_MS = 90_000;
 
 export type TorrentPhase = 'idle' | 'connecting' | 'buffering' | 'ready' | 'error';
@@ -36,8 +43,6 @@ export interface TorrentPlayback {
   error: string | null;
   /** Re-open the same local URL (same torrent) -- used after a player IO error. */
   reloadPlayer: () => void;
-  /** Tear down and start resolving the torrent again (after an error). */
-  retry: () => void;
 }
 
 export const isTorrentLink = (
@@ -50,18 +55,10 @@ export const isTorrentLink = (
   return /^magnet:/i.test(link) || sourceType === 'torrent';
 };
 
-export interface ParsedMagnet {
-  /** 40 char lowercase hex info hash, or null if the link has none we can use. */
-  infoHash: string | null;
-  /** Value of a single-index `so=` (BEP 53 "select only") parameter, if present. */
-  fileIndex: number | null;
-}
-
-export const parseMagnet = (link: string): ParsedMagnet => {
+/** 40 char lowercase hex info hash of a magnet link, or null. */
+export const parseInfoHash = (link: string): string | null => {
   const btih = link.match(/btih:([a-z0-9]+)/i)?.[1] ?? '';
-  const infoHash = /^[a-f0-9]{40}$/i.test(btih) ? btih.toLowerCase() : null;
-  const so = link.match(/[?&]so=(\d+)(?=&|$)/i)?.[1];
-  return {infoHash, fileIndex: so != null ? Number(so) : null};
+  return /^[a-f0-9]{40}$/i.test(btih) ? btih.toLowerCase() : null;
 };
 
 const episodePattern = (season: number, episode: number) =>
@@ -71,16 +68,14 @@ const episodePattern = (season: number, episode: number) =>
   );
 
 /**
- * Chooses which file of the torrent to play.
- *  - series episode: prefer a file whose name carries that SxxEyy / 1x02 tag
- *    (season packs contain many episodes); the provider's `so` index wins when
- *    it agrees with that.
- *  - otherwise: the provider's `so` index if it is a video, else the largest
- *    video file. "sample" clips are ignored.
+ * Chooses which file of the torrent to play: the largest video file (as the
+ * mobile player does), except that for a series episode a file carrying that
+ * episode's SxxEyy / 1x02 tag wins -- season packs hold many episodes and the
+ * largest file is rarely the one asked for. "sample" clips are ignored.
  */
 export const pickVideoFile = (
   files: TorrentFile[],
-  hints: {fileIndex?: number | null; season?: number; episode?: number},
+  hints: {season?: number; episode?: number} = {},
 ): TorrentFile | null => {
   const videos = files.filter(
     f => VIDEO_EXT.test(f.name) && !/(^|[^a-z])sample([^a-z]|$)/i.test(f.name),
@@ -90,19 +85,25 @@ export const pickVideoFile = (
   }
   const largest = (list: TorrentFile[]) =>
     list.reduce((a, b) => (b.size > a.size ? b : a));
-  const hinted =
-    hints.fileIndex != null
-      ? videos.find(f => f.index === hints.fileIndex)
-      : undefined;
 
   if (hints.season != null && hints.episode != null) {
     const re = episodePattern(hints.season, hints.episode);
     const matches = videos.filter(f => re.test(f.path) || re.test(f.name));
     if (matches.length > 0) {
-      return hinted && matches.includes(hinted) ? hinted : largest(matches);
+      return largest(matches);
     }
   }
-  return hinted ?? largest(videos);
+  return largest(videos);
+};
+
+// Torrent removal is serialised so that starting the same torrent again right
+// after leaving it can never race the previous removal.
+let removalChain: Promise<void> = Promise.resolve();
+const removeTorrentQueued = (hash: string): Promise<void> => {
+  removalChain = removalChain.then(() =>
+    torrentManager.deleteTorrent(hash, true).catch(() => {}),
+  );
+  return removalChain;
 };
 
 const withTimeout = <T,>(p: Promise<T>, ms: number, message: string): Promise<T> =>
@@ -121,12 +122,11 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, message: string): Promise<T>
   });
 
 const describeError = (e: any): string => {
-  const code = e?.code ? `${e.code}: ` : '';
   const msg = e?.message || String(e);
   if (e?.code === 'TIMEOUT' || /metadata/i.test(msg)) {
-    return 'Could not find enough peers for this torrent. Try another source.';
+    return 'Could not find enough peers for this torrent.';
   }
-  return `${code}${msg}`;
+  return msg;
 };
 
 const formatStats = (
@@ -151,7 +151,6 @@ export function useTorrentPlayback(
   const [phase, setPhase] = useState<TorrentPhase>('idle');
   const [statusText, setStatusText] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const season = episode?.season;
@@ -169,11 +168,11 @@ export function useTorrentPlayback(
 
     let cancelled = false;
     let poll: ReturnType<typeof setInterval> | null = null;
-    const parsed = parseMagnet(link);
-    let hash: string | null = parsed.infoHash;
-    // False when the torrent was already added by something else (e.g. an
-    // in-progress download of the same torrent): we must not prioritise files
-    // in it or delete it when playback ends.
+    const infoHash = parseInfoHash(link);
+    let hash: string | null = infoHash;
+    // False when the torrent was already in the engine before we started (e.g.
+    // an in-progress download of the same torrent): we must not re-prioritise
+    // its files or delete it when playback ends.
     let owned = true;
 
     const stopPolling = () => {
@@ -204,22 +203,35 @@ export function useTorrentPlayback(
         if (Platform.OS !== 'android') {
           throw new Error('Torrent streaming is only supported on Android');
         }
-        if (!parsed.infoHash) {
+        if (!infoHash || DUMMY_HASHES.some(d => link.toLowerCase().includes(d))) {
           throw new Error(
-            'Unsupported torrent link (expected a magnet with a 40-character info hash)',
+            'This source is not a usable torrent (missing or placeholder info hash)',
           );
         }
 
         setPhase('connecting');
         setStatusText('Connecting to peers...');
-        startPolling('Finding peers');
 
-        const added = await torrentManager.addTorrentForStream(link);
+        // Let any removal of a previous session finish first, then see whether
+        // the engine already holds this torrent (=> not ours to delete).
+        await removalChain;
         if (cancelled) {
-          return; // cleanup below removes the torrent
+          return;
+        }
+        owned = await torrentManager.getStats(infoHash).then(
+          () => false,
+          () => true,
+        );
+        if (cancelled) {
+          return;
+        }
+
+        startPolling('Finding peers');
+        const added = await torrentManager.addTorrent(link);
+        if (cancelled) {
+          return; // cleanup below removes it (if owned)
         }
         hash = added.infoHash || hash;
-        owned = !added.foreign;
 
         const files = added.files?.length
           ? added.files
@@ -227,11 +239,7 @@ export function useTorrentPlayback(
         if (cancelled) {
           return;
         }
-        const file = pickVideoFile(files, {
-          fileIndex: parsed.fileIndex,
-          season,
-          episode: episodeNumber,
-        });
+        const file = pickVideoFile(files, {season, episode: episodeNumber});
         if (!file) {
           throw new Error('No playable video file found in this torrent');
         }
@@ -243,7 +251,7 @@ export function useTorrentPlayback(
           await withTimeout(
             torrentManager.prepareVideoFile(hash as string, file.index),
             PREPARE_TIMEOUT_MS,
-            'Timed out waiting for the first video data (no seeders or too slow). Try another source.',
+            'Timed out waiting for the first video data (no seeders or too slow).',
           );
           if (cancelled) {
             return;
@@ -268,7 +276,7 @@ export function useTorrentPlayback(
         setPhase('error');
         setStatusText('');
         if (hash && owned) {
-          torrentManager.deleteTorrent(hash, true).catch(() => {});
+          removeTorrentQueued(hash);
         }
       }
     })();
@@ -277,13 +285,12 @@ export function useTorrentPlayback(
       cancelled = true;
       stopPolling();
       if (hash && owned) {
-        torrentManager.deleteTorrent(hash, true).catch(() => {});
+        removeTorrentQueued(hash);
       }
     };
-  }, [link, isTorrent, attempt, season, episodeNumber]);
+  }, [link, isTorrent, season, episodeNumber]);
 
   const reloadPlayer = useCallback(() => setReloadNonce(n => n + 1), []);
-  const retry = useCallback(() => setAttempt(n => n + 1), []);
 
   const playableUrl = baseUrl
     ? reloadNonce > 0
@@ -291,5 +298,5 @@ export function useTorrentPlayback(
       : baseUrl
     : null;
 
-  return {isTorrent, playableUrl, phase, statusText, error, reloadPlayer, retry};
+  return {isTorrent, playableUrl, phase, statusText, error, reloadPlayer};
 }
