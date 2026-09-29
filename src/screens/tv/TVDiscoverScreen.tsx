@@ -331,6 +331,18 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // handleBrowseContentSizeChange below).
   const browseScrollRef = useRef<ScrollView | null>(null);
   const pendingBrowseScrollRestoreRef = useRef(false);
+  // Backing out of page 2 remounts the grid at y=0; while it is scrolled back
+  // to the remembered row and focus is re-claimed, the grid stays invisible
+  // and stray focus hops (Android's default search landing on a neighbouring
+  // poster before the real target is attached) are ignored, so the person
+  // sees one clean landing on the right poster instead of a visible
+  // double-tap. See handleBrowseContentSizeChange / backToBrowse.
+  const browseRestoringRef = useRef(false);
+  const [browseHidden, setBrowseHidden] = useState(false);
+  const finishBrowseRestore = useCallback(() => {
+    browseRestoringRef.current = false;
+    setBrowseHidden(false);
+  }, []);
   // Resume flow (Home -> Continue Watching -> here): until the person moves
   // focus themselves, focus is steered to the resume source/episode/play
   // button as each one appears; see shouldPreferResultsFocus.
@@ -546,7 +558,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     if (!pendingBrowseScrollRestoreRef.current) return;
     pendingBrowseScrollRestoreRef.current = false;
     const y = lastDiscoverBrowseScrollY;
-    if (y <= 0) return;
+    if (y <= 0) {
+      finishBrowseRestore();
+      return;
+    }
     const key = lastFocusedDiscoverBrowseKey;
     // `mountedResultsKeysRef` (despite the name) tracks every currently
     // rendered item's key, browse or results -- see setItemRef below.
@@ -555,8 +570,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     // Give the scroll a beat to bring the target row back into the
     // ScrollView's clipping window, then re-issue the real focus request
     // for the poster the person left off on.
-    setTimeout(() => requestRefocus(), 60);
-  }, [requestRefocus]);
+    setTimeout(() => {
+      requestRefocus();
+      // One more beat for the focus request to settle, then reveal.
+      setTimeout(finishBrowseRestore, 50);
+    }, 60);
+  }, [requestRefocus, finishBrowseRestore]);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
   const [catalogs, setCatalogs] = useState<DiscoverCatalog[]>(savedDiscoverState?.catalogs || []);
@@ -1620,6 +1639,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     // restore so handleBrowseContentSizeChange scrolls the remembered
     // poster back into view once the grid's items are laid out again.
     pendingBrowseScrollRestoreRef.current = true;
+    if (lastDiscoverBrowseScrollY > 0) {
+      browseRestoringRef.current = true;
+      setBrowseHidden(true);
+      // Safety net: never leave the grid hidden if the restore pass
+      // doesn't run for any reason.
+      setTimeout(finishBrowseRestore, 900);
+    }
     setScreenMode('browse');
     setResultsTarget(null);
     setMatchedAddonPosts([]);
@@ -1636,7 +1662,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       savedDiscoverState.activeLinkIndex = 0;
       savedDiscoverState.episodes = [];
     }
-  }, [activeSourcePost, handleBackToSources]);
+  }, [activeSourcePost, handleBackToSources, finishBrowseRestore]);
 
   // Hardware Back Key: only handle this screen's own back-stack
   useEffect(() => {
@@ -1813,6 +1839,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
               onFocus={() => {
+                if (browseRestoringRef.current) return;
                 lastFocusedDiscoverBrowseKey = 'manage-btn';
                 registerRailLeftEdge('discover', manageBtnRef.current);
                 const node = manageBtnRef.current as any;
@@ -1857,6 +1884,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   borderRadius={20}
                   onFocus={() => {
                     focusedPillRef.current = cat;
+                    if (browseRestoringRef.current) return;
                     lastFocusedDiscoverBrowseKey = pillKey;
                   }}
                   onBlur={() => {
@@ -1912,6 +1940,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             ref={browseScrollRef}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.gridContainer}
+            style={browseHidden ? { opacity: 0 } : undefined}
             scrollEventThrottle={16}
             removeClippedSubviews={true}
             onScroll={(e) => {
@@ -1936,6 +1965,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   focusedBorderColor="#FFFFFF"
                   borderRadius={8}
                   onFocus={() => {
+                    // Mid-restore, a hop onto anything but the remembered
+                    // poster is transient: don't overwrite the target or
+                    // swap the hero for it.
+                    if (
+                      browseRestoringRef.current &&
+                      gridKey !== lastFocusedDiscoverBrowseKey
+                    ) {
+                      return;
+                    }
                     lastFocusedDiscoverBrowseKey = gridKey;
                     selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint);
                     if (isLeftEdge) {
