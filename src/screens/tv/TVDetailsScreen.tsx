@@ -1038,7 +1038,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         }
 
         onPlayStream(best.link, streamTitle, {
-          posterUrl: info?.image || info?.poster || item?.image,
+          // Providers that supply an IMDb id (TMDB-style metadata) put a
+          // landscape backdrop in `info.image` and the real portrait
+          // poster in `info.poster` / the listing item. Continue Watching
+          // shows this as a poster card, so prefer the poster for them;
+          // other providers keep their previous `image`-first order.
+          posterUrl: info?.imdbId
+            ? info?.poster || item?.image || info?.image
+            : info?.image || info?.poster || item?.image,
           itemLink: item?.link,
           episodeId: episodeKey,
           providerValue: providerId,
