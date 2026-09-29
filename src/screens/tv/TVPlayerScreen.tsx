@@ -33,6 +33,11 @@ import { settingsStorage } from '../../lib/storage';
 import { formatEpisodeLabel as formatSeasonEpisodeLabel } from '../../lib/utils/episodeParsing';
 import { fetchIntroDbSegments } from '../../lib/services/theIntroDbService';
 import { extractImageAccent } from '../../lib/imageAccent';
+import {
+  SUBTITLE_ADDONS,
+  fetchEnglishAddonSubtitles,
+} from '../../lib/services/stremioSubtitles';
+import type { SubtitleAddon, AddonSubtitle } from '../../lib/services/stremioSubtitles';
 import { mixHex } from '../../theme/seeds';
 import { resolveTmdbId } from '../../lib/services/tmdbIdResolver';
 import { useTorrentPlayback } from '../../lib/hooks/useTorrentPlayback';
@@ -534,6 +539,18 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const shownSkipIntervalsRef = useRef<Set<number>>(new Set());
 
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
+
+  // Stremio subtitle addon (e.g. OpenSubtitles v3) state. `addonPanel` is the
+  // addon whose subtitle list is open inside the Subtitles dialog; only the
+  // one chosen subtitle is handed to the player as an external text track.
+  const [addonPanel, setAddonPanel] = useState<SubtitleAddon | null>(null);
+  const [addonSubs, setAddonSubs] = useState<AddonSubtitle[]>([]);
+  const [addonSubsLoading, setAddonSubsLoading] = useState(false);
+  const [addonSubsError, setAddonSubsError] = useState<string | null>(null);
+  const [addonTracks, setAddonTracks] = useState<
+    { title: string; language: string; type: string; uri: string }[]
+  >([]);
+  const pendingAddonTitleRef = useRef<string | null>(null);
 
   // Kept in sync on every render (not just in an effect) so the
   // already-scheduled hide-controls timeout below always sees the latest
@@ -1227,6 +1244,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         resetInactivityTimer();
         return true;
       }
+      if (activeDialog === 'subtitles' && addonPanel) {
+        setAddonPanel(null);
+        return true;
+      }
       if (activeDialog) {
         setActiveDialog(null);
         resetInactivityTimer();
@@ -1250,6 +1271,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     return () => sub.remove();
   }, [
     activeDialog,
+    addonPanel,
     showControls,
     showNextUpPopup,
     activeSkipPopup,
@@ -1385,6 +1407,97 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     };
   }, [nextUpImage]);
 
+  // ---- Stremio subtitle addons (OpenSubtitles v3) -------------------------
+  const addonIsSeries = episodes.length > 0;
+  const addonSeason = episodes[currentEpisodeIndex]?.season;
+  const addonEpisode = episodes[currentEpisodeIndex]?.episodeNumber;
+
+  // New title/episode: forget the previous one's addon subtitle.
+  useEffect(() => {
+    setAddonTracks([]);
+    setAddonSubs([]);
+    setAddonPanel(null);
+    pendingAddonTitleRef.current = null;
+  }, [imdbId, addonSeason, addonEpisode]);
+
+  // Closing the dialog always returns to the top-level subtitle list next time.
+  useEffect(() => {
+    if (!activeDialog) setAddonPanel(null);
+  }, [activeDialog]);
+
+  const openAddonPanel = useCallback(
+    (addon: SubtitleAddon) => {
+      setAddonPanel(addon);
+      setAddonSubs([]);
+      setAddonSubsError(null);
+      if (!imdbId) {
+        setAddonSubsError('Not available for this title (no IMDb id).');
+        return;
+      }
+      if (addonIsSeries && (addonSeason == null || addonEpisode == null)) {
+        setAddonSubsError('Not available for this episode.');
+        return;
+      }
+      setAddonSubsLoading(true);
+      fetchEnglishAddonSubtitles({
+        manifestUrl: addon.manifestUrl,
+        imdbId,
+        isSeries: addonIsSeries,
+        season: addonSeason,
+        episode: addonEpisode,
+        limit: 5,
+      })
+        .then((list) => {
+          setAddonSubs(list);
+          if (list.length === 0) setAddonSubsError('No English subtitles found.');
+        })
+        .catch(() => setAddonSubsError('Could not load subtitles from this addon.'))
+        .finally(() => setAddonSubsLoading(false));
+    },
+    [imdbId, addonIsSeries, addonSeason, addonEpisode]
+  );
+
+  const selectAddonSubtitle = useCallback(
+    (addon: SubtitleAddon, sub: AddonSubtitle, n: number) => {
+      const trackTitle = `${addon.name} - English ${n}`;
+      userChoseSubtitleRef.current = true;
+      // The external track is attached by (re)loading the source, so keep the
+      // playback position the same way the quality/server switch does.
+      pendingRecoverySeekRef.current = currentProgRef.current.currentTime || 0;
+      pendingAddonTitleRef.current = trackTitle;
+      setAddonTracks([
+        {
+          title: trackTitle,
+          language: 'en',
+          type: /\.vtt(\?|$)/i.test(sub.url) ? 'text/vtt' : 'application/x-subrip',
+          uri: sub.url,
+        },
+      ]);
+      setActiveDialog(null);
+      resetInactivityTimer();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  // Once the reloaded source reports its tracks, select the addon subtitle.
+  const applyPendingAddonSelection = useCallback((tracks: any[]) => {
+    const wanted = pendingAddonTitleRef.current;
+    if (!wanted || !tracks?.length) return;
+    const idx = tracks.findIndex((t: any) => (t.title || t.label || '') === wanted);
+    if (idx < 0) return;
+    pendingAddonTitleRef.current = null;
+    setSelectedSub({ type: SelectedTrackType.INDEX, value: idx });
+  }, []);
+
+  const mergedSubtitles = useMemo(
+    () =>
+      addonTracks.length > 0
+        ? ([...(subtitles ?? []), ...addonTracks] as any as TextTracks)
+        : subtitles,
+    [subtitles, addonTracks]
+  );
+
   const formatEpisodeLabel = (ep?: EpisodeItem) =>
     ep ? formatSeasonEpisodeLabel(ep.season, ep.episodeNumber, ep.title, 'Next Episode') : '';
 
@@ -1402,7 +1515,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         selectedAudioTrack={selectedAudio}
         selectedTextTrack={selectedSub}
         selectedVideoTrack={selectedVideoTrack}
-        textTracks={subtitles}
+        textTracks={mergedSubtitles}
         audioBoostGain={audioBoostGain}
         subtitleStyle={{
           backgroundColor: 'transparent',
@@ -1426,6 +1539,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           if (meta.textTracks?.length) {
             setTextTracks(meta.textTracks);
             autoSelectEnglishSubtitle(meta.textTracks);
+            applyPendingAddonSelection(meta.textTracks);
           }
           setBuffering(false);
 
@@ -1454,6 +1568,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           if (e?.textTracks?.length) {
             setTextTracks(e.textTracks);
             autoSelectEnglishSubtitle(e.textTracks);
+            applyPendingAddonSelection(e.textTracks);
           }
         }}
         onProgress={(prog) => {
@@ -1920,6 +2035,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         transparent={true}
         animationType="fade"
         onRequestClose={() => {
+          if (activeDialog === 'subtitles' && addonPanel) {
+            setAddonPanel(null);
+            return;
+          }
           setActiveDialog(null);
           resetInactivityTimer();
         }}
@@ -1955,13 +2074,18 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               />
               <View style={styles.dialogHeaderText}>
                 <Text style={styles.dialogTitle}>
-                  {activeDialog === 'subtitles' && 'Subtitles'}
+                  {activeDialog === 'subtitles' && (addonPanel ? addonPanel.name : 'Subtitles')}
                   {activeDialog === 'audio' && 'Audio Tracks'}
                   {activeDialog === 'server' && 'Select Server'}
                   {activeDialog === 'quality' && 'Select Quality'}
                 </Text>
                 <Text style={styles.dialogSubtitle}>
-                  {activeDialog === 'subtitles' && `${textTracks.length + 1} options`}
+                  {activeDialog === 'subtitles' &&
+                    (addonPanel
+                      ? addonSubsLoading
+                        ? 'Loading...'
+                        : `${addonSubs.length} English subtitles`
+                      : `${textTracks.length + 1 + SUBTITLE_ADDONS.length} options`)}
                   {activeDialog === 'audio' && `${audioTracks.length} options`}
                   {activeDialog === 'server' && `${servers.length} options`}
                   {activeDialog === 'quality' &&
@@ -1976,7 +2100,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               contentContainerStyle={styles.dialogList}
               showsVerticalScrollIndicator={false}
             >
-              {activeDialog === 'subtitles' && (
+              {activeDialog === 'subtitles' && !addonPanel && (
                 <>
                   <TVFocusablePressable
                     hasTVPreferredFocus={true}
@@ -2017,6 +2141,28 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                       </View>
                     )}
                   </TVFocusablePressable>
+                  {SUBTITLE_ADDONS.map((addon) => (
+                    <TVFocusablePressable
+                      key={`sub-addon-${addon.manifestUrl}`}
+                      scaleFocused={1.02}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={10}
+                      onPress={() => openAddonPanel(addon)}
+                      style={styles.dialogItem}
+                    >
+                      {() => (
+                        <View style={styles.dialogItemInner}>
+                          <Text style={styles.dialogItemText}>{addon.name}</Text>
+                          <MaterialCommunityIcons
+                            name="chevron-right"
+                            size={22}
+                            color="#A78BFA"
+                            style={styles.dialogItemCheck}
+                          />
+                        </View>
+                      )}
+                    </TVFocusablePressable>
+                  ))}
                   {textTracks.map((trk, i) => {
                     const isSelected = selectedSub.value === i;
                     return (
@@ -2042,6 +2188,78 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                               ]}
                             >
                               {describeTrack(trk, `Subtitle Track ${i + 1}`)}
+                            </Text>
+                            {isSelected && (
+                              <MaterialCommunityIcons
+                                name="check-circle"
+                                size={20}
+                                color="#A78BFA"
+                                style={styles.dialogItemCheck}
+                              />
+                            )}
+                          </View>
+                        )}
+                      </TVFocusablePressable>
+                    );
+                  })}
+                </>
+              )}
+
+              {activeDialog === 'subtitles' && addonPanel && (
+                <>
+                  <TVFocusablePressable
+                    hasTVPreferredFocus={true}
+                    scaleFocused={1.02}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={10}
+                    onPress={() => setAddonPanel(null)}
+                    style={styles.dialogItem}
+                  >
+                    {() => (
+                      <View style={styles.dialogItemInner}>
+                        <MaterialCommunityIcons
+                          name="chevron-left"
+                          size={22}
+                          color="#A78BFA"
+                          style={styles.dialogItemCheck}
+                        />
+                        <Text style={[styles.dialogItemText, { flex: 1 }]}>Back</Text>
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                  {addonSubsLoading && (
+                    <Text style={[styles.dialogItemText, { padding: 14 }]}>
+                      Loading subtitles...
+                    </Text>
+                  )}
+                  {!addonSubsLoading && addonSubsError && (
+                    <Text style={[styles.dialogItemText, { padding: 14 }]}>
+                      {addonSubsError}
+                    </Text>
+                  )}
+                  {addonSubs.map((sub, i) => {
+                    const trackTitle = `${addonPanel.name} - English ${i + 1}`;
+                    const isSelected =
+                      selectedSub.type === SelectedTrackType.INDEX &&
+                      textTracks[selectedSub.value]?.title === trackTitle;
+                    return (
+                      <TVFocusablePressable
+                        key={`addon-sub-${sub.id}-${i}`}
+                        scaleFocused={1.02}
+                        focusedBorderColor="#8A5CF6"
+                        borderRadius={10}
+                        onPress={() => selectAddonSubtitle(addonPanel, sub, i + 1)}
+                        style={[styles.dialogItem, isSelected && styles.dialogItemSelected]}
+                      >
+                        {() => (
+                          <View style={styles.dialogItemInner}>
+                            <Text
+                              style={[
+                                styles.dialogItemText,
+                                isSelected && styles.dialogItemTextSelected,
+                              ]}
+                            >
+                              {`English ${i + 1}`}
                             </Text>
                             {isSelected && (
                               <MaterialCommunityIcons
