@@ -758,9 +758,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   // Torrent sources (magnet links) can't be handed to ExoPlayer directly: the
   // native libtorrent engine downloads them and serves the chosen file over
-  // http://127.0.0.1, and *that* URL is what the player opens. `activeMediaUrl`
-  // stays the original link so the source/quality dialogs keep highlighting
-  // the right row.
+  // http://127.0.0.1, and *that* URL is what the player opens (same approach as
+  // the mobile player). `activeMediaUrl` stays the original link so the
+  // source/quality dialogs keep highlighting the right row.
   const torrent = useTorrentPlayback(activeMediaUrl, activeSourceType, {
     season: episodes[currentEpisodeIndex]?.season,
     episode: episodes[currentEpisodeIndex]?.episodeNumber,
@@ -772,11 +772,25 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   useEffect(() => {
     torrentRetryRef.current = 0;
   }, [activeMediaUrl]);
+
+  // A torrent that can't start (no peers, no video file, dummy hash) moves on
+  // to the next source in the list, like the mobile player's "Trying next
+  // server"; only when nothing is left does the error stay on screen.
   useEffect(() => {
-    if (torrentFailed && torrent.error) {
+    if (!torrentFailed) return;
+    const options = qualities.length > 0 ? qualities : servers;
+    const idx = options.findIndex((o) => o.url === activeMediaUrl);
+    const next = idx >= 0 ? options[idx + 1] : undefined;
+    if (next) {
+      ToastAndroid.show('Torrent unavailable, trying next source', ToastAndroid.SHORT);
+      setActiveMediaUrl(next.url);
+      setActiveHeaders(next.headers);
+      setActiveSourceType(next.sourceType);
+    } else {
       ToastAndroid.show(`Torrent error: ${torrent.error}`, ToastAndroid.LONG);
     }
-  }, [torrentFailed, torrent.error]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [torrentFailed]);
 
   const videoSource = useMemo(
     () => ({
@@ -1537,7 +1551,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           {torrent.isTorrent && (torrentFailed || !!torrent.statusText) && (
             <Text style={styles.torrentStatusText}>
               {torrentFailed
-                ? `Couldn't start torrent: ${torrent.error}\nPress OK to pick another source.`
+                ? `Couldn't start torrent: ${torrent.error}\nOpen the source menu to pick another one.`
                 : torrent.statusText}
             </Text>
           )}
