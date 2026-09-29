@@ -18,6 +18,8 @@ import java.lang.ref.WeakReference
  * `plugins/with-native-nav-rail.js`, which wires that call in automatically).
  */
 object NavRailManager {
+    private const val RAIL_LEFT_EXIT_ID = "rail-left-exit"
+
 
     interface Bridge {
         fun onRouteChanged(route: String)
@@ -164,6 +166,17 @@ object NavRailManager {
         val current = activity.window.decorView.findFocus() ?: return false
         if (isDescendantOf(current, rail)) {
             return true // already in the rail -- swallow, do nothing
+        }
+
+        // Items that sit at a screen's left edge with nothing focusable to
+        // their left (e.g. a header button whose only geometric "left"
+        // neighbours are rows further down the page) opt in by setting
+        // `nativeID="rail-left-exit"` on the RN view. Left from them always
+        // goes to the rail, skipping Android's geometric search entirely.
+        val nativeId = current.getTag(com.facebook.react.R.id.view_tag_native_id) as? String
+        if (nativeId == RAIL_LEFT_EXIT_ID) {
+            rail.focusActiveRoute()
+            return true
         }
 
         val next = current.focusSearch(View.FOCUS_LEFT)
