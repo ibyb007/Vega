@@ -32,6 +32,8 @@ import { launchVideo } from '../../lib/services/PlayerLauncher';
 import { settingsStorage } from '../../lib/storage';
 import { formatEpisodeLabel as formatSeasonEpisodeLabel } from '../../lib/utils/episodeParsing';
 import { fetchIntroDbSegments } from '../../lib/services/theIntroDbService';
+import { extractImageAccent } from '../../lib/imageAccent';
+import { mixHex } from '../../theme/seeds';
 import { resolveTmdbId } from '../../lib/services/tmdbIdResolver';
 import { useTorrentPlayback } from '../../lib/hooks/useTorrentPlayback';
 import type { IntroDbSegment } from '../../lib/services/theIntroDbService';
@@ -1363,6 +1365,26 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const hasNextEpisode = episodes.length > currentEpisodeIndex + 1;
   const nextEpisodePreview = hasNextEpisode ? episodes[currentEpisodeIndex + 1] : undefined;
 
+  // "Up Next" card tint: derived from the mini-poster's dominant colour and
+  // muted toward a dark neutral (Stremio-style), so the card reads as a
+  // soft wash of the poster's hue rather than a flat dark slab.
+  const [nextUpTint, setNextUpTint] = useState<string>('#2A2A30');
+  const nextUpImage = nextEpisodePreview?.image;
+  useEffect(() => {
+    let cancelled = false;
+    setNextUpTint('#2A2A30');
+    if (!nextUpImage) return;
+    extractImageAccent(nextUpImage, `nextup-accent:${nextUpImage}`).then((accent) => {
+      if (cancelled || !accent) return;
+      try {
+        setNextUpTint(mixHex(accent, '#1C1C22', 0.6));
+      } catch {}
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [nextUpImage]);
+
   const formatEpisodeLabel = (ep?: EpisodeItem) =>
     ep ? formatSeasonEpisodeLabel(ep.season, ep.episodeNumber, ep.title, 'Next Episode') : '';
 
@@ -1386,8 +1408,11 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           backgroundColor: 'transparent',
           opacity: 0,
           fontSize: 28,
-          subtitlesFollowVideo: true,
-          paddingBottom: 45,
+          // Anchored to the screen (not the video frame) so the position
+          // stays put when the aspect-ratio/resize mode changes, and sits
+          // low like Stremio (~32dp above the bottom edge).
+          subtitlesFollowVideo: false,
+          paddingBottom: 24,
         }}
         onLoad={(meta: any) => {
           const totalDur = meta.duration || 0;
@@ -2245,12 +2270,36 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         }}
       >
         <View style={styles.nextUpOverlay} pointerEvents="box-none">
-          <View style={styles.nextUpCard}>
+          <View style={[styles.nextUpCard, { backgroundColor: nextUpTint }]}>
+            <LinearGradient
+              pointerEvents="none"
+              colors={['rgba(255,255,255,0.07)', 'rgba(0,0,0,0.28)']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            {nextEpisodePreview?.image ? (
+              <View style={styles.nextUpPosterWrap} pointerEvents="none">
+                <Image
+                  source={{ uri: nextEpisodePreview.image }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
+                />
+                <LinearGradient
+                  colors={[nextUpTint, `${nextUpTint}00`]}
+                  locations={[0, 0.6]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={StyleSheet.absoluteFill}
+                />
+              </View>
+            ) : null}
+
             <View style={styles.nextUpTextCol}>
               <Text numberOfLines={1} style={styles.nextUpShowTitle}>
                 {title}
               </Text>
-              <Text numberOfLines={2} style={styles.nextUpEpisodeLine}>
+              <Text numberOfLines={1} style={styles.nextUpEpisodeLine}>
                 {formatEpisodeLabel(nextEpisodePreview)}
               </Text>
 
@@ -2259,7 +2308,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                   hasTVPreferredFocus
                   scaleFocused={1.04}
                   focusedBorderColor="#FFFFFF"
-                  borderRadius={24}
+                  borderRadius={10}
                   onPress={() => {
                     setShowNextUpPopup(false);
                     handleNextEpisode();
@@ -2268,7 +2317,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 >
                   {() => (
                     <View style={styles.nextUpBtnInner}>
-                      <MaterialCommunityIcons name="play" size={16} color="#0A0A0E" />
+                      <MaterialCommunityIcons name="play" size={18} color="#0A0A0E" />
                       <Text style={styles.nextUpPlayBtnText}>Play Now</Text>
                     </View>
                   )}
@@ -2277,7 +2326,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 <TVFocusablePressable
                   scaleFocused={1.04}
                   focusedBorderColor="#FFFFFF"
-                  borderRadius={24}
+                  borderRadius={10}
                   onPress={() => {
                     setShowNextUpPopup(false);
                     resetInactivityTimer();
@@ -2286,21 +2335,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 >
                   {() => (
                     <View style={styles.nextUpBtnInner}>
-                      <MaterialCommunityIcons name="close" size={16} color="#D1D5DB" />
+                      <MaterialCommunityIcons name="close" size={18} color="#F3F4F6" />
                       <Text style={styles.nextUpDismissText}>Dismiss</Text>
                     </View>
                   )}
                 </TVFocusablePressable>
               </View>
             </View>
-
-            {nextEpisodePreview?.image ? (
-              <Image
-                source={{ uri: nextEpisodePreview.image }}
-                style={styles.nextUpPoster}
-                resizeMode="cover"
-              />
-            ) : null}
           </View>
         </View>
       </Modal>
@@ -2768,38 +2809,44 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
     alignItems: 'flex-end',
-    padding: 36,
+    padding: 16,
   },
   nextUpCard: {
-    flexDirection: 'row',
-    width: 560,
-    backgroundColor: 'rgba(24, 24, 30, 0.96)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    width: 400,
+    height: 150,
+    borderRadius: 12,
     overflow: 'hidden',
+  },
+  nextUpPosterWrap: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 170,
   },
   nextUpTextCol: {
     flex: 1,
-    padding: 22,
+    paddingVertical: 16,
+    paddingLeft: 22,
+    paddingRight: 12,
     justifyContent: 'center',
   },
   nextUpShowTitle: {
     color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
+    fontSize: 22,
+    fontWeight: '600',
     marginBottom: 8,
   },
   nextUpEpisodeLine: {
-    color: '#D1D5DB',
-    fontSize: 14,
+    color: '#F3F4F6',
+    fontSize: 15,
     fontWeight: '600',
-    marginBottom: 18,
+    marginBottom: 14,
   },
   nextUpActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 20,
   },
   nextUpBtnInner: {
     flexDirection: 'row',
@@ -2807,27 +2854,23 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   nextUpPlayBtn: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
     paddingVertical: 10,
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
   },
   nextUpPlayBtnText: {
     color: '#0A0A0E',
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
   nextUpDismissBtn: {
     paddingVertical: 10,
-    paddingHorizontal: 10,
+    paddingHorizontal: 6,
   },
   nextUpDismissText: {
-    color: '#D1D5DB',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  nextUpPoster: {
-    width: 150,
-    height: '100%',
+    color: '#F3F4F6',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   // ---- Skip Intro/Recap popup --------------------------------------------
