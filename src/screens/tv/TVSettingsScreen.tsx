@@ -10,6 +10,7 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
+  findNodeHandle,
 } from 'react-native';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
@@ -157,9 +158,21 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   // Combines the rail's Left-edge registration with this hook's per-item
   // ref bookkeeping, so every row on this screen can also serve as the
   // rail's Right-key/re-select return-focus target.
-  const registerItem = (key: string) => (el: View | null) => {
+  const registerItem = (key: string, blockUp = false) => (el: View | null) => {
     setItemRef(key, el);
-    if (el) registerRailLeftEdge('settings', el);
+    if (el) {
+      registerRailLeftEdge('settings', el);
+      // The topmost row has nothing above it, but the side nav rail spans
+      // the full screen height, so Android's default geometric search
+      // would jump Up to the rail's "Search" button. A self-pointing
+      // nextFocusUp makes Up a no-op without touching other directions.
+      if (blockUp) {
+        const selfHandle = findNodeHandle(el);
+        if (selfHandle != null) {
+          (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+        }
+      }
+    }
   };
 
   useEffect(() => {
@@ -476,7 +489,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
         return (
           <TVFocusablePressable
             key={keyFor(rowKey)}
-            ref={registerItem(rowKey)}
+            ref={registerItem(rowKey, index === 0)}
             // Wired the same way Discover's grid picks a default landing
             // spot (`shouldPreferFocus(gridKey, index === 0)`): every row
             // on this screen was passing a hardcoded `false` default, so
