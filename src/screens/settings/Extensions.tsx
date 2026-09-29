@@ -25,6 +25,21 @@ import {
 import { extensionManager } from '../../lib/services/ExtensionManager';
 import { createProviderSource } from '../../lib/utils/helpers';
 
+// True when `latest` is a higher dotted version than `current` ("1.20" > "1.9").
+const isNewerVersion = (current?: string, latest?: string): boolean => {
+  if (!latest) return false;
+  if (!current) return true;
+  const c = current.split('.').map((n) => parseInt(n, 10) || 0);
+  const l = latest.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(c.length, l.length); i++) {
+    const a = c[i] || 0;
+    const b = l[i] || 0;
+    if (b > a) return true;
+    if (b < a) return false;
+  }
+  return false;
+};
+
 const AddSourceModal = memo(({
   visible,
   onClose,
@@ -223,11 +238,13 @@ export default function Extensions({
   const installedProviders = useContentStore((state) => state.installedProviders);
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
   const setProvider = useContentStore((state) => state.setProvider);
+  const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
   const activeProvider = useContentStore((state) => state.provider);
 
   const [availableProviders, setAvailableProviders] = useState<ProviderExtension[]>([]);
   const [activeSource, setActiveSource] = useState<ProviderSource | undefined>();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshStatus, setRefreshStatus] = useState('Loading repository manifest...');
   const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isAddingSource, setIsAddingSource] = useState(false);
@@ -262,23 +279,89 @@ export default function Extensions({
     setInstalledProviders(extensionStorage.getInstalledProviders());
   }, [setInstalledProviders]);
 
-  const loadManifest = useCallback(async (source?: ProviderSource, force = false) => {
-    if (!source) {
-      setAvailableProviders([]);
-      return;
-    }
-    setIsRefreshing(true);
-    try {
-      const providers = await extensionManager.fetchManifest(source, force);
-      setAvailableProviders(providers);
-    } catch (e: any) {
-      console.warn('[Extensions] Manifest load error:', e);
-      ToastAndroid.show(e?.message || 'Failed to load provider source', ToastAndroid.LONG);
-      setAvailableProviders([]);
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, []);
+  // Installs the newer manifest version over every installed addon that has
+  // one. Returns how many were updated.
+  const updateOutdatedProviders = useCallback(
+    async (manifestProviders: ProviderExtension[], source?: ProviderSource) => {
+      const installed = extensionStorage.getInstalledProviders();
+      const outdated: ProviderExtension[] = [];
+      for (const inst of installed) {
+        const latest = manifestProviders.find(
+          (p) =>
+            p.value === inst.value &&
+            (!p.source?.author || !inst.source?.author || p.source.author === inst.source.author),
+        );
+        if (latest && isNewerVersion(inst.version, latest.version)) {
+          outdated.push(latest);
+        }
+      }
+      if (outdated.length === 0) return 0;
+
+      let updated = 0;
+      for (const latest of outdated) {
+        setRefreshStatus(`Updating ${latest.display_name} (${updated + 1}/${outdated.length})...`);
+        setInstallingMap((prev) => ({ ...prev, [latest.value]: true }));
+        try {
+          await extensionManager.installProvider({
+            ...latest,
+            source: latest.source || source!,
+          });
+          updated += 1;
+        } catch (e) {
+          console.warn(`[Extensions] Update failed for ${latest.value}:`, e);
+        } finally {
+          setInstallingMap((prev) => ({ ...prev, [latest.value]: false }));
+        }
+      }
+
+      // Push the new versions into the store (the Sources page reads from
+      // it), including the active/secondary selections, which hold their
+      // own copy of the provider record.
+      const refreshed = extensionStorage.getInstalledProviders();
+      setInstalledProviders(refreshed);
+      const { provider: active, secondaryProvider: secondary } = useContentStore.getState();
+      const freshActive = refreshed.find((p) => p.value === active?.value);
+      if (freshActive && freshActive.version !== active?.version) setProvider(freshActive);
+      const freshSecondary = refreshed.find((p) => p.value === secondary?.value);
+      if (freshSecondary && freshSecondary.version !== secondary?.version) {
+        setSecondaryProvider(freshSecondary);
+      }
+      return updated;
+    },
+    [setInstalledProviders, setProvider, setSecondaryProvider],
+  );
+
+  const loadManifest = useCallback(
+    async (source?: ProviderSource, force = false, updateInstalled = false) => {
+      if (!source) {
+        setAvailableProviders([]);
+        return;
+      }
+      setRefreshStatus('Loading repository manifest...');
+      setIsRefreshing(true);
+      try {
+        const providers = await extensionManager.fetchManifest(source, force);
+        setAvailableProviders(providers);
+
+        if (updateInstalled) {
+          const updated = await updateOutdatedProviders(providers, source);
+          ToastAndroid.show(
+            updated > 0
+              ? `Updated ${updated} addon${updated === 1 ? '' : 's'}`
+              : 'All addons are up to date',
+            ToastAndroid.SHORT,
+          );
+        }
+      } catch (e: any) {
+        console.warn('[Extensions] Manifest load error:', e);
+        ToastAndroid.show(e?.message || 'Failed to load provider source', ToastAndroid.LONG);
+        setAvailableProviders([]);
+      } finally {
+        setIsRefreshing(false);
+      }
+    },
+    [updateOutdatedProviders],
+  );
 
   useEffect(() => {
     const source = extensionStorage.getProviderSource();
@@ -402,7 +485,7 @@ export default function Extensions({
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
             borderRadius={10}
-            onPress={() => loadManifest(activeSource, true)}
+            onPress={() => loadManifest(activeSource, true, true)}
             style={styles.iconBtn}
           >
             {() => (
@@ -448,7 +531,7 @@ export default function Extensions({
       {isRefreshing ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={primaryColor} />
-          <Text style={styles.loadingText}>Loading repository manifest...</Text>
+          <Text style={styles.loadingText}>{refreshStatus}</Text>
         </View>
       ) : visibleProviders.length === 0 ? (
         <View style={styles.centerContainer}>
