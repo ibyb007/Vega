@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, Dimensions, findNodeHandle } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, findNodeHandle, ToastAndroid } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
@@ -7,21 +7,15 @@ import { NavRail } from '../../lib/native/NavRail';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import useContentStore from '../../lib/zustand/contentStore';
 import { Provider } from '../../lib/providers/types';
+import { extensionStorage } from '../../lib/storage/extensionStorage';
+import { extensionManager } from '../../lib/services/ExtensionManager';
+import { TVProviderSettingsModal } from '../settings/components/TVProviderSettingsModal';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-// Trimmed from 96 -- see TVDiscoverScreen.tsx's identical constant for why.
-const CONTAINER_PADDING_LEFT = 20;
-const CONTAINER_PADDING_RIGHT = 48;
-const CARD_WIDTH = 250;
-const GRID_GAP = 20;
-
-const GRID_COLUMNS = Math.max(
-  1,
-  Math.floor(
-    (SCREEN_WIDTH - CONTAINER_PADDING_LEFT - CONTAINER_PADDING_RIGHT + GRID_GAP) /
-      (CARD_WIDTH + GRID_GAP)
-  )
-);
+// Only Torrentio exposes its provider settings on TV. Its schema also
+// carries a skip-timings toggle, which is hidden here because TheIntroDB
+// skip-intro is already always on in this app.
+const SETTINGS_ENABLED_PROVIDERS = ['torrentio'];
+const HIDDEN_SETTINGS_KEYS = ['torrentio_skipTimings'];
 
 interface TVSourceSelectScreenProps {
   onNavigateHome?: () => void;
@@ -43,7 +37,7 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   onRegisterReturnFocusTrigger,
   resetFocusOnMount,
 }) => {
-  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+  const { setItemRef, keyFor, shouldPreferFocus, requestRefocus } = useTVEntryFocus(
     () => lastFocusedSourcesKey,
     onRegisterEntryHandleGetter,
     onRegisterReturnFocusTrigger,
@@ -57,6 +51,8 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
   const secondaryProvider = useContentStore((state) => state.secondaryProvider);
   const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
   const installedProviders = useContentStore((state) => state.installedProviders) || [];
+  const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
+  const [settingsProvider, setSettingsProvider] = useState<any>(null);
 
   // Native node handle of the "Add / Manage Addons" button, captured once
   // it mounts (see its ref callback below) so the top row of provider
@@ -106,6 +102,40 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
     }
   };
 
+  const handleUninstallProvider = (item: any, index: number) => {
+    const remaining = installedProviders.filter((p: any) => p.value !== item.value);
+    extensionManager.uninstallProvider(item.value, item.source?.author);
+    setInstalledProviders(extensionStorage.getInstalledProviders());
+
+    if (provider?.value === item.value) {
+      const next = extensionStorage.getInstalledProviders()[0];
+      setProvider(
+        next ?? {
+          value: '',
+          display_name: '',
+          type: 'global',
+          installed: false,
+          disabled: false,
+          version: '0.0.1',
+          icon: '',
+          source: { author: '', url: '' },
+          installedAt: 0,
+          lastUpdated: 0,
+        }
+      );
+    }
+    if (secondaryProvider?.value === item.value) {
+      setSecondaryProvider(null);
+    }
+    ToastAndroid.show(`Uninstalled ${item.display_name || item.value}`, ToastAndroid.SHORT);
+
+    // The focused row is about to disappear -- hand focus to its
+    // neighbour so the D-pad doesn't get stranded.
+    const neighbour: any = remaining[Math.min(index, remaining.length - 1)];
+    lastFocusedSourcesKey = neighbour ? `provider-${neighbour.value}` : null;
+    if (neighbour) requestAnimationFrame(() => requestRefocus());
+  };
+
   const secondaryChoices = installedProviders.filter(
     (item: any) => item.value !== provider?.value,
   );
@@ -139,6 +169,11 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
               if (tag != null) setManageAddonsHandle(tag);
             }}
             hasTVPreferredFocus={shouldPreferFocus('manage-addons-btn', false)}
+            // Left from here must always reach the Sources rail button. The
+            // provider rows below sit down-and-left of this button, so
+            // Android's geometric search can pick one of them instead; this
+            // ID makes the native DPAD_LEFT handler go straight to the rail.
+            nativeID="rail-left-exit"
             onFocus={() => {
               lastFocusedSourcesKey = 'manage-addons-btn';
               // Re-claim the rail's Right-key return target every time this
@@ -216,47 +251,41 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.pageScrollContent}
         >
-          <View style={styles.gridContainer}>
+          <View style={styles.listContainer}>
             {installedProviders.map((item: any, index: number) => {
               const isSelected = provider?.value === item.value;
-              const displayName = item.displayTitle || item.name || item.value || `Source ${index + 1}`;
+              const displayName = item.displayTitle || item.name || item.display_name || item.value || `Source ${index + 1}`;
               const version = item.version ? `v${item.version}` : 'v1.0.0';
-              const author = item.author || 'global';
-              const cardKey = `provider-${item.value}-${index}`;
+              const author = item.source?.author || item.author || 'global';
+              const cardKey = `provider-${item.value}`;
+              const uninstallKey = `uninstall-${item.value}`;
+              const settingsKey = `settings-${item.value}`;
+              const showSettings =
+                Boolean(item.hasSettings) && SETTINGS_ENABLED_PROVIDERS.includes(item.value);
+              // Only the first row has nothing else above it -- rows
+              // below correctly fall back to Android's default search.
+              const upTarget = index === 0 ? manageAddonsHandle ?? undefined : undefined;
 
               return (
-                <TVFocusablePressable
-                  key={keyFor(cardKey)}
-                  ref={(el) => {
-                    setItemRef(cardKey, el);
-                    if (index % GRID_COLUMNS === 0 && el) {
-                      registerRailLeftEdge('sources', el);
-                    }
-                  }}
-                  hasTVPreferredFocus={shouldPreferFocus(cardKey, isSelected || index === 0)}
-                  onFocus={() => (lastFocusedSourcesKey = cardKey)}
-                  // Only the first row has nothing else above it -- rows
-                  // below correctly fall back to Android's default search,
-                  // which finds the row above just fine.
-                  nextFocusUp={index < GRID_COLUMNS ? manageAddonsHandle ?? undefined : undefined}
-                  scaleFocused={1.04}
-                  focusedBorderColor="#8A5CF6"
-                  borderRadius={16}
-                  onPress={() => handleSelectProvider(item)}
-                  style={[
-                    styles.providerCard,
-                    isSelected && styles.providerCardSelected,
-                  ]}
-                >
-                  {({ focused }) => (
-                    <View style={styles.cardContent}>
-                      <View style={styles.cardTop}>
-                        <View
-                          style={[
-                            styles.iconCircle,
-                            isSelected && styles.iconCircleSelected,
-                          ]}
-                        >
+                <View key={cardKey} style={styles.providerRow}>
+                  <TVFocusablePressable
+                    key={keyFor(cardKey)}
+                    ref={(el) => {
+                      setItemRef(cardKey, el);
+                      if (el) registerRailLeftEdge('sources', el);
+                    }}
+                    hasTVPreferredFocus={shouldPreferFocus(cardKey, isSelected || index === 0)}
+                    onFocus={() => (lastFocusedSourcesKey = cardKey)}
+                    nextFocusUp={upTarget}
+                    scaleFocused={1.02}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={14}
+                    onPress={() => handleSelectProvider(item)}
+                    style={[styles.rowMain, isSelected && styles.rowMainSelected]}
+                  >
+                    {({ focused }) => (
+                      <View style={styles.rowMainInner}>
+                        <View style={[styles.iconCircle, isSelected && styles.iconCircleSelected]}>
                           {item.icon ? (
                             <Image
                               source={{ uri: item.icon }}
@@ -266,34 +295,76 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
                           ) : (
                             <MaterialCommunityIcons
                               name="server"
-                              size={28}
+                              size={26}
                               color={isSelected || focused ? '#8A5CF6' : '#9CA3AF'}
                             />
                           )}
+                        </View>
+                        <View style={styles.rowInfo}>
+                          <View style={styles.titleLine}>
+                            <Text numberOfLines={1} style={styles.providerTitle}>
+                              {displayName}
+                            </Text>
+                            <Text style={styles.versionBadge}>{version}</Text>
+                          </View>
+                          <Text numberOfLines={1} style={styles.providerDetails}>
+                            {item.type || 'global'} • {author}
+                          </Text>
                         </View>
                         {isSelected ? (
                           <View style={styles.activePill}>
                             <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" />
                             <Text style={styles.activePillText}>Active</Text>
                           </View>
-                        ) : null}
+                        ) : (
+                          <Text style={styles.actionHint}>Press OK to Switch</Text>
+                        )}
                       </View>
+                    )}
+                  </TVFocusablePressable>
 
-                      <View style={styles.cardMiddle}>
-                        <Text numberOfLines={1} style={styles.providerTitle}>
-                          {displayName}
-                        </Text>
-                        <Text numberOfLines={1} style={styles.providerDetails}>
-                          {version} • {author}
-                        </Text>
-                      </View>
-
-                      <Text style={[styles.actionHint, isSelected && styles.actionHintActive]}>
-                        {isSelected ? 'Loaded on Home Screen' : 'Press OK to Switch'}
-                      </Text>
-                    </View>
+                  {showSettings && (
+                    <TVFocusablePressable
+                      key={keyFor(settingsKey)}
+                      ref={(el) => setItemRef(settingsKey, el)}
+                      hasTVPreferredFocus={shouldPreferFocus(settingsKey, false)}
+                      onFocus={() => (lastFocusedSourcesKey = settingsKey)}
+                      nextFocusUp={upTarget}
+                      scaleFocused={1.05}
+                      focusedBorderColor="#FFFFFF"
+                      borderRadius={10}
+                      onPress={() => setSettingsProvider(item)}
+                      style={[styles.rowBtn, styles.settingsBtn]}
+                    >
+                      {() => (
+                        <View style={styles.btnInner}>
+                          <MaterialCommunityIcons name="cog-outline" size={18} color="#FFFFFF" />
+                          <Text style={styles.rowBtnText}>Settings</Text>
+                        </View>
+                      )}
+                    </TVFocusablePressable>
                   )}
-                </TVFocusablePressable>
+
+                  <TVFocusablePressable
+                    key={keyFor(uninstallKey)}
+                    ref={(el) => setItemRef(uninstallKey, el)}
+                    hasTVPreferredFocus={shouldPreferFocus(uninstallKey, false)}
+                    onFocus={() => (lastFocusedSourcesKey = uninstallKey)}
+                    nextFocusUp={upTarget}
+                    scaleFocused={1.05}
+                    focusedBorderColor="#FFFFFF"
+                    borderRadius={10}
+                    onPress={() => handleUninstallProvider(item, index)}
+                    style={[styles.rowBtn, styles.uninstallBtn]}
+                  >
+                    {() => (
+                      <View style={styles.btnInner}>
+                        <MaterialCommunityIcons name="trash-can-outline" size={18} color="#FFFFFF" />
+                        <Text style={styles.rowBtnText}>Uninstall</Text>
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                </View>
               );
             })}
           </View>
@@ -378,6 +449,17 @@ export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
           )}
         </ScrollView>
       )}
+
+      <TVProviderSettingsModal
+        visible={settingsProvider !== null}
+        provider={settingsProvider}
+        hiddenKeys={HIDDEN_SETTINGS_KEYS}
+        onClose={() => {
+          setSettingsProvider(null);
+          // Modal dismissal can drop native focus; reclaim the row.
+          requestAnimationFrame(() => requestRefocus());
+        }}
+      />
     </View>
   );
 };
@@ -424,10 +506,63 @@ const styles = StyleSheet.create({
   pageScrollContent: {
     paddingBottom: 40,
   },
-  gridContainer: {
+  listContainer: {
+    gap: 12,
+    paddingHorizontal: 4,
+  },
+  providerRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 20,
+    alignItems: 'stretch',
+    gap: 12,
+  },
+  rowMain: {
+    flex: 1,
+    backgroundColor: '#16161E',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  rowMainSelected: {
+    backgroundColor: '#1E1B2E',
+    borderColor: '#8A5CF6',
+  },
+  rowMainInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  rowInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  titleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  versionBadge: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  rowBtn: {
+    paddingHorizontal: 18,
+    justifyContent: 'center',
+  },
+  settingsBtn: {
+    backgroundColor: 'rgba(138, 92, 246, 0.25)',
+  },
+  uninstallBtn: {
+    backgroundColor: 'rgba(239, 68, 68, 0.25)',
+  },
+  rowBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   secondarySection: {
     marginTop: 36,
@@ -474,31 +609,10 @@ const styles = StyleSheet.create({
     color: '#8A5CF6',
     fontWeight: '700',
   },
-  providerCard: {
-    width: 250,
-    height: 165,
-    backgroundColor: '#16161E',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    padding: 16,
-  },
-  providerCardSelected: {
-    backgroundColor: '#1E1B2E',
-    borderColor: '#8A5CF6',
-  },
-  cardContent: {
-    flex: 1,
-    justifyContent: 'space-between',
-  },
-  cardTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
   iconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 48,
+    height: 48,
+    borderRadius: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -526,9 +640,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
-  cardMiddle: {
-    marginVertical: 4,
-  },
   providerTitle: {
     color: '#FFFFFF',
     fontSize: 17,
@@ -543,10 +654,6 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 12,
     fontWeight: '500',
-  },
-  actionHintActive: {
-    color: '#8A5CF6',
-    fontWeight: '600',
   },
   emptyContainer: {
     flex: 1,
