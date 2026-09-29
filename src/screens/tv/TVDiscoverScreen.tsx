@@ -1547,7 +1547,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         const resumePos = resumeHintPosition ?? getSavedResumePosition(canonicalKey);
 
         onPlayStream(best.link, title, {
-          posterUrl: sourceInfo?.image || sourceInfo?.poster || activeSourcePost?.image || resultsTarget?.poster,
+          // IMDb-id providers keep a backdrop in `image` and the portrait
+          // poster in `poster`/the listing post -- prefer the poster (see
+          // the matching comment in TVDetailsScreen).
+          posterUrl: sourceInfo?.imdbId
+            ? sourceInfo?.poster || activeSourcePost?.image || sourceInfo?.image || resultsTarget?.poster
+            : sourceInfo?.image || sourceInfo?.poster || activeSourcePost?.image || resultsTarget?.poster,
           itemLink: activeSourcePost?.link,
           episodeId: canonicalKey,
           startPosition: resumePos,
