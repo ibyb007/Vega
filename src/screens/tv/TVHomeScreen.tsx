@@ -118,6 +118,7 @@ interface HeroEnrichment {
   year: string | null;
   genres: string[];
   cast: string[];
+  runtime: string | null;
   cachedAt: number;
 }
 const HERO_ENRICHMENT_CACHE_LIMIT = 150;
@@ -149,7 +150,8 @@ const isEmptyEnrichment = (e: HeroEnrichment) =>
   !e.rating &&
   !e.year &&
   e.genres.length === 0 &&
-  e.cast.length === 0;
+  e.cast.length === 0 &&
+  !e.runtime;
 
 // Folds what Cinemeta returned into the enrichment being built. The
 // provider's own synopsis/rating (already in `enrichment`) win over
@@ -161,6 +163,7 @@ const mergeCinemetaHero = (enrichment: HeroEnrichment, hero: CinemetaHeroData) =
   if (hero.year) enrichment.year = hero.year;
   if (hero.genres?.length) enrichment.genres = hero.genres;
   if (hero.cast?.length) enrichment.cast = hero.cast;
+  if (hero.runtime) enrichment.runtime = hero.runtime;
 };
 
 // Layers an enrichment over a hero. Every field is "only if we have it", so
@@ -175,6 +178,7 @@ const applyEnrichment = (hero: TVHeroMedia, e: HeroEnrichment, isHistory: boolea
   overview: isHistory ? hero.overview : e.description || hero.overview,
   rating: e.rating || hero.rating,
   year: e.year || hero.year,
+  runtime: e.runtime || hero.runtime,
   genres: e.genres.length > 0 ? e.genres : hero.genres,
   cast: e.cast.length > 0 ? e.cast : hero.cast,
 });
@@ -729,8 +733,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       // entries that went through Home's own Cinemeta enrichment. Without
       // this fallback those entries always looked like they had no
       // backdrop at all, even though one was sitting right there.
+      const ds = item.discoverSource;
       const sourceBackdrop =
-        item.background || item.backdrop || item.banner || item.discoverSource?.banner || null;
+        item.background || item.backdrop || item.banner || ds?.banner || null;
       const hasSourceBackdrop = Boolean(sourceBackdrop);
 
       const progressPercent =
@@ -758,22 +763,36 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
       // Already learned this title's Cinemeta backdrop/metadata? Paint it
       // straight into the first frame instead of poster -> backdrop later.
+      // Entries played from Discover already carry a backdrop, but not the
+      // rest of the header (runtime, year, rating, genres, cast) -- those
+      // are looked up in Cinemeta by the catalog item's IMDb id, so they
+      // are enriched too, keyed by that id rather than a provider link.
+      const dsImdb: string | null = (() => {
+        const id = String(ds?.imdb_id || ds?.id || '').trim();
+        return /^tt\d+$/i.test(id) ? id.toLowerCase() : null;
+      })();
       const enrichKey =
-        !hasSourceBackdrop && targetUrl && targetProvider
-          ? `${targetProvider}::${targetUrl}`
-          : null;
+        isHistory && ds && dsImdb
+          ? `discover::${dsImdb}`
+          : !hasSourceBackdrop && targetUrl && targetProvider
+            ? `${targetProvider}::${targetUrl}`
+            : null;
       const cachedEnrichment = enrichKey ? readHeroEnrichment(enrichKey) : undefined;
 
       const rawBaseHero: TVHeroMedia = {
-        title: item.title,
+        // Discover entries: the matched catalog item is Cinemeta-sourced, so
+        // its canonical title wins over whatever the playing provider called
+        // the post.
+        title: ds?.title || item.title,
         subtitle: isHistory ? episodeLabel : undefined,
         backdropUrl: sourceBackdrop || posterImage || undefined,
         posterUrl: posterImage,
         overview: baseOverview,
-        year: item.year ? String(item.year) : undefined,
-        rating: item.rating ? String(item.rating) : undefined,
-        runtime: item.runtime || undefined,
-        genres: item.genres?.length ? item.genres : undefined,
+        year: ds?.year ? String(ds.year) : item.year ? String(item.year) : undefined,
+        rating: ds?.rating ? String(ds.rating) : item.rating ? String(item.rating) : undefined,
+        runtime: ds?.runtime || item.runtime || undefined,
+        genres: ds?.genres?.length ? ds.genres : item.genres?.length ? item.genres : undefined,
+        cast: ds?.cast?.length ? ds.cast : undefined,
         hasLandscapeBackdrop: hasSourceBackdrop,
         isPosterFallback: !hasSourceBackdrop,
       };
@@ -805,6 +824,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           year: null,
           genres: [],
           cast: [],
+          runtime: null,
           cachedAt: Date.now(),
         };
         let info: any = null;
@@ -814,7 +834,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         //    ids / year the Cinemeta lookup below can use). Usually already
         //    warm from the neighbour prefetch.
         try {
-          info = await getOrFetchMetadata(targetUrl, targetProvider);
+          if (!enrichKey.startsWith('discover::')) {
+            info = await getOrFetchMetadata(targetUrl, targetProvider);
+          }
           if (requestId !== heroRequestIdRef.current) return;
           if (info?.synopsis) enrichment.description = info.synopsis;
           if (info?.rating) enrichment.rating = String(info.rating);
@@ -832,10 +854,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             .map((t: any) => String(t).trim())
             .find((t: string) => /^(19|20)\d{2}$/.test(t));
           const hero = await resolveCinemetaHero({
-            title: info?.title || item.title,
-            type: isSeries ? 'series' : info?.type || item.type,
-            imdbId: info?.imdbId,
-            populateMeta: info?.populateMeta === true,
+            title: ds?.title || info?.title || item.title,
+            type: ds ? ds.type : isSeries ? 'series' : info?.type || item.type,
+            imdbId: info?.imdbId || (ds ? dsImdb : undefined),
+            populateMeta: ds ? true : info?.populateMeta === true,
             tmdbId: info?.tmdbId,
             year: tagYear,
             preferTopRanked: true,
@@ -889,7 +911,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
 
         // A provider that failed to answer isn't cached (nothing learned),
         // so the next focus retries.
-        if (info || enrichment.backdrop) writeHeroEnrichment(enrichKey, enrichment);
+        if (info || ds || enrichment.backdrop) writeHeroEnrichment(enrichKey, enrichment);
         if (completion && requestId === heroRequestIdRef.current) {
           heroHostRef.current?.set((prev) =>
             prev ? applyEnrichment(prev, enrichment, isHistory) : prev
