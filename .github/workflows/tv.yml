@@ -67,37 +67,47 @@ jobs:
           # "canary" in the run dialog.
           CHANNEL="${{ inputs.channel }}"
 
-          # Ensure unique tag name across runs and re-run attempts.
-          # "-kotlin" sits right next to the version so it's visible on the
-          # tag, the release title, and every APK filename below. Canary
-          # builds get their own "-canary-" segment so they never collide
-          # with a stable tag/filename and are unmistakable at a glance.
-          if [ "$CHANNEL" = "canary" ]; then
-            TAG_SUFFIX="kotlin-tv-canary"
-            RELEASE_LABEL="Vega TV Canary"
-          else
-            TAG_SUFFIX="kotlin-tv"
-            RELEASE_LABEL="Vega TV"
-          fi
+          # Display version = app version + versionCode, e.g. "v4.0.6-191".
+          # It is shared by the release title, the tag and every APK filename,
+          # so a build can be matched across all three at a glance.
+          VERSION_LABEL="v${VERSION_NAME}-${VERSION_CODE}"
 
-          if [ "$RUN_ATTEMPT" -gt 1 ]; then
-            TAG_NAME="v${VERSION_NAME}-${TAG_SUFFIX}-${{ github.run_number }}.${RUN_ATTEMPT}"
+          # Release title:  "Vega TV Stable v4.0.6-191" / "Vega TV Canary v4.0.6-192"
+          # APK filename:   "Vega-TV-v4.0.6-191-<abi>.apk" /
+          #                 "Vega-TV-Canary-v4.0.6-192-<abi>.apk"
+          if [ "$CHANNEL" = "canary" ]; then
+            RELEASE_LABEL="Vega TV Canary"
+            APK_PREFIX="Vega-TV-Canary"
+            TAG_NAME="${VERSION_LABEL}-canary"
           else
-            TAG_NAME="v${VERSION_NAME}-${TAG_SUFFIX}-${{ github.run_number }}"
+            RELEASE_LABEL="Vega TV Stable"
+            APK_PREFIX="Vega-TV"
+            TAG_NAME="${VERSION_LABEL}"
+          fi
+          RELEASE_NAME="${RELEASE_LABEL} ${VERSION_LABEL}"
+
+          # Tags must be unique: a re-run of the same run number (same
+          # versionCode) gets an attempt suffix so it can't collide.
+          if [ "$RUN_ATTEMPT" -gt 1 ]; then
+            TAG_NAME="${TAG_NAME}.${RUN_ATTEMPT}"
+            RELEASE_NAME="${RELEASE_NAME} (attempt ${RUN_ATTEMPT})"
           fi
 
           echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "version_label=$VERSION_LABEL" >> $GITHUB_OUTPUT
+          echo "apk_prefix=$APK_PREFIX" >> $GITHUB_OUTPUT
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "release_name=$RELEASE_LABEL $TAG_NAME" >> $GITHUB_OUTPUT
+          echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
 
-          # Canary is a prerelease and must never become the repo's
-          # highlighted "Latest release" -- both flags are required:
-          # prerelease alone still lets `make_latest: true`/auto-detection
-          # promote it, and make_latest:false alone would still show it
-          # without the Pre-release badge. Together, it's only visible by
-          # opening the full Releases list.
+          # Canary is a prerelease and must never take over the repo's
+          # "Latest release" badge (that stays on the newest stable build) --
+          # both flags are required: prerelease alone still lets
+          # `make_latest: true`/auto-detection promote it, and
+          # make_latest:false alone would still show it without the
+          # Pre-release badge. This only affects the badge: the full Releases
+          # page lists stable and canary together, newest build first.
           if [ "$CHANNEL" = "canary" ]; then
             echo "prerelease=true" >> $GITHUB_OUTPUT
             echo "make_latest=false" >> $GITHUB_OUTPUT
@@ -221,16 +231,17 @@ jobs:
       - name: Prepare APK Artifacts
         run: |
           mkdir -p output_apks
-          TAG="${{ steps.release_meta.outputs.tag_name }}"
+          # e.g. Vega-TV-v4.0.6-191 or Vega-TV-Canary-v4.0.6-192
+          BASE="${{ steps.release_meta.outputs.apk_prefix }}-${{ steps.release_meta.outputs.version_label }}"
 
           find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" | while read -r file; do
             filename=$(basename "$file")
             if [[ "$filename" == *"arm64-v8a"* ]]; then
-              cp "$file" "output_apks/Vega-TV-${TAG}-arm64-v8a.apk"
+              cp "$file" "output_apks/${BASE}-arm64-v8a.apk"
             elif [[ "$filename" == *"armeabi-v7a"* ]]; then
-              cp "$file" "output_apks/Vega-TV-${TAG}-armeabi-v7a.apk"
+              cp "$file" "output_apks/${BASE}-armeabi-v7a.apk"
             else
-              cp "$file" "output_apks/Vega-TV-${TAG}-universal.apk"
+              cp "$file" "output_apks/${BASE}-universal.apk"
             fi
           done
           ls -la output_apks/
