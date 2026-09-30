@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { mainStorage } from '../storage';
 
 export type VideoPlayerType = 'inbuilt' | 'vlc' | 'external';
-export type AudioBoostProfile = 'off' | 'rich' | 'dialogue';
+export type AudioBoostProfile = 'off' | 'rich' | 'dialogue' | 'cinematic';
 
 interface SettingsState {
   defaultPlayer: VideoPlayerType;
@@ -25,7 +25,7 @@ const getStoredPlayer = (): VideoPlayerType => {
 const getStoredAudioBoost = (): AudioBoostProfile => {
   try {
     const saved = mainStorage.getString('audioBoostProfile');
-    if (saved === 'rich' || saved === 'dialogue' || saved === 'off') {
+    if (saved === 'rich' || saved === 'dialogue' || saved === 'cinematic' || saved === 'off') {
       return saved;
     }
   } catch {}
@@ -56,7 +56,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   cycleAudioBoostProfile: () => {
     const current = get().audioBoostProfile;
     const next: AudioBoostProfile =
-      current === 'off' ? 'rich' : current === 'rich' ? 'dialogue' : 'off';
+      current === 'off'
+        ? 'rich'
+        : current === 'rich'
+        ? 'dialogue'
+        : current === 'dialogue'
+        ? 'cinematic'
+        : 'off';
     try {
       mainStorage.setString('audioBoostProfile', next);
     } catch (e) {
