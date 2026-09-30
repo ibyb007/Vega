@@ -63,6 +63,12 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
     desc: 'Heavy vocal clarity boost while dynamic peaks and low-end rumble are compressed.',
     icon: 'account-voice',
   },
+  {
+    id: 'cinematic',
+    title: 'Cinematic Sound',
+    desc: 'Lifts quiet detail like wind, whispers, distant chatter and ambient effects, while loud peaks stay controlled.',
+    icon: 'movie-open',
+  },
 ];
 
 // TMDB "API Key (v3)" -- exactly 32 hex characters. (The long "Read Access
@@ -217,6 +223,8 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
         ? 'Rich & Immersive (+12dB Boost)'
         : profile === 'dialogue'
         ? 'Dialogue Boost / Night Mode'
+        : profile === 'cinematic'
+        ? 'Cinematic Sound'
         : 'Standard (Off)';
     ToastAndroid.show(`Audio Profile: ${label}`, ToastAndroid.SHORT);
   };
