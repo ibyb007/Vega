@@ -491,6 +491,8 @@ export interface CinemetaHeroData {
   year?: string;
   genres?: string[];
   cast?: string[];
+  /** Display string, e.g. "148 min". */
+  runtime?: string;
   source: 'id' | 'title';
   /**
    * False when this came from a catalog search row: backdrop, synopsis and
@@ -522,6 +524,7 @@ const heroFromMeta = (meta: CinemetaMeta, source: 'id' | 'title'): CinemetaHeroD
     year: year ? String(year) : undefined,
     genres: meta.genres?.length ? meta.genres : undefined,
     cast: meta.cast?.length ? meta.cast.slice(0, 3) : undefined,
+    runtime: formatCinemetaRuntime(meta.runtime),
     source,
     complete: true,
   };
