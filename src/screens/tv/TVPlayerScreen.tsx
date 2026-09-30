@@ -119,6 +119,9 @@ const AUDIO_BOOST_GAIN_DB: Record<AudioBoostProfile, number> = {
   off: 0,
   dialogue: 6,
   rich: 12,
+  // Cinematic is not a flat gain: native side runs a multiband dynamics processor and uses
+  // this value as the lift amount for quiet detail (9 = nominal). Must stay > 0 to enable.
+  cinematic: 9,
 };
 const KEYCODE_DPAD_CENTER = 23;
 const KEYCODE_ENTER = 66;
@@ -1123,6 +1126,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         ? 'Audio Boost: Rich & Immersive (+12dB)'
         : nextMode === 'dialogue'
         ? 'Audio Boost: Dialogue / Night Mode (+6dB)'
+        : nextMode === 'cinematic'
+        ? 'Audio Boost: Cinematic Sound (Wind, Whispers & Ambience)'
         : 'Audio Boost: Standard (Off)';
     ToastAndroid.show(label, ToastAndroid.SHORT);
   }, [cycleAudioBoostProfile, resetInactivityTimer]);
@@ -1517,6 +1522,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         selectedVideoTrack={selectedVideoTrack}
         textTracks={mergedSubtitles}
         audioBoostGain={audioBoostGain}
+        audioBoostMode={audioBoostProfile === 'cinematic' ? 'cinematic' : ''}
         subtitleStyle={{
           backgroundColor: 'transparent',
           opacity: 0,
@@ -1925,6 +1931,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                         ? 'surround-sound'
                         : audioBoostProfile === 'dialogue'
                         ? 'account-voice'
+                        : audioBoostProfile === 'cinematic'
+                        ? 'movie-open'
                         : 'volume-medium'
                     }
                     size={22}
