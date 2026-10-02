@@ -7,7 +7,9 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
+import KeyEvent from 'react-native-keyevent';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { TVFocusablePressable } from '../components/tv/TVFocusablePressable';
@@ -16,6 +18,7 @@ import { useTVEntryFocus } from '../lib/tv/useTVEntryFocus';
 import useContentStore from '../lib/zustand/contentStore';
 import { providerManager } from '../lib/services/ProviderManager';
 import { extensionStorage } from '../lib/storage';
+import { searchCinemetaCatalog, CinemetaSearchHit } from '../lib/services/cinemetaService';
 import { Post, Provider } from '../lib/providers/types';
 
 interface SearchResultGroup {
@@ -42,6 +45,14 @@ const getProviderDisplayName = (p: Provider | any): string => {
 // the Search tab and comes back -- same pattern as TVHomeScreen's
 // `lastFocusedKey`.
 let lastFocusedSearchKey: string | null = null;
+
+// Android key codes (react-native-keyevent reports raw KEYCODE_* values).
+const KEYCODE_DPAD_CENTER = 23;
+const KEYCODE_ENTER = 66;
+
+const SUGGESTION_MIN_CHARS = 2;
+const SUGGESTION_DEBOUNCE_MS = 250;
+const MAX_SUGGESTIONS = 6;
 
 // Also module-level (mirrors TVDiscoverScreen's `savedDiscoverState`):
 // selecting a result opens TVDetailsScreen full-screen, which unmounts this
@@ -101,8 +112,129 @@ export default function TVSearch({
   const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
   const [activeProviders, setActiveProviders] = useState<Provider[]>([]);
 
-  const searchInputRef = useRef<TextInput>(null);
+  const searchInputRef = useRef<TextInput | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // ---- Search field focus / keyboard handling ---------------------------
+  // The TextInput itself is the D-pad focus target (it used to be nested
+  // inside a focusable Pressable, which fought it for focus: the first OK
+  // only moved native focus, and the layout change when the clear button
+  // appeared after the 1st letter made Android drop the cursor).
+  const [inputFocused, setInputFocused] = useState(false);
+  const inputFocusedRef = useRef(false);
+  const keyboardVisibleRef = useRef(false);
+
+  // TextInput doesn't take `hasTVPreferredFocus`, so to put native focus on
+  // it *without* popping the keyboard we briefly turn off
+  // showSoftInputOnFocus, focus(), then turn it back on.
+  const [softKeyboardOnFocus, setSoftKeyboardOnFocus] = useState(true);
+  const [quietFocusNonce, setQuietFocusNonce] = useState(0);
+  const focusInputQuietly = useCallback(() => {
+    setSoftKeyboardOnFocus(false);
+    setQuietFocusNonce((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    if (quietFocusNonce === 0) return;
+    const raf = requestAnimationFrame(() => searchInputRef.current?.focus());
+    const restore = setTimeout(() => setSoftKeyboardOnFocus(true), 250);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(restore);
+    };
+  }, [quietFocusNonce]);
+
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => {
+      keyboardVisibleRef.current = true;
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardVisibleRef.current = false;
+    });
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  // Safety net for "OK doesn't open the keyboard": if OK/Enter is released
+  // while the field is focused and no keyboard appeared, ask for it.
+  useEffect(() => {
+    const handleKeyUp = (e: { keyCode?: number }) => {
+      if (e?.keyCode !== KEYCODE_DPAD_CENTER && e?.keyCode !== KEYCODE_ENTER) return;
+      if (!inputFocusedRef.current) return;
+      setTimeout(() => {
+        if (inputFocusedRef.current && !keyboardVisibleRef.current) {
+          searchInputRef.current?.focus();
+        }
+      }, 150);
+    };
+    KeyEvent.onKeyUpListener(handleKeyUp);
+    return () => KeyEvent.removeKeyUpListener();
+  }, []);
+
+  // Stable ref callback (an inline one re-runs on every keystroke). Reads
+  // the latest focus helpers through a ref so its identity never changes.
+  const preferFocusRef = useRef(shouldPreferFocus);
+  preferFocusRef.current = shouldPreferFocus;
+  const setSearchInputRef = useCallback(
+    (el: TextInput | null) => {
+      searchInputRef.current = el;
+      setItemRef('search-bar', el);
+      if (el) {
+        registerRailLeftEdge('search', el);
+        // Fresh visit (or rail handing focus back) -> land on the field.
+        if (preferFocusRef.current('search-bar', true)) focusInputQuietly();
+      }
+    },
+    [setItemRef, focusInputQuietly]
+  );
+
+  // ---- Inline suggestions (Cinemeta, same source the app already uses) --
+  const [suggestions, setSuggestions] = useState<CinemetaSearchHit[]>([]);
+  // True right after a submit / suggestion pick / restored query so the
+  // list stays closed until the user types again.
+  const suppressSuggestionsRef = useRef<boolean>(Boolean(savedSearchState?.query));
+  const suggestReqRef = useRef(0);
+
+  useEffect(() => {
+    const q = query.trim();
+    const reqId = ++suggestReqRef.current;
+    if (suppressSuggestionsRef.current || q.length < SUGGESTION_MIN_CHARS) {
+      setSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const [movies, series] = await Promise.all([
+        searchCinemetaCatalog(q, 'movie'),
+        searchCinemetaCatalog(q, 'series'),
+      ]);
+      if (reqId !== suggestReqRef.current || suppressSuggestionsRef.current) return;
+
+      const lower = q.toLowerCase();
+      const interleaved: CinemetaSearchHit[] = [];
+      for (let i = 0; i < Math.max(movies.length, series.length); i++) {
+        if (movies[i]) interleaved.push(movies[i]);
+        if (series[i]) interleaved.push(series[i]);
+      }
+      const seen = new Set<string>();
+      const unique = interleaved.filter((h) => {
+        if (seen.has(h.imdbId)) return false;
+        seen.add(h.imdbId);
+        return true;
+      });
+      // Titles that start with what was typed first, otherwise keep order.
+      const prefix = unique.filter((h) => h.name.toLowerCase().startsWith(lower));
+      const rest = unique.filter((h) => !h.name.toLowerCase().startsWith(lower));
+      setSuggestions([...prefix, ...rest].slice(0, MAX_SUGGESTIONS));
+    }, SUGGESTION_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const handleChangeText = useCallback((text: string) => {
+    suppressSuggestionsRef.current = false;
+    setQuery(text);
+  }, []);
 
   // No local back-stack on this screen — Back is handled centrally by
   // App.tsx, which moves focus to the Search button on the rail.
@@ -248,6 +380,41 @@ export default function TVSearch({
     [activeProviders, getPersistedProviders]
   );
 
+  const submitSearch = useCallback(
+    (text: string) => {
+      suppressSuggestionsRef.current = true;
+      setSuggestions([]);
+      executeMultiProviderSearch(text);
+    },
+    [executeMultiProviderSearch]
+  );
+
+  // IME "search" key: run the search, drop the keyboard, but keep D-pad
+  // focus on the field so Down/Right keep working from there.
+  const handleSubmitEditing = useCallback(() => {
+    submitSearch(query);
+    searchInputRef.current?.blur();
+    focusInputQuietly();
+  }, [query, submitSearch, focusInputQuietly]);
+
+  const handlePickSuggestion = useCallback(
+    (hit: CinemetaSearchHit) => {
+      setQuery(hit.name);
+      submitSearch(hit.name);
+      focusInputQuietly();
+    },
+    [submitSearch, focusInputQuietly]
+  );
+
+  const handleClear = useCallback(() => {
+    suppressSuggestionsRef.current = true;
+    setQuery('');
+    setSuggestions([]);
+    setResults([]);
+    setActiveHero(null);
+    focusInputQuietly();
+  }, [focusInputQuietly]);
+
   useEffect(() => {
     if (!activeHero && results.length > 0) {
       for (const group of results) {
@@ -317,76 +484,60 @@ export default function TVSearch({
         </View>
 
         <View style={styles.header}>
-          <TVFocusablePressable
-            key={keyFor('search-bar')}
-            ref={(el) => {
-              setItemRef('search-bar', el);
-              // Fixed, always-mounted -- the true left edge of the whole
-              // screen -- so it's safe to register the instant it mounts.
-              if (el) registerRailLeftEdge('search', el);
-            }}
-            hasTVPreferredFocus={shouldPreferFocus('search-bar', false)}
-            onFocus={() => (lastFocusedSearchKey = 'search-bar')}
-            scaleFocused={1.02}
-            focusedBorderColor="#8A5CF6"
-            borderRadius={14}
-            onPress={() => {
-              // Calling TextInput.focus() synchronously in the same event
-              // tick as the OK press that just gave this Pressable real
-              // Android focus races the platform's own focus-commit: the
-              // EditText silently gains native focus but the IME's "show
-              // keyboard" request gets dropped, so the first OK does nothing
-              // visible and a second OK (now with the field already
-              // focused) is what actually raises the keyboard. Deferring to
-              // the next frame lets this Pressable's own focus settle first,
-              // so a single OK reliably opens the keyboard.
-              requestAnimationFrame(() => {
-                searchInputRef.current?.focus();
-              });
-            }}
-            style={styles.searchBarWrapper}
+          <View
+            style={[
+              styles.searchBarWrapper,
+              inputFocused && styles.searchBarWrapperFocused,
+            ]}
           >
-            {() => (
-              <View style={styles.searchBarInner}>
-                <MaterialCommunityIcons name="magnify" size={24} color="#8A5CF6" />
-                <TextInput
-                  ref={searchInputRef}
-                  value={query}
-                  onChangeText={setQuery}
-                  onSubmitEditing={() => executeMultiProviderSearch(query)}
-                  placeholder="Search movies, TV shows, anime across all addons..."
-                  placeholderTextColor="#6B7280"
-                  style={styles.input}
-                  returnKeyType="search"
-                />
-                {query.length > 0 && (
-                  <TVFocusablePressable
-                    scaleFocused={1.1}
-                    focusedBorderColor="#8A5CF6"
-                    borderRadius={8}
-                    onPress={() => {
-                      setQuery('');
-                      setResults([]);
-                      setActiveHero(null);
-                    }}
-                    style={styles.clearBtn}
-                  >
-                    {() => <MaterialCommunityIcons name="close" size={20} color="#9CA3AF" />}
-                  </TVFocusablePressable>
-                )}
-              </View>
-            )}
-          </TVFocusablePressable>
+            <MaterialCommunityIcons name="magnify" size={24} color="#8A5CF6" />
+            <TextInput
+              key={keyFor('search-bar')}
+              ref={setSearchInputRef}
+              value={query}
+              onChangeText={handleChangeText}
+              onSubmitEditing={handleSubmitEditing}
+              onFocus={() => {
+                inputFocusedRef.current = true;
+                setInputFocused(true);
+                lastFocusedSearchKey = 'search-bar';
+              }}
+              onBlur={() => {
+                inputFocusedRef.current = false;
+                setInputFocused(false);
+              }}
+              showSoftInputOnFocus={softKeyboardOnFocus}
+              placeholder="Search movies, TV shows, anime across all addons..."
+              placeholderTextColor="#6B7280"
+              style={styles.input}
+              returnKeyType="search"
+              submitBehavior="submit"
+              autoCorrect={false}
+              autoCapitalize="none"
+            />
+            {/* Always mounted: mounting it on the 1st typed letter changed
+                the layout under the focused field and dropped the cursor. */}
+            <TVFocusablePressable
+              focusable={query.length > 0}
+              scaleFocused={1.1}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={8}
+              onPress={handleClear}
+              style={[styles.clearBtn, query.length === 0 && styles.clearBtnHidden]}
+            >
+              {() => <MaterialCommunityIcons name="close" size={20} color="#9CA3AF" />}
+            </TVFocusablePressable>
+          </View>
 
           <TVFocusablePressable
             key={keyFor('search-submit')}
             ref={(el) => setItemRef('search-submit', el)}
-            hasTVPreferredFocus={shouldPreferFocus('search-submit', true)}
+            hasTVPreferredFocus={shouldPreferFocus('search-submit', false)}
             onFocus={() => (lastFocusedSearchKey = 'search-submit')}
             scaleFocused={1.05}
             focusedBorderColor="#FFFFFF"
             borderRadius={12}
-            onPress={() => executeMultiProviderSearch(query)}
+            onPress={() => submitSearch(query)}
             style={styles.searchSubmitBtn}
           >
             {() => (
@@ -403,6 +554,41 @@ export default function TVSearch({
             )}
           </TVFocusablePressable>
         </View>
+
+        {suggestions.length > 0 && (
+          <View style={styles.suggestionsPanel}>
+            {suggestions.map((hit) => (
+              <TVFocusablePressable
+                key={`suggest-${hit.type}-${hit.imdbId}`}
+                scaleFocused={1.02}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={10}
+                onPress={() => handlePickSuggestion(hit)}
+                style={styles.suggestionRow}
+              >
+                {({ focused }) => (
+                  <View style={styles.suggestionInner}>
+                    <MaterialCommunityIcons
+                      name={hit.type === 'movie' ? 'movie-open-outline' : 'television-classic'}
+                      size={20}
+                      color={focused ? '#FFFFFF' : '#8A5CF6'}
+                    />
+                    <Text
+                      numberOfLines={1}
+                      style={[styles.suggestionTitle, focused && styles.suggestionTitleFocused]}
+                    >
+                      {hit.name}
+                    </Text>
+                    {hit.year ? <Text style={styles.suggestionMeta}>{hit.year}</Text> : null}
+                    <Text style={styles.suggestionMeta}>
+                      {hit.type === 'movie' ? 'Movie' : 'Series'}
+                    </Text>
+                  </View>
+                )}
+              </TVFocusablePressable>
+            ))}
+          </View>
+        )}
 
         {results.length > 0 && (
           <View style={styles.tabBar}>
@@ -660,16 +846,17 @@ const styles = StyleSheet.create({
   },
   searchBarWrapper: {
     flex: 1,
-    backgroundColor: '#16161E',
-    borderRadius: 14,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  searchBarInner: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
+    backgroundColor: '#16161E',
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  searchBarWrapperFocused: {
+    borderColor: '#8A5CF6',
+    transform: [{ scale: 1.02 }],
   },
   input: {
     flex: 1,
@@ -680,6 +867,43 @@ const styles = StyleSheet.create({
   },
   clearBtn: {
     padding: 6,
+  },
+  clearBtnHidden: {
+    opacity: 0,
+  },
+  suggestionsPanel: {
+    maxWidth: 820,
+    marginTop: -12,
+    marginBottom: 24,
+    padding: 6,
+    backgroundColor: '#16161E',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  suggestionRow: {
+    backgroundColor: 'transparent',
+  },
+  suggestionInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  suggestionTitle: {
+    flex: 1,
+    color: '#D1D5DB',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  suggestionTitleFocused: {
+    color: '#FFFFFF',
+  },
+  suggestionMeta: {
+    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '600',
   },
   searchSubmitBtn: {
     backgroundColor: '#8A5CF6',
