@@ -59,9 +59,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       current === 'off'
         ? 'rich'
         : current === 'rich'
-        ? 'dialogue'
-        : current === 'dialogue'
         ? 'cinematic'
+        : current === 'cinematic'
+        ? 'dialogue'
         : 'off';
     try {
       mainStorage.setString('audioBoostProfile', next);
