@@ -58,16 +58,16 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
     icon: 'surround-sound',
   },
   {
+    id: 'cinematic',
+    title: 'Cinematic Sound',
+    desc: 'Everything in Rich & Immersive, even louder, plus extra lift for quiet low-level sounds like wind, whispers, distant chatter and ambient effects.',
+    icon: 'movie-open',
+  },
+  {
     id: 'dialogue',
     title: 'Dialogue Boost (Night Mode)',
     desc: 'Heavy vocal clarity boost while dynamic peaks and low-end rumble are compressed.',
     icon: 'account-voice',
-  },
-  {
-    id: 'cinematic',
-    title: 'Cinematic Sound',
-    desc: 'Lifts quiet detail like wind, whispers, distant chatter and ambient effects, while loud peaks stay controlled.',
-    icon: 'movie-open',
   },
 ];
 
