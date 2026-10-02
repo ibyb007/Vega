@@ -119,9 +119,12 @@ const AUDIO_BOOST_GAIN_DB: Record<AudioBoostProfile, number> = {
   off: 0,
   dialogue: 6,
   rich: 12,
-  // Cinematic is not a flat gain: native side runs a multiband dynamics processor and uses
-  // this value as the lift amount for quiet detail (9 = nominal). Must stay > 0 to enable.
-  cinematic: 9,
+  // Cinematic = everything Rich does (full-range gain across dialogue, score, ambience and
+  // explosive peaks) pushed higher, PLUS an extra multiband lift for quiet low-level detail
+  // (wind, whispers, distant chatter, foley). This value is the gain applied to loud content;
+  // quiet bands receive up to ~+9 dB more on top (see applyCinematicBoost in the native patch).
+  // Raise it (max 24) if 5.1 content is still too quiet; lower it if peaks start to crunch.
+  cinematic: 15,
 };
 const KEYCODE_DPAD_CENTER = 23;
 const KEYCODE_ENTER = 66;
@@ -1124,10 +1127,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     const label =
       nextMode === 'rich'
         ? 'Audio Boost: Rich & Immersive (+12dB)'
+        : nextMode === 'cinematic'
+        ? 'Audio Boost: Cinematic Sound (+15dB, Low-Level Detail Lift)'
         : nextMode === 'dialogue'
         ? 'Audio Boost: Dialogue / Night Mode (+6dB)'
-        : nextMode === 'cinematic'
-        ? 'Audio Boost: Cinematic Sound (Wind, Whispers & Ambience)'
         : 'Audio Boost: Standard (Off)';
     ToastAndroid.show(label, ToastAndroid.SHORT);
   }, [cycleAudioBoostProfile, resetInactivityTimer]);
