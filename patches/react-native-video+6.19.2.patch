@@ -1745,7 +1745,7 @@ index e16ac96..8ba29fe 100644
      }
  
      public void setSelectedAudioTrack(String type, String value) {
-@@ -2589,6 +3184,203 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2589,6 +3184,216 @@ public class ReactExoplayerView extends FrameLayout implements
          }
      }
  
@@ -1753,7 +1753,7 @@ index e16ac96..8ba29fe 100644
 +     * Sets the requested audio boost gain in dB (0 = off). Backed by Android's
 +     * {@link android.media.audiofx.LoudnessEnhancer}, which applies real post-decode gain
 +     * (unlike ExoPlayer's volume, which is clamped to [0, 1] and can only attenuate).
-+     * In "cinematic" mode the value scales the amount of quiet-detail lift instead.
++     * In "cinematic" mode the value is the gain for loud content and quiet detail is lifted further on top.
 +     */
 +    public void setAudioBoostGain(float gainDb) {
 +        audioBoostGainDb = gainDb;
@@ -1849,14 +1849,22 @@ index e16ac96..8ba29fe 100644
 +    }
 +
 +    /**
-+     * Cinematic Sound: 5-band upward-leaning compression with a pre-EQ and a safety limiter.
-+     * Each band has a low threshold and make-up gain, so anything quiet (wind, whispers, distant
-+     * chatter, footsteps, room tone, foley) is raised well above its original level while loud
-+     * moments (explosions, score peaks) stay close to their original level and the limiter
-+     * stops any overshoot. A per-band noise gate stops the lift from amplifying hiss.
-+     * The lift amount scales with audioBoostGainDb (9 dB = nominal).
++     * Cinematic Sound = the full-range gain of the "Rich" profile, pushed higher, plus an extra
++     * multiband lift for quiet detail.
 +     *
-+     * @return true if the effect is active, false if the device rejected it (caller falls back).
++     * audioBoostGainDb is the gain applied to LOUD content (explosions, score peaks, dialogue
++     * at normal level) - the same role it plays for the plain boost, just above Rich's 12 dB.
++     * Each of the 5 bands then adds make-up gain so that quiet signals (wind, whispers, distant
++     * chatter, room tone, foley) get several dB MORE than that, and the compressor in each band
++     * pulls the gain back down as the signal gets louder. Make-up is computed per band so that
++     * a signal at LOUD_REF_DB receives exactly the base gain:
++     *     makeup = baseGain + (LOUD_REF_DB - threshold) * (1 - 1/ratio)
++     * Quiet signals below the threshold get the full make-up (base + up to ~9-13 dB). A
++     * per-band noise gate keeps the lift from raising hiss, and a brick-wall style limiter
++     * stops the large total gain from clipping.
++     *
++     * @return true if the effect is active, false if the device rejected it (caller falls back
++     *         to the plain LoudnessEnhancer gain boost).
 +     */
 +    @androidx.annotation.RequiresApi(api = android.os.Build.VERSION_CODES.P)
 +    private boolean applyCinematicBoost(int audioSessionId) {
@@ -1871,19 +1879,21 @@ index e16ac96..8ba29fe 100644
 +            }
 +
 +            final int channels = 2;
-+            // Band upper edges (Hz): rumble | wind & body | dialogue & chatter | whisper, steps, cloth | air & ambience
++            // Gain for loud content, in dB. Above Rich (12 dB) by design.
++            final float baseGainDb = Math.max(0f, Math.min(audioBoostGainDb, 24f));
++            // Approximate level (dBFS, per band) of "loud" content used to anchor the base gain.
++            final float loudRefDb = -8f;
++
++            // Band upper edges (Hz): rumble/LFE | wind & body | dialogue & chatter | whisper, steps, cloth | air & ambience
 +            final float[] mbcCutoff  = {120f, 500f, 2000f, 6000f, 20000f};
-+            final float[] mbcThresh  = { -22f, -30f,  -28f,  -30f,  -34f};
-+            final float[] mbcRatio   = { 1.4f, 2.2f,  2.0f,  2.4f,  2.6f};
-+            final float[] mbcMakeup  = {  2f,   9f,    7f,    10f,    9f };
++            final float[] mbcThresh  = { -24f, -28f,  -26f,  -28f,  -30f};
++            final float[] mbcRatio   = { 1.5f, 2.4f,  1.9f,  2.2f,  2.4f};
 +            final float[] mbcAttack  = { 30f,  20f,   12f,     8f,    6f };
 +            final float[] mbcRelease = {400f, 300f,  220f,   180f,  160f };
-+            final float[] mbcGate    = {-80f, -75f,  -75f,   -72f,  -70f };
-+            // Pre-EQ: shape what the compressors see - body for wind, presence for whispers, air for ambience.
++            final float[] mbcGate    = {-80f, -78f,  -76f,   -74f,  -72f };
++            // Pre-EQ: a little extra body for wind/ambience, presence for whispers, air for room tone.
 +            final float[] eqCutoff = {60f, 150f, 400f, 1000f, 3000f, 8000f, 20000f};
-+            final float[] eqGain   = { 1f,  2f,  3f,    2f,    3f,    4f,     3f };
-+
-+            float scale = Math.max(0f, Math.min(audioBoostGainDb, 18f)) / 9f;
++            final float[] eqGain   = { 2f,  3f,  2f,    1f,    2f,    3f,     2f };
 +
 +            if (dynamicsProcessing == null) {
 +                android.media.audiofx.DynamicsProcessing.Config config =
@@ -1900,18 +1910,21 @@ index e16ac96..8ba29fe 100644
 +
 +            for (int i = 0; i < eqCutoff.length; i++) {
 +                dynamicsProcessing.setPreEqBandAllChannelsTo(i,
-+                        new android.media.audiofx.DynamicsProcessing.EqBand(true, eqCutoff[i], eqGain[i] * scale));
++                        new android.media.audiofx.DynamicsProcessing.EqBand(true, eqCutoff[i], eqGain[i]));
 +            }
 +            for (int i = 0; i < mbcCutoff.length; i++) {
++                float makeupDb = baseGainDb + (loudRefDb - mbcThresh[i]) * (1f - 1f / mbcRatio[i]);
++                makeupDb = Math.min(makeupDb, 36f);
 +                dynamicsProcessing.setMbcBandAllChannelsTo(i,
 +                        new android.media.audiofx.DynamicsProcessing.MbcBand(
 +                                true, mbcCutoff[i], mbcAttack[i], mbcRelease[i],
 +                                mbcRatio[i], mbcThresh[i], 6f /* knee */, mbcGate[i], 1.5f /* expander */,
-+                                0f, mbcMakeup[i] * scale));
++                                0f, makeupDb));
 +            }
++            // Limiter catches the peaks that the large total gain would otherwise push past 0 dBFS.
 +            dynamicsProcessing.setLimiterAllChannelsTo(
 +                    new android.media.audiofx.DynamicsProcessing.Limiter(
-+                            true, true, 0, 1f, 60f, 10f, -2f, 0f));
++                            true, true, 0, 1f, 80f, 20f, -1.5f, 0f));
 +            dynamicsProcessing.setEnabled(true);
 +            return true;
 +        } catch (Throwable t) {
