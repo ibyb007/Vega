@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import androidx.core.graphics.PathParser
 import android.view.View
 
 /**
@@ -26,6 +27,18 @@ class NavIconView(context: Context) : View(context) {
         set(value) {
             field = value
             invalidate()
+        }
+
+    /**
+     * True while the row is selected/focused. Only the Addons glyph cares:
+     * it swaps from the outline puzzle piece to the solid one.
+     */
+    var highlighted: Boolean = false
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
         }
 
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -156,42 +169,32 @@ class NavIconView(context: Context) : View(context) {
     }
 
     private fun drawAddons(c: Canvas, w: Float, h: Float) {
-        // Solid-filled puzzle piece: a rounded square body with an outward
-        // knob on the top and right edges, and an inward socket (bite) on
-        // the bottom and left edges -- built with path boolean ops so each
-        // bump/notch is a clean circle union/difference rather than a
-        // hand-stitched arc, matching the reference glyph.
+        // Stremio addons glyph (Ionicons "extension-puzzle"): outline when
+        // idle, solid when the row is selected/focused. Both paths live in a
+        // 512x512 viewBox; scale the canvas so stroke width (32 units) and
+        // geometry scale together, inset slightly to match the other icons.
+        val scale = (w * 0.9f) / ADDONS_VIEWBOX
+        val inset = w * 0.05f
+        val insetY = h * 0.05f
+        c.save()
+        c.translate(inset, insetY)
+        c.scale(scale, scale)
+        if (highlighted) {
+            c.drawPath(addonsFilledPath, fillPaint)
+        } else {
+            val saved = strokePaint.strokeWidth
+            strokePaint.strokeWidth = ADDONS_OUTLINE_STROKE
+            c.drawPath(addonsOutlinePath, strokePaint)
+            strokePaint.strokeWidth = saved
+        }
+        c.restore()
+    }
 
-        // Outer bounds of the main square body
-        val left = w * 0.22f
-        val right = w * 0.82f
-        val top = h * 0.22f
-        val bottom = h * 0.82f
-        val cx = (left + right) / 2f
-        val cy = (top + bottom) / 2f
-        val cornerR = w * 0.05f
-        val knobR = w * 0.155f
-
-        val piece = Path()
-        piece.addRoundRect(RectF(left, top, right, bottom), cornerR, cornerR, Path.Direction.CW)
-
-        // Top knob (outward bump), centered on the top edge
-        val topKnob = Path().apply { addCircle(cx, top, knobR, Path.Direction.CW) }
-        piece.op(topKnob, Path.Op.UNION)
-
-        // Right knob (outward bump), centered on the right edge
-        val rightKnob = Path().apply { addCircle(right, cy, knobR, Path.Direction.CW) }
-        piece.op(rightKnob, Path.Op.UNION)
-
-        // Left socket (inward notch), centered on the left edge
-        val leftSocket = Path().apply { addCircle(left, cy, knobR, Path.Direction.CW) }
-        piece.op(leftSocket, Path.Op.DIFFERENCE)
-
-        // Bottom socket (inward notch), centered on the bottom edge
-        val bottomSocket = Path().apply { addCircle(cx, bottom, knobR, Path.Direction.CW) }
-        piece.op(bottomSocket, Path.Op.DIFFERENCE)
-
-        c.drawPath(piece, fillPaint)
+    private val addonsFilledPath: Path by lazy {
+        PathParser.createPathFromPathData(ADDONS_FILLED_PATH_DATA)
+    }
+    private val addonsOutlinePath: Path by lazy {
+        PathParser.createPathFromPathData(ADDONS_OUTLINE_PATH_DATA)
     }
 
     private fun drawSettings(c: Canvas, w: Float, h: Float) {
@@ -242,5 +245,17 @@ class NavIconView(context: Context) : View(context) {
         play.lineTo(cx + pr * 0.9f, cy)
         play.close()
         c.drawPath(play, fillPaint)
+    }
+
+    private companion object {
+        const val ADDONS_VIEWBOX = 512f
+        const val ADDONS_OUTLINE_STROKE = 32f
+
+        // From addons.svg (solid) and addons-outline.svg (stroke width 32).
+        const val ADDONS_FILLED_PATH_DATA =
+            "M345.1 480H274c-2.36.01-4.71-.45-6.89-1.36s-4.16-2.25-5.81-3.94A18 18 0 0 1 256 462v-27.7c.03-4.26-.82-8.49-2.5-12.4a32.3 32.3 0 0 0-7.19-10.4c-7.81-7.6-19.11-11.81-30.91-11.5-21.4.49-39.4 19.3-39.4 41.1V462c.01 2.36-.45 4.71-1.36 6.89s-2.25 4.16-3.94 5.81A18.07 18.07 0 0 1 158 480H87.6a55.67 55.67 0 0 1-39.36-16.26 55.64 55.64 0 0 1-16.34-39.35V354a18.1 18.1 0 0 1 5.29-12.7c3.38-3.38 7.94-5.27 12.71-5.3h27.7c9.2 0 18.1-3.9 25.1-11 3.9-3.92 7-8.58 9.1-13.7a40.7 40.7 0 0 0 3.1-16.2c-.3-21.2-17.7-39.1-38.11-39.1H50c-2.36.01-4.71-.45-6.9-1.36-2.17-.91-4.15-2.25-5.81-3.94A18 18 0 0 1 32 238v-70.4a55.8 55.8 0 0 1 4.2-21.3 53.7 53.7 0 0 1 12.1-18A55.7 55.7 0 0 1 87.6 112h55.2c2.13.01 4.18-.81 5.7-2.31.73-.74 1.33-1.63 1.72-2.62.4-.97.6-2.02.58-3.07v-6.5a64.7 64.7 0 0 1 5.1-25.3 66.6 66.6 0 0 1 14.5-21.4c6.21-6.11 13.6-10.9 21.7-14.1 8.08-3.2 16.71-4.8 25.4-4.7 35.5.6 64.4 30.4 64.4 66.3v5.7c-.03 1.59.42 3.16 1.3 4.47a7.77 7.77 0 0 0 3.62 2.96c.98.39 2.04.59 3.08.57h55.2c7.22-.01 14.35 1.42 21 4.2a54.96 54.96 0 0 1 29.7 29.7 54.3 54.3 0 0 1 4.2 21v55.19c-.03 1.6.42 3.17 1.31 4.49a7.73 7.73 0 0 0 3.61 2.95c.98.39 2.04.59 3.08.57h5.7c36.6 0 66.31 29 66.31 64.6 0 36.6-29.41 66.4-65.51 66.4H408c-2.13-.01-4.16.82-5.7 2.3a7.9 7.9 0 0 0-1.71 2.62 7.6 7.6 0 0 0-.59 3.08v56c.01 7.2-1.42 14.35-4.2 21a54.96 54.96 0 0 1-29.7 29.7 53.9 53.9 0 0 1-21 4.2"
+
+        const val ADDONS_OUTLINE_PATH_DATA =
+            "M413.7 246.11h-27.69c-.54-.01-1.04-.23-1.41-.6s-.59-.88-.6-1.4v-77.2a38.9 38.9 0 0 0-11.4-27.5 38.92 38.92 0 0 0-27.5-11.4h-77.2c-.53-.01-1.03-.24-1.4-.6-.37-.37-.59-.87-.6-1.4v-27.7c0-27.1-21.5-49.9-48.6-50.3-6.57-.1-13.09 1.09-19.2 3.5a49.5 49.5 0 0 0-16.4 10.7 49.9 49.9 0 0 0-11.01 16.2 49.05 49.05 0 0 0-3.89 19.19v28.51c-.01.53-.23 1.03-.6 1.4s-.87.59-1.4.6H87.6c-10.5 0-20.57 4.17-28 11.6a39.55 39.55 0 0 0-11.6 28v70.4c.01.53.23 1.03.6 1.4a2 2 0 0 0 1.4.6h26.89c29.41 0 53.71 25.5 54.1 54.8.4 29.9-23.49 57.2-53.29 57.2H50a2 2 0 0 0-1.4.6c-.37.37-.59.86-.6 1.4v70.4a39.57 39.57 0 0 0 11.6 28c7.43 7.43 17.5 11.6 28 11.6H158c.52-.01 1.03-.23 1.4-.6.37-.38.59-.87.6-1.4v-20.9c0-30.31 24.8-56.4 55-57.1 30.1-.7 57 20.29 57 50.3v27.7c.01.53.23 1.02.6 1.4.37.37.87.59 1.4.6h71.1a38.923 38.923 0 0 0 38.9-38.9v-78c.01-.53.23-1.03.6-1.4s.87-.59 1.41-.6h28.49c27.6 0 49.5-22.7 49.5-50.4 0-27.71-23.19-48.7-50.3-48.7"
     }
 }
