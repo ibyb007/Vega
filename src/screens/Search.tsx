@@ -75,11 +75,10 @@ export default function TVSearch({
   onRegisterReturnFocusTrigger,
   resetFocusOnMount,
 }: TVSearchProps) {
-  const submitBtnRef = useRef<any>(null);
-
-  // The TextInput can't take hasTVPreferredFocus (and a JS focus() would pop
-  // the keyboard), so when the rail hands focus back and the field was the
-  // last thing used, land on the Search button next to it instead.
+  // The TextInput can't take hasTVPreferredFocus, so when the rail hands
+  // focus back and the field was the last thing used, focus it from JS.
+  // (On TV the soft keyboard only opens from OK, not from focus(): RN's
+  // ReactEditText only auto-shows it in touch mode.)
   const registerReturnTrigger = useCallback(
     (trigger: (() => void) | null) => {
       if (!trigger) {
@@ -88,7 +87,7 @@ export default function TVSearch({
       }
       onRegisterReturnFocusTrigger?.(() => {
         if (lastFocusedSearchKey === 'search-bar') {
-          submitBtnRef.current?.focus?.();
+          searchInputRef.current?.focus();
           return;
         }
         trigger();
@@ -115,9 +114,31 @@ export default function TVSearch({
   // flips while the user is typing.
   const initialFocusKeyRef = useRef<string | null>(lastFocusedSearchKey);
   const preferFocus = (key: string) =>
-    initialFocusKeyRef.current
-      ? initialFocusKeyRef.current === key || keyFor(key) !== key
-      : key === 'search-submit' || keyFor(key) !== key;
+    initialFocusKeyRef.current === key || keyFor(key) !== key;
+
+  // Fresh visit (or a real rail round-trip): put focus on the search box.
+  // Coming back from a details screen restores the poster/tab instead.
+  useEffect(() => {
+    const last = initialFocusKeyRef.current;
+    if (last && last !== 'search-bar') return;
+    const focusInput = () => searchInputRef.current?.focus();
+    const raf = requestAnimationFrame(focusInput);
+    const retry = setTimeout(() => {
+      if (!searchInputRef.current?.isFocused()) focusInput();
+    }, 200);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(retry);
+    };
+  }, []);
+
+  // Keep the header + search bar fully in view when focus lands on them
+  // (the focused TextInput alone is smaller than the bar, so Android's
+  // scroll-into-view left the top of the bar and the title clipped).
+  const scrollRef = useRef<ScrollView | null>(null);
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
 
   const [query, setQuery] = useState(savedSearchState?.query ?? '');
   const [isSearching, setIsSearching] = useState(false);
@@ -404,6 +425,7 @@ export default function TVSearch({
       )}
 
       <ScrollView
+        ref={scrollRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
@@ -439,6 +461,7 @@ export default function TVSearch({
               onFocus={() => {
                 lastFocusedSearchKey = 'search-bar';
                 setInputFocused(true);
+                scrollToTop();
               }}
               onBlur={() => setInputFocused(false)}
               placeholder="Search movies, TV shows, anime across all addons..."
@@ -448,28 +471,33 @@ export default function TVSearch({
               autoCapitalize="none"
               autoCorrect={false}
             />
-            {/* Always mounted so nothing changes layout when the first
-                letter is typed. */}
-            <TVFocusablePressable
-              focusable={query.length > 0}
-              scaleFocused={1.1}
-              focusedBorderColor="#8A5CF6"
-              borderRadius={8}
-              onPress={handleClear}
-              style={[styles.clearBtn, query.length === 0 && styles.clearBtnHidden]}
-            >
-              {() => <MaterialCommunityIcons name="close" size={20} color="#9CA3AF" />}
-            </TVFocusablePressable>
+            {/* Only a real (focusable) button while there is text; an empty
+                same-size spacer otherwise so the layout never shifts and
+                Left from the Search button goes straight to the field. */}
+            {query.length > 0 ? (
+              <TVFocusablePressable
+                scaleFocused={1.1}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={8}
+                onFocus={scrollToTop}
+                onPress={handleClear}
+                style={styles.clearBtn}
+              >
+                {() => <MaterialCommunityIcons name="close" size={20} color="#9CA3AF" />}
+              </TVFocusablePressable>
+            ) : (
+              <View style={styles.clearBtnSpacer} />
+            )}
           </View>
 
           <TVFocusablePressable
             key={keyFor('search-submit')}
-            ref={(el) => {
-              setItemRef('search-submit', el);
-              submitBtnRef.current = el;
-            }}
+            ref={(el) => setItemRef('search-submit', el)}
             hasTVPreferredFocus={preferFocus('search-submit')}
-            onFocus={() => (lastFocusedSearchKey = 'search-submit')}
+            onFocus={() => {
+              lastFocusedSearchKey = 'search-submit';
+              scrollToTop();
+            }}
             scaleFocused={1.05}
             focusedBorderColor="#FFFFFF"
             borderRadius={12}
@@ -804,8 +832,9 @@ const styles = StyleSheet.create({
   clearBtn: {
     padding: 6,
   },
-  clearBtnHidden: {
-    opacity: 0,
+  clearBtnSpacer: {
+    width: 36,
+    height: 36,
   },
   suggestionsPanel: {
     maxWidth: 820,
