@@ -373,6 +373,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     // of the bright accent pill -- which is what read as washed-out/dimmed[cite: 10].
     private fun applyRowStyle(row: NavItemRow) {
         val highlighted = row.hasFocus() || row.item.id == activeRoute
+        row.iconView.highlighted = highlighted
         row.iconView.setColor(if (highlighted) ACTIVE_COLOR else INACTIVE_ICON)
         row.labelView.setTextColor(if (highlighted) ACTIVE_COLOR else INACTIVE_LABEL)
         row.labelView.setTypeface(
