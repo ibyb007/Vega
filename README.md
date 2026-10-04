@@ -1,3 +1,4 @@
+<img width="438" height="438" alt="logo@3x" src="https://github.com/user-attachments/assets/ffbdcc64-28af-4678-9903-458dbedeb90c" />
 # Vega TV
 
 An Android TV / Google TV fork of [Vega App](https://github.com/vega-org/vega-app), rebuilt for the big screen with remote-control (D-pad) navigation.
