@@ -42,7 +42,7 @@ import {
   completeCinemetaHero,
   CinemetaHeroData,
 } from '../../lib/services/cinemetaService';
-import { TVRoute } from '../../components/tv/TVNavigationRail';
+import { TVRoute } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 
 const ROW_HEIGHT = 235;

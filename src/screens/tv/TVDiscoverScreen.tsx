@@ -18,7 +18,7 @@ import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVDiscoverResultsView } from './TVDiscoverResultsView';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
-import { TVRoute } from '../../components/tv/TVNavigationRail';
+import { TVRoute } from '../../lib/native/NavRail';
 import { NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
