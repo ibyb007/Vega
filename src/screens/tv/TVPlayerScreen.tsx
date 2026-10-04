@@ -103,7 +103,13 @@ const mergeSkipIntervals = (
 // "Play Now" on Up Next always mark this episode as finished, advances
 // Continue Watching to the next episode immediately, and lines up with
 // the resume/"finished" state TVDetailsScreen shows for it.
-const NEARLY_COMPLETE_THRESHOLD_SECONDS = 180;
+const NEARLY_COMPLETE_THRESHOLD_SECONDS = 120;
+
+// Used when neither the provider nor TheIntroDB supplies an "Outro" marker:
+// the "Up Next" popup appears once this many seconds remain. Kept equal to
+// NEARLY_COMPLETE_THRESHOLD_SECONDS so the popup and the "episode finished"
+// bookkeeping always agree.
+const OUTRO_FALLBACK_SECONDS = NEARLY_COMPLETE_THRESHOLD_SECONDS;
 
 // Android hardware key codes used by the global listener below.
 // (react-native-keyevent reports raw Android KeyEvent.KEYCODE_* values.)
@@ -407,7 +413,7 @@ interface TVPlayerScreenProps {
   qualities?: StreamOption[];
   // Intro/outro/recap markers for the *currently playing* stream (from the
   // provider's `Stream.skip`). When an interval titled "Outro" is present,
-  // it's used to time the "Up Next" popup instead of the 90s-remaining
+  // it's used to time the "Up Next" popup instead of the 120s-remaining
   // fallback.
   skip?: SkipInterval[];
   // Used to look up intro/recap timestamps from TheIntroDB when the
@@ -526,7 +532,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [showEpisodesList, setShowEpisodesList] = useState(false);
   const [showNextUpPopup, setShowNextUpPopup] = useState(false);
   // One-shot per episode: flips true the moment the "Up Next" popup has
-  // been triggered (whether by outro marker or the 90s fallback) so it
+  // been triggered (whether by outro marker or the 120s fallback) so it
   // never re-appears after the person dismisses it, and resets on the
   // streamUrl-change effect below whenever a new episode actually loads.
   const nextUpTriggeredRef = useRef(false);
@@ -534,7 +540,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // Skip Intro/Recap popup: holds the interval currently active (if any),
   // so the label ("Skip Intro" vs "Skip Recap") and the seek target are
   // both derived from it. Intro/recap sit well before the outro marker/
-  // 90s-remaining window the "Up Next" popup uses, so the two never need
+  // 120s-remaining window the "Up Next" popup uses, so the two never need
   // to coordinate over who's visible.
   const [activeSkipPopup, setActiveSkipPopup] = useState<SkipInterval | null>(null);
   const skipPopupHideTimer = useRef<NodeJS.Timeout | null>(null);
@@ -672,11 +678,22 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const prevStreamUrlRef = useRef(streamUrl);
   const pendingRecoverySeekRef = useRef<number | null>(null);
   const recoveryAttemptsRef = useRef(0);
+  // Auto "try next server" bookkeeping. `playbackStartedRef` flips true on the
+  // first onLoad of the current source, so an error before that point is a
+  // start-up failure (dead link, 403/404, blocked host...) rather than a
+  // mid-playback hiccup. `triedSourceUrlsRef` holds every source that has
+  // already failed to start, so the fallback never loops back to one.
+  const playbackStartedRef = useRef(false);
+  const triedSourceUrlsRef = useRef<Set<string>>(new Set());
+  // URL we've already auto-switched away from; swallows duplicate error
+  // events for it until the new source is actually active.
+  const autoSwitchedFromRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (streamUrl && streamUrl !== prevStreamUrlRef.current) {
       prevStreamUrlRef.current = streamUrl;
       recoveryAttemptsRef.current = 0;
+      triedSourceUrlsRef.current = new Set();
       setActiveMediaUrl(streamUrl);
       setActiveHeaders(headers);
       setActiveSourceType(sourceType);
@@ -817,6 +834,59 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [torrentFailed]);
 
+  // Every new source (picked by hand, auto-advanced, or a new episode) starts
+  // out "not started yet" until its first onLoad.
+  useEffect(() => {
+    playbackStartedRef.current = false;
+    // Once the active source has moved on from the one we switched away from,
+    // forget it so picking that server again by hand is handled normally.
+    if (autoSwitchedFromRef.current !== activeMediaUrl) {
+      autoSwitchedFromRef.current = null;
+    }
+  }, [activeMediaUrl]);
+
+  // A stream whose link is dead errors out right at the start. Rather than
+  // leaving the person on an error, move on to the next listed server/source
+  // that hasn't failed yet (same idea as the mobile player's "Trying next
+  // server"). Returns true when a switch was made (or is already underway).
+  const tryNextSourceAfterStartError = useCallback((): boolean => {
+    const tried = triedSourceUrlsRef.current;
+    // Already handled this source's failure (duplicate error events).
+    if (autoSwitchedFromRef.current === activeMediaUrl) return true;
+    tried.add(activeMediaUrl);
+
+    // Sources and servers can both be populated; merge without duplicates,
+    // keeping the provider's own order (best first).
+    const seen = new Set<string>();
+    const options = [...qualities, ...servers].filter((o) => {
+      if (!o?.url || seen.has(o.url)) return false;
+      seen.add(o.url);
+      return true;
+    });
+
+    const activeIdx = options.findIndex((o) => o.url === activeMediaUrl);
+    let next: StreamOption | undefined;
+    for (let step = 1; step <= options.length; step++) {
+      const candidate = options[(activeIdx + step + options.length) % options.length];
+      if (candidate && !tried.has(candidate.url)) {
+        next = candidate;
+        break;
+      }
+    }
+
+    if (!next) return false;
+
+    const label = next.server?.trim() || next.name || 'next source';
+    ToastAndroid.show(`Server unavailable, trying next: ${label}`, ToastAndroid.SHORT);
+    autoSwitchedFromRef.current = activeMediaUrl;
+    setBuffering(true);
+    setActiveMediaUrl(next.url);
+    setActiveHeaders(next.headers);
+    setActiveSourceType(next.sourceType);
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMediaUrl, qualities, servers]);
+
   const videoSource = useMemo(
     () => ({
       uri: playableUrl || '',
@@ -875,12 +945,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       // Same "Outro" marker the Up Next popup uses to appear (see the
       // outro-fallback effect above) -- once playback has reached it, the
       // episode counts as finished even if that's well outside the
-      // 180-seconds-remaining window below (a long epilogue/credits
+      // 120-seconds-remaining window below (a long epilogue/credits
       // sequence can start much earlier than that).
       const outroMarker = (activeSkip || []).find((s) => /outro/i.test(s.title || ''));
       const isInOutro = !!outroMarker && timeSec >= outroMarker.from;
 
-      // 180 seconds or less left (or already into the outro) counts as
+      // 120 seconds or less left (or already into the outro) counts as
       // "100% watched": a movie drops off the row entirely, a series
       // episode hands the row over to whatever's next (so Continue
       // Watching always points at something there's actually more of to
@@ -1537,6 +1607,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           paddingBottom: 24,
         }}
         onLoad={(meta: any) => {
+          // Source opened fine: later errors are mid-playback, not a dead link,
+          // and the failed-server history no longer applies.
+          playbackStartedRef.current = true;
+          triedSourceUrlsRef.current = new Set();
           const totalDur = meta.duration || 0;
           setDuration(totalDur);
           currentProgRef.current.duration = totalDur;
@@ -1592,13 +1666,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
           // "Up Next" popup: fires once per episode, either right when an
           // outro marker (a `skip` interval titled "Outro") starts, or --
-          // when no such marker was supplied by the provider -- 120 seconds
-          // before the end, whichever data is actually available.
+          // when no such marker was supplied by the provider or TheIntroDB --
+          // OUTRO_FALLBACK_SECONDS (120s) before the end.
           if (!nextUpTriggeredRef.current && hasNextEpisode && duration > 0) {
             const outroInterval = (activeSkip || []).find(
               (s) => /outro/i.test(s.title || '') && s.from > 0 && s.from < duration
             );
-            const triggerAt = outroInterval ? outroInterval.from : duration - 120;
+            const triggerAt = outroInterval ? outroInterval.from : duration - OUTRO_FALLBACK_SECONDS;
             if (triggerAt >= 0 && prog.currentTime >= triggerAt && duration - prog.currentTime > 1) {
               nextUpTriggeredRef.current = true;
               setShowNextUpPopup(true);
@@ -1658,6 +1732,18 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               return;
             }
             ToastAndroid.show('Torrent stalled - try another source', ToastAndroid.LONG);
+            setBuffering(false);
+            return;
+          }
+
+          // Failed before the first frame loaded: the link itself is dead, so
+          // try the next available server automatically.
+          if (!playbackStartedRef.current) {
+            if (tryNextSourceAfterStartError()) return;
+            ToastAndroid.show(
+              'No working server found. Open the Server menu to pick another one.',
+              ToastAndroid.LONG
+            );
             setBuffering(false);
             return;
           }
