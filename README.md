@@ -1,5 +1,5 @@
-<img width="438" height="438" alt="logo@3x" src="https://github.com/user-attachments/assets/ffbdcc64-28af-4678-9903-458dbedeb90c" />
-# Vega TV
+<img width="1280" height="720" alt="tv_banner-source-1280x720" src="https://github.com/user-attachments/assets/b26b8c77-d856-4c86-9a07-021d0c0abd64" />
+
 
 An Android TV / Google TV fork of [Vega App](https://github.com/vega-org/vega-app), rebuilt for the big screen with remote-control (D-pad) navigation.
 
