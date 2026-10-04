@@ -18,7 +18,7 @@ import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVDiscoverResultsView } from './TVDiscoverResultsView';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
-import { TVRoute } from '../../lib/native/NavRail';
+import { TVRoute } from '../../components/tv/TVNavigationRail';
 import { NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
@@ -1692,7 +1692,29 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     };
   }, []);
 
+  // Hiding a pill unmounts the very view that holds focus, and Android's
+  // default focus search then often jumps to the side nav rail. Before the
+  // pill goes away, pick where focus should land instead -- the category
+  // just before it, or the "Catalogs" button when it was the first one --
+  // and re-issue a real focus request on that item once the bar has
+  // re-rendered.
+  const refocusBrowseKey = useCallback(
+    (targetKey: string) => {
+      lastFocusedDiscoverBrowseKey = targetKey;
+      // Let the hidden pill unmount / the Modal finish dismissing first, so
+      // this request is the last one to land and isn't overridden.
+      setTimeout(() => requestRefocus(), 150);
+    },
+    [requestRefocus],
+  );
+
   const handleHideCatalog = useCallback((cat: DiscoverCatalog) => {
+    const hiddenKey = catalogKey(cat);
+    const visibleBefore = catalogs.filter((c) => !hiddenKeySet.has(catalogKey(c)));
+    const hiddenIdx = visibleBefore.findIndex((c) => catalogKey(c) === hiddenKey);
+    const previous = hiddenIdx > 0 ? visibleBefore[hiddenIdx - 1] : undefined;
+    refocusBrowseKey(previous ? `pill-${catalogKey(previous)}` : 'manage-btn');
+
     stremioCatalogStorage.hideCatalog({
       key: catalogKey(cat),
       name: catalogDisplayName(cat),
@@ -1711,7 +1733,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     try {
       ToastAndroid.show(`Hidden "${catalogDisplayName(cat)}"`, ToastAndroid.SHORT);
     } catch {}
-  }, [catalogs, hiddenKeySet]);
+  }, [catalogs, hiddenKeySet, refocusBrowseKey]);
 
   const handleRestoreCatalog = useCallback((key: string) => {
     stremioCatalogStorage.unhideCatalog(key);
@@ -2042,7 +2064,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 scaleFocused={1.04}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={8}
-                onPress={() => setCatalogToHide(null)}
+                onPress={() => {
+                  const keep = catalogToHide;
+                  setCatalogToHide(null);
+                  if (keep) refocusBrowseKey(`pill-${catalogKey(keep)}`);
+                }}
                 style={styles.cancelBtn}
               >
                 {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
@@ -2461,7 +2487,7 @@ export const styles = StyleSheet.create({
     marginTop: 6,
     maxWidth: 460,
     textShadowColor: 'rgba(0, 0, 0, 0.95)',
-    textShadowOffset: { width: 0, height: 1 },
+    textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
   },
   targetCastLabel: {
