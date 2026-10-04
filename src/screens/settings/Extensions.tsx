@@ -1,0 +1,816 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Modal,
+  TextInput,
+  Image,
+  ActivityIndicator,
+  ToastAndroid,
+  findNodeHandle,
+} from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
+import useContentStore from '../../lib/zustand/contentStore';
+import useThemeStore from '../../lib/zustand/themeStore';
+import {
+  extensionStorage,
+  ProviderExtension,
+  ProviderSource,
+} from '../../lib/storage/extensionStorage';
+import { extensionManager } from '../../lib/services/ExtensionManager';
+import { createProviderSource } from '../../lib/utils/helpers';
+
+// True when `latest` is a higher dotted version than `current` ("1.20" > "1.9").
+const isNewerVersion = (current?: string, latest?: string): boolean => {
+  if (!latest) return false;
+  if (!current) return true;
+  const c = current.split('.').map((n) => parseInt(n, 10) || 0);
+  const l = latest.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(c.length, l.length); i++) {
+    const a = c[i] || 0;
+    const b = l[i] || 0;
+    if (b > a) return true;
+    if (b < a) return false;
+  }
+  return false;
+};
+
+const AddSourceModal = memo(({
+  visible,
+  onClose,
+  onConfirm,
+  isLoading,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onConfirm: (url: string) => void;
+  isLoading: boolean;
+}) => {
+  const [text, setText] = useState('');
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalBox}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Add Source</Text>
+          </View>
+
+          <Text style={styles.modalDesc}>
+            Enter URL of your hosted provider source or GitHub author:
+          </Text>
+
+          <TextInput
+            value={text}
+            onChangeText={setText}
+            placeholder="GitHub author or source URL"
+            placeholderTextColor="#6B7280"
+            style={styles.textInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+
+          <View style={styles.modalActions}>
+            <TVFocusablePressable
+              scaleFocused={1.05}
+              focusedBorderColor="#8A5CF6"
+              borderRadius={10}
+              onPress={() => {
+                setText('');
+                onClose();
+              }}
+              style={styles.cancelBtn}
+            >
+              {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
+            </TVFocusablePressable>
+
+            <TVFocusablePressable
+              hasTVPreferredFocus={true}
+              scaleFocused={1.05}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={10}
+              onPress={() => onConfirm(text)}
+              style={styles.confirmBtn}
+            >
+              {() => (
+                <View style={styles.btnContent}>
+                  {isLoading ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.confirmBtnText}>Confirm</Text>
+                  )}
+                </View>
+              )}
+            </TVFocusablePressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+});
+
+interface ProviderRowItemProps {
+  item: ProviderExtension;
+  isInstalled: boolean;
+  isInstalling: boolean;
+  onToggleInstall: (item: ProviderExtension) => void;
+  itemKey: string;
+  hasPreferredFocus: boolean;
+  onItemFocus: (key: string) => void;
+  registerItemRef: (key: string, node: View | null) => void;
+}
+
+// Memoized item row preventing unnecessary re-renders of 50+ items during scroll/state changes
+const ProviderRowItem = memo(({
+  item,
+  isInstalled,
+  isInstalling,
+  onToggleInstall,
+  itemKey,
+  hasPreferredFocus,
+  onItemFocus,
+  registerItemRef,
+}: ProviderRowItemProps) => {
+  return (
+    <View style={styles.providerRow}>
+      <View style={styles.providerLeft}>
+        <View style={styles.providerIconWrapper}>
+          {item.icon ? (
+            <Image source={{ uri: item.icon }} style={styles.providerLogo} resizeMode="contain" />
+          ) : (
+            <MaterialCommunityIcons name="cloud-outline" size={28} color="#8A5CF6" />
+          )}
+        </View>
+        <View style={styles.providerInfo}>
+          <View style={styles.titleLine}>
+            <Text style={styles.providerName}>{item.display_name}</Text>
+            <Text style={styles.versionBadge}>v{item.version}</Text>
+          </View>
+          <Text style={styles.providerMeta}>
+            {item.type || 'Global'} • {item.source?.author || 'Vega-Org'}
+          </Text>
+        </View>
+      </View>
+
+      <TVFocusablePressable
+        ref={(el) => {
+          registerItemRef(itemKey, el);
+          // This button is the only focusable element in the row -- there's
+          // nothing else to its left -- so Left from it should always reach
+          // the Addons rail button, for every row, not just the first.
+          if (el) registerRailLeftEdge('addons', el);
+        }}
+        hasTVPreferredFocus={hasPreferredFocus}
+        onFocus={() => onItemFocus(itemKey)}
+        scaleFocused={1.04}
+        focusedBorderColor="#FFFFFF"
+        borderRadius={10}
+        onPress={() => onToggleInstall(item)}
+        style={[
+          styles.actionBtn,
+          isInstalled ? styles.uninstallBtn : styles.installBtn,
+        ]}
+      >
+        {() => (
+          <View style={styles.btnContent}>
+            {isInstalling ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <>
+                <MaterialCommunityIcons
+                  name={isInstalled ? 'trash-can-outline' : 'download'}
+                  size={18}
+                  color="#FFFFFF"
+                />
+                <Text style={styles.actionBtnText}>
+                  {isInstalled ? 'Uninstall' : 'Install'}
+                </Text>
+              </>
+            )}
+          </View>
+        )}
+      </TVFocusablePressable>
+    </View>
+  );
+});
+
+interface ExtensionsScreenProps {
+  navigation?: any;
+  route?: any;
+  onRegisterBackHandler?: (handler: (() => boolean) | null) => void;
+  onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
+}
+
+// Module-level so it survives this screen unmounting when the user leaves
+// the Addons tab and comes back -- same pattern as TVHomeScreen's
+// `lastFocusedKey`.
+let lastFocusedAddonsKey: string | null = null;
+
+export default function Extensions({
+  navigation,
+  onRegisterBackHandler,
+  onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
+}: ExtensionsScreenProps) {
+  const { setItemRef, keyFor, shouldPreferFocus } = useTVEntryFocus(
+    () => lastFocusedAddonsKey,
+    onRegisterEntryHandleGetter,
+    onRegisterReturnFocusTrigger,
+    resetFocusOnMount,
+    () => {
+      lastFocusedAddonsKey = null;
+    }
+  );
+  const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
+  const installedProviders = useContentStore((state) => state.installedProviders);
+  const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
+  const setProvider = useContentStore((state) => state.setProvider);
+  const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
+  const activeProvider = useContentStore((state) => state.provider);
+
+  const [availableProviders, setAvailableProviders] = useState<ProviderExtension[]>([]);
+  const [activeSource, setActiveSource] = useState<ProviderSource | undefined>();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshStatus, setRefreshStatus] = useState('Loading repository manifest...');
+  const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({});
+  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [isAddingSource, setIsAddingSource] = useState(false);
+  const refreshBtnRef = useRef<View | null>(null);
+  const [refreshBtnHandle, setRefreshBtnHandle] = useState<number | null>(null);
+
+  // Hardware Back: only handle this screen's own back-stack (the add-source
+  // modal). If it's not open, report "not handled" so App.tsx moves focus to
+  // the Addons button on the rail.
+  useEffect(() => {
+    const handleBack = () => {
+      if (isModalVisible) {
+        setIsModalVisible(false);
+        return true;
+      }
+      return false;
+    };
+
+    onRegisterBackHandler?.(handleBack);
+    return () => onRegisterBackHandler?.(null);
+  }, [isModalVisible, onRegisterBackHandler]);
+
+  // Resolve the Refresh button's native handle once, so Add Source's
+  // nextFocusLeft can target it directly (Add Source -> Refresh -> rail),
+  // instead of both buttons jumping straight past each other to the rail.
+  useEffect(() => {
+    const handle = refreshBtnRef.current ? findNodeHandle(refreshBtnRef.current) : null;
+    setRefreshBtnHandle(handle);
+  }, []);
+
+  const syncInstalledProviders = useCallback(() => {
+    setInstalledProviders(extensionStorage.getInstalledProviders());
+  }, [setInstalledProviders]);
+
+  // Installs the newer manifest version over every installed addon that has
+  // one. Returns how many were updated.
+  const updateOutdatedProviders = useCallback(
+    async (manifestProviders: ProviderExtension[], source?: ProviderSource) => {
+      const installed = extensionStorage.getInstalledProviders();
+      const outdated: ProviderExtension[] = [];
+      for (const inst of installed) {
+        const latest = manifestProviders.find(
+          (p) =>
+            p.value === inst.value &&
+            (!p.source?.author || !inst.source?.author || p.source.author === inst.source.author),
+        );
+        if (latest && isNewerVersion(inst.version, latest.version)) {
+          outdated.push(latest);
+        }
+      }
+      if (outdated.length === 0) return 0;
+
+      let updated = 0;
+      for (const latest of outdated) {
+        setRefreshStatus(`Updating ${latest.display_name} (${updated + 1}/${outdated.length})...`);
+        setInstallingMap((prev) => ({ ...prev, [latest.value]: true }));
+        try {
+          await extensionManager.installProvider({
+            ...latest,
+            source: latest.source || source!,
+          });
+          updated += 1;
+        } catch (e) {
+          console.warn(`[Extensions] Update failed for ${latest.value}:`, e);
+        } finally {
+          setInstallingMap((prev) => ({ ...prev, [latest.value]: false }));
+        }
+      }
+
+      // Push the new versions into the store (the Sources page reads from
+      // it), including the active/secondary selections, which hold their
+      // own copy of the provider record.
+      const refreshed = extensionStorage.getInstalledProviders();
+      setInstalledProviders(refreshed);
+      const { provider: active, secondaryProvider: secondary } = useContentStore.getState();
+      const freshActive = refreshed.find((p) => p.value === active?.value);
+      if (freshActive && freshActive.version !== active?.version) setProvider(freshActive);
+      const freshSecondary = refreshed.find((p) => p.value === secondary?.value);
+      if (freshSecondary && freshSecondary.version !== secondary?.version) {
+        setSecondaryProvider(freshSecondary);
+      }
+      return updated;
+    },
+    [setInstalledProviders, setProvider, setSecondaryProvider],
+  );
+
+  const loadManifest = useCallback(
+    async (source?: ProviderSource, force = false, updateInstalled = false) => {
+      if (!source) {
+        setAvailableProviders([]);
+        return;
+      }
+      setRefreshStatus('Loading repository manifest...');
+      setIsRefreshing(true);
+      try {
+        const providers = await extensionManager.fetchManifest(source, force);
+        setAvailableProviders(providers);
+
+        if (updateInstalled) {
+          const updated = await updateOutdatedProviders(providers, source);
+          ToastAndroid.show(
+            updated > 0
+              ? `Updated ${updated} addon${updated === 1 ? '' : 's'}`
+              : 'All addons are up to date',
+            ToastAndroid.SHORT,
+          );
+        }
+      } catch (e: any) {
+        console.warn('[Extensions] Manifest load error:', e);
+        ToastAndroid.show(e?.message || 'Failed to load provider source', ToastAndroid.LONG);
+        setAvailableProviders([]);
+      } finally {
+        setIsRefreshing(false);
+      }
+    },
+    [updateOutdatedProviders],
+  );
+
+  useEffect(() => {
+    const source = extensionStorage.getProviderSource();
+    setActiveSource(source);
+    if (source) {
+      loadManifest(source);
+    }
+    syncInstalledProviders();
+  }, [loadManifest, syncInstalledProviders]);
+
+  const handleAddSource = async (rawInput: string) => {
+    const trimmed = rawInput.trim();
+    if (!trimmed) return;
+
+    setIsAddingSource(true);
+    try {
+      const parsedSource = createProviderSource(trimmed);
+      const providers = await extensionManager.fetchManifest(parsedSource, true);
+      // Providers the manifest marks `"disabled": true` are not listed, so
+      // they must not count towards "this source has something to offer".
+      const usableProviders = (providers || []).filter((p) => !p.disabled);
+      if (usableProviders.length === 0) {
+        throw new Error('No valid providers found at this source');
+      }
+
+      extensionStorage.addProviderSources(parsedSource.author, parsedSource.url);
+      extensionStorage.setDefaultProviderSource(parsedSource.author);
+
+      setActiveSource(parsedSource);
+      setAvailableProviders(providers);
+
+      ToastAndroid.show(`Found ${usableProviders.length} available providers!`, ToastAndroid.SHORT);
+      setIsModalVisible(false);
+    } catch (err: any) {
+      ToastAndroid.show(err?.message || 'Failed to add source', ToastAndroid.LONG);
+    } finally {
+      setIsAddingSource(false);
+    }
+  };
+
+  const handleToggleInstall = useCallback(async (item: ProviderExtension) => {
+    const isInstalled = useContentStore.getState().installedProviders.some((p) => p.value === item.value);
+    setInstallingMap((prev) => ({ ...prev, [item.value]: true }));
+
+    try {
+      if (isInstalled) {
+        extensionManager.uninstallProvider(item.value, item.source?.author);
+        syncInstalledProviders();
+
+        const currentActive = useContentStore.getState().provider;
+        if (currentActive?.value === item.value) {
+          const remaining = extensionStorage.getInstalledProviders();
+          setProvider(remaining[0] ?? {
+            value: '',
+            display_name: '',
+            type: 'global',
+            installed: false,
+            disabled: false,
+            version: '0.0.1',
+            icon: '',
+            source: { author: '', url: '' },
+            installedAt: 0,
+            lastUpdated: 0,
+          });
+        }
+        ToastAndroid.show(`Uninstalled ${item.display_name}`, ToastAndroid.SHORT);
+      } else {
+        await extensionManager.installProvider({ ...item, source: item.source || activeSource! });
+        syncInstalledProviders();
+
+        const currentActive = useContentStore.getState().provider;
+        if (!currentActive?.value) {
+          setProvider(item);
+        }
+
+        ToastAndroid.show(`Installed ${item.display_name}!`, ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      ToastAndroid.show(e?.message || 'Operation failed', ToastAndroid.LONG);
+    } finally {
+      setInstallingMap((prev) => ({ ...prev, [item.value]: false }));
+    }
+  }, [activeSource, setProvider, syncInstalledProviders]);
+
+  // Fast O(1) set lookup rather than repeated O(N) array scans over 50+ items
+  const installedSet = useMemo(
+    () => new Set(installedProviders.map((p) => p.value)),
+    [installedProviders],
+  );
+
+  // A source's manifest can mark a provider `"disabled": true` (broken,
+  // retired, not ready) -- those are not offered in the addons list. One
+  // exception: a disabled provider that is *already installed* stays
+  // listed, otherwise it would be stranded on the device with no way to
+  // uninstall it from here.
+  const visibleProviders = useMemo(
+    () => availableProviders.filter((p) => !p.disabled || installedSet.has(p.value)),
+    [availableProviders, installedSet],
+  );
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.screenTitle}>Providers & Addons</Text>
+          <Text style={styles.screenSubtitle}>
+            Install and manage streaming scraper extension repositories
+          </Text>
+        </View>
+
+        <View style={styles.headerActions}>
+          <TVFocusablePressable
+            key={keyFor('refresh-btn')}
+            ref={(el) => {
+              refreshBtnRef.current = el;
+              setItemRef('refresh-btn', el);
+              if (el) registerRailLeftEdge('addons', el);
+            }}
+            hasTVPreferredFocus={shouldPreferFocus('refresh-btn', false)}
+            onFocus={() => (lastFocusedAddonsKey = 'refresh-btn')}
+            scaleFocused={1.05}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={10}
+            onPress={() => loadManifest(activeSource, true, true)}
+            style={styles.iconBtn}
+          >
+            {() => (
+              <MaterialCommunityIcons
+                name="refresh"
+                size={22}
+                color="#FFFFFF"
+              />
+            )}
+          </TVFocusablePressable>
+
+          <TVFocusablePressable
+            key={keyFor('add-source-btn')}
+            ref={(el) => setItemRef('add-source-btn', el)}
+            hasTVPreferredFocus={shouldPreferFocus('add-source-btn', visibleProviders.length === 0)}
+            onFocus={() => (lastFocusedAddonsKey = 'add-source-btn')}
+            scaleFocused={1.05}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={12}
+            {...(refreshBtnHandle ? { nextFocusLeft: refreshBtnHandle } : {})}
+            onPress={() => setIsModalVisible(true)}
+            style={[styles.addSourceBtn, { backgroundColor: primaryColor }]}
+          >
+            {() => (
+              <View style={styles.btnContent}>
+                <MaterialCommunityIcons name="plus" size={20} color="#FFFFFF" />
+                <Text style={styles.addSourceBtnText}>Add Source</Text>
+              </View>
+            )}
+          </TVFocusablePressable>
+        </View>
+      </View>
+
+      {activeSource ? (
+        <View style={styles.sourceBar}>
+          <Text style={styles.sourceBarLabel}>Active Source:</Text>
+          <Text numberOfLines={1} style={styles.sourceBarUrl}>
+            {activeSource.author}
+          </Text>
+        </View>
+      ) : null}
+
+      {isRefreshing ? (
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color={primaryColor} />
+          <Text style={styles.loadingText}>{refreshStatus}</Text>
+        </View>
+      ) : visibleProviders.length === 0 ? (
+        <View style={styles.centerContainer}>
+          <MaterialCommunityIcons name="package-variant" size={72} color="#4B5563" />
+          <Text style={styles.emptyTitle}>No providers available</Text>
+          <Text style={styles.emptySubtitle}>
+            Click "Add Source" and enter <Text style={styles.highlightText}>url</Text> to load extensions.
+          </Text>
+        </View>
+      ) : (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContainer}
+          removeClippedSubviews={true}
+          scrollEventThrottle={16}
+        >
+          {visibleProviders.map((item) => {
+            const rowKey = `provider-${item.value}`;
+            return (
+              <ProviderRowItem
+                key={keyFor(rowKey)}
+                itemKey={rowKey}
+                item={item}
+                isInstalled={installedSet.has(item.value)}
+                isInstalling={Boolean(installingMap[item.value])}
+                onToggleInstall={handleToggleInstall}
+                hasPreferredFocus={shouldPreferFocus(rowKey, false)}
+                onItemFocus={(key) => (lastFocusedAddonsKey = key)}
+                registerItemRef={setItemRef}
+              />
+            );
+          })}
+        </ScrollView>
+      )}
+
+      <AddSourceModal
+        visible={isModalVisible}
+        isLoading={isAddingSource}
+        onClose={() => setIsModalVisible(false)}
+        onConfirm={handleAddSource}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0A0A0E',
+    // Trimmed from 96 -- see TVDiscoverScreen.tsx's CONTAINER_PADDING_LEFT
+    // comment for why.
+    paddingLeft: 20,
+    paddingRight: 48,
+    paddingTop: 36,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  screenTitle: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  screenSubtitle: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    marginTop: 4,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  iconBtn: {
+    backgroundColor: '#16161E',
+    padding: 12,
+    borderRadius: 10,
+  },
+  addSourceBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+  },
+  addSourceBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  btnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sourceBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#16161E',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginBottom: 20,
+    gap: 10,
+  },
+  sourceBarLabel: {
+    color: '#8A5CF6',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sourceBarUrl: {
+    color: '#D1D5DB',
+    fontSize: 13,
+    flex: 1,
+  },
+  listContainer: {
+    paddingBottom: 40,
+    gap: 12,
+  },
+  providerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#16161E',
+    borderRadius: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  providerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  providerIconWrapper: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  providerLogo: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+  },
+  providerInfo: {
+    gap: 2,
+  },
+  titleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  providerName: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  versionBadge: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  providerMeta: {
+    color: '#6B7280',
+    fontSize: 13,
+  },
+  actionBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+  },
+  installBtn: {
+    backgroundColor: '#8A5CF6',
+  },
+  uninstallBtn: {
+    backgroundColor: 'rgba(239, 68, 68, 0.25)',
+  },
+  actionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingBottom: 60,
+  },
+  loadingText: {
+    color: '#9CA3AF',
+    fontSize: 15,
+    marginTop: 16,
+  },
+  emptyTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 16,
+  },
+  emptySubtitle: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    marginTop: 6,
+    textAlign: 'center',
+    maxWidth: 480,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: 520,
+    backgroundColor: '#16161E',
+    borderRadius: 20,
+    padding: 28,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalHeader: {
+    marginBottom: 12,
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  modalDesc: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  highlightText: {
+    color: '#8A5CF6',
+    fontWeight: '700',
+  },
+  textInput: {
+    backgroundColor: '#0A0A0E',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    color: '#FFFFFF',
+    fontSize: 15,
+    marginBottom: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  confirmBtn: {
+    backgroundColor: '#8A5CF6',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  confirmBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  cancelBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  cancelBtnText: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+});

@@ -1,0 +1,278 @@
+name: Build Android TV Release APK
+
+# Controls how each run is labeled in the Actions run list (not just the
+# static workflow name above) -- a canary dispatch shows up as its own
+# "Build Canary APK" run instead of blending in with stable release runs.
+run-name: ${{ inputs.channel == 'canary' && 'Build Canary APK' || 'Build Android TV Release APK' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel'
+        type: choice
+        options:
+          - stable
+          - canary
+        default: stable
+
+permissions:
+  contents: write
+
+# Avoid two manual runs racing to publish/overwrite releases out of order.
+concurrency:
+  group: build-tv-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-tv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: 17
+
+      - name: Setup Gradle Build Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Extract Version & Generate Auto-Incremented Code
+        id: release_meta
+        run: |
+          # Keep manual version from package.json/app.config.js
+          VERSION_NAME=$(node -p "require('./package.json').version || '4.0.6'")
+
+          # Automatically increment versionCode above 192 (e.g., Run 103 -> 203)
+          VERSION_CODE=$((100 + ${{ github.run_number }}))
+          RUN_ATTEMPT=${{ github.run_attempt }}
+
+          # Only trigger left is workflow_dispatch, so the channel input is
+          # always present -- "stable" unless explicitly switched to
+          # "canary" in the run dialog.
+          CHANNEL="${{ inputs.channel }}"
+
+          # Display version = app version + versionCode, e.g. "v4.0.6-191".
+          # It is shared by the release title, the tag and every APK filename,
+          # so a build can be matched across all three at a glance.
+          VERSION_LABEL="v${VERSION_NAME}-${VERSION_CODE}"
+
+          # Release title:  "Vega TV Stable v4.0.6-191" / "Vega TV Canary v4.0.6-192"
+          # APK filename:   "Vega-TV-v4.0.6-191-<abi>.apk" /
+          #                 "Vega-TV-Canary-v4.0.6-192-<abi>.apk"
+          if [ "$CHANNEL" = "canary" ]; then
+            RELEASE_LABEL="Vega TV Canary"
+            APK_PREFIX="Vega-TV-Canary"
+            TAG_NAME="${VERSION_LABEL}-canary"
+          else
+            RELEASE_LABEL="Vega TV Stable"
+            APK_PREFIX="Vega-TV"
+            TAG_NAME="${VERSION_LABEL}"
+          fi
+          RELEASE_NAME="${RELEASE_LABEL} ${VERSION_LABEL}"
+
+          # Tags must be unique: a re-run of the same run number (same
+          # versionCode) gets an attempt suffix so it can't collide.
+          if [ "$RUN_ATTEMPT" -gt 1 ]; then
+            TAG_NAME="${TAG_NAME}.${RUN_ATTEMPT}"
+            RELEASE_NAME="${RELEASE_NAME} (attempt ${RUN_ATTEMPT})"
+          fi
+
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "version_label=$VERSION_LABEL" >> $GITHUB_OUTPUT
+          echo "apk_prefix=$APK_PREFIX" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+
+          # Canary is a prerelease and must never take over the repo's
+          # "Latest release" badge (that stays on the newest stable build) --
+          # both flags are required: prerelease alone still lets
+          # `make_latest: true`/auto-detection promote it, and
+          # make_latest:false alone would still show it without the
+          # Pre-release badge. This only affects the badge: the full Releases
+          # page lists stable and canary together, newest build first.
+          if [ "$CHANNEL" = "canary" ]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "make_latest=false" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+            echo "make_latest=true" >> $GITHUB_OUTPUT
+          fi
+
+          git fetch --tags origin 2>/dev/null || true
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"* %s (%h)")
+          else
+            CHANGELOG=$(git log --pretty=format:"* %s (%h)" -n 10)
+          fi
+
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="* TV optimizations and bug fixes."
+          fi
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up Go for WARP binary build
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+
+      - name: Build patched libusque (Cloudflare WARP) for Android
+        # Upstream usque (https://github.com/Diniboy1123/usque) ships a Go
+        # binary that can't resolve DNS on most Android devices -- Android
+        # apps have no readable /etc/resolv.conf, and this binary is built
+        # CGO_ENABLED=0 (no cgo resolver fallback available), so Go's pure-Go
+        # resolver falls back to a hardcoded, unreachable loopback
+        # nameserver and every lookup fails. native-src/usque/main.go patches
+        # this to accept real DNS servers from WarpModule.kt via the
+        # USQUE_DNS_SERVERS env var. Built here (not committed as a binary)
+        # so it always reflects that patch and stays reproducible.
+        run: |
+          set -e
+          USQUE_COMMIT="6aa03fc97d12"
+          git clone --quiet https://github.com/Diniboy1123/usque.git /tmp/usque-src
+          cd /tmp/usque-src
+          git checkout --quiet "$USQUE_COMMIT"
+          cp "$GITHUB_WORKSPACE/native-src/usque/main.go" ./main.go
+
+          build_abi() {
+            local goarch="$1" goarm="$2" abi="$3"
+            echo "Building libusque.so for $abi (GOARCH=$goarch${goarm:+, GOARM=$goarm})"
+            mkdir -p "$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" GOARM="$goarm" \
+              go build -trimpath -ldflags="-s -w" \
+              -o "$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi/libusque.so" .
+          }
+
+          build_abi arm64 "" arm64-v8a
+          build_abi arm 7 armeabi-v7a
+
+      - name: Build ciadpi (ByeDPI Anti-DPI) for Android
+        # Upstream: https://github.com/hufrea/byedpi -- a small, dependency-free
+        # C SOCKS5 proxy that applies TLS-fragmentation/desync tricks per
+        # connection. Built with a musl toolchain (Zig's bundled clang, from
+        # PyPI) as static-PIE, the same shape as the ciadpi shipped in the
+        # original mobile app. Do NOT switch this back to a glibc cross-compiler
+        # (gcc-aarch64-linux-gnu etc.): glibc-static binaries start up
+        # differently (extra syscalls) and did not start inside the Android app
+        # sandbox, while musl-static ones do.
+        run: |
+          set -e
+          python3 -m venv /tmp/zigenv
+          /tmp/zigenv/bin/pip install --quiet ziglang==0.16.0
+          ZIGCC="/tmp/zigenv/bin/python -m ziglang cc"
+          BYEDPI_TAG="v0.17.3"
+          git clone --quiet --depth 1 --branch "$BYEDPI_TAG" https://github.com/hufrea/byedpi.git /tmp/byedpi-src
+          cd /tmp/byedpi-src
+          SRC="packets.c main.c conev.c proxy.c desync.c mpool.c extend.c"
+          CFLAGS="-D_DEFAULT_SOURCE -I. -std=c99 -O2 -w -s -fPIE -pie -static"
+
+          build_abi() {
+            local target="$1" extra="$2" abi="$3"
+            local out="$GITHUB_WORKSPACE/native-src/android/jniLibs/$abi/libciadpi.so"
+            echo "Building libciadpi.so for $abi ($target)"
+            mkdir -p "$(dirname "$out")"
+            $ZIGCC -target "$target" $extra $CFLAGS -o "$out" $SRC
+            file "$out"
+            file "$out" | grep -q "statically linked\|static-pie" || { echo "ERROR: $abi build is not static"; exit 1; }
+          }
+
+          build_abi aarch64-linux-musl "" arm64-v8a
+          build_abi arm-linux-musleabihf "-mcpu=generic+v7a" armeabi-v7a
+
+      - name: Generate Android Native Project
+        env:
+          APP_VARIANT: standalone
+          APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Decode Release Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build Android TV Release APKs
+        working-directory: ./android
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
+          APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
+          MYAPP_UPLOAD_STORE_FILE: "release.keystore"
+          MYAPP_UPLOAD_STORE_PASSWORD: "${{ secrets.KEYSTORE_PASSWORD }}"
+          MYAPP_UPLOAD_KEY_ALIAS: "${{ secrets.KEY_ALIAS }}"
+          MYAPP_UPLOAD_KEY_PASSWORD: "${{ secrets.KEY_PASSWORD }}"
+        run: |
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+
+      - name: Prepare APK Artifacts
+        run: |
+          mkdir -p output_apks
+          # e.g. Vega-TV-v4.0.6-191 or Vega-TV-Canary-v4.0.6-192
+          BASE="${{ steps.release_meta.outputs.apk_prefix }}-${{ steps.release_meta.outputs.version_label }}"
+
+          find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" | while read -r file; do
+            filename=$(basename "$file")
+            if [[ "$filename" == *"arm64-v8a"* ]]; then
+              cp "$file" "output_apks/${BASE}-arm64-v8a.apk"
+            elif [[ "$filename" == *"armeabi-v7a"* ]]; then
+              cp "$file" "output_apks/${BASE}-armeabi-v7a.apk"
+            else
+              cp "$file" "output_apks/${BASE}-universal.apk"
+            fi
+          done
+          ls -la output_apks/
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vega-TV-${{ steps.release_meta.outputs.channel }}-APKs
+          path: output_apks/*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag_name }}
+          name: ${{ steps.release_meta.outputs.release_name }}
+          make_latest: ${{ steps.release_meta.outputs.make_latest }}
+          prerelease: ${{ steps.release_meta.outputs.prerelease }}
+          body: |
+            ${{ steps.release_meta.outputs.channel == 'canary' && '> ⚠️ **Canary build** -- a manually-triggered test build. May be unstable; not shown as the repo''s Latest release.' || '' }}
+
+            ## What's Changed
+            ${{ steps.release_meta.outputs.changelog }}
+
+            ---
+            * **Channel**: `${{ steps.release_meta.outputs.channel }}`
+            * **App Version**: `${{ steps.release_meta.outputs.version_name }}`
+            * **Build Code (versionCode)**: `${{ steps.release_meta.outputs.version_code }}`
+            * **Target Architecture**: Android TV (`armeabi-v7a`, `arm64-v8a`)
+          files: output_apks/*.apk
+          generate_release_notes: false
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

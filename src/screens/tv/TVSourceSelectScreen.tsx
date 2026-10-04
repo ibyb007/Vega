@@ -1,0 +1,688 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Image, findNodeHandle, ToastAndroid } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { NavRail } from '../../lib/native/NavRail';
+import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
+import useContentStore from '../../lib/zustand/contentStore';
+import { Provider } from '../../lib/providers/types';
+import { extensionStorage } from '../../lib/storage/extensionStorage';
+import { extensionManager } from '../../lib/services/ExtensionManager';
+import { TVProviderSettingsModal } from '../settings/components/TVProviderSettingsModal';
+
+// Only Torrentio exposes its provider settings on TV. Its schema also
+// carries a skip-timings toggle, which is hidden here because TheIntroDB
+// skip-intro is already always on in this app.
+const SETTINGS_ENABLED_PROVIDERS = ['torrentio'];
+const HIDDEN_SETTINGS_KEYS = ['torrentio_skipTimings'];
+
+interface TVSourceSelectScreenProps {
+  onNavigateHome?: () => void;
+  onNavigateAddons?: () => void;
+  onRegisterEntryHandleGetter?: (getter: (() => number | null) | null) => void;
+  onRegisterReturnFocusTrigger?: (trigger: (() => void) | null) => void;
+  resetFocusOnMount?: boolean;
+}
+
+// Module-level so it survives this screen unmounting when the user leaves
+// the Sources tab and comes back -- same pattern as TVHomeScreen's
+// `lastFocusedKey`.
+let lastFocusedSourcesKey: string | null = null;
+
+export const TVSourceSelectScreen: React.FC<TVSourceSelectScreenProps> = ({
+  onNavigateHome,
+  onNavigateAddons,
+  onRegisterEntryHandleGetter,
+  onRegisterReturnFocusTrigger,
+  resetFocusOnMount,
+}) => {
+  const { setItemRef, keyFor, shouldPreferFocus, requestRefocus } = useTVEntryFocus(
+    () => lastFocusedSourcesKey,
+    onRegisterEntryHandleGetter,
+    onRegisterReturnFocusTrigger,
+    resetFocusOnMount,
+    () => {
+      lastFocusedSourcesKey = null;
+    }
+  );
+  const provider = useContentStore((state) => state.provider);
+  const setProvider = useContentStore((state) => state.setProvider);
+  const secondaryProvider = useContentStore((state) => state.secondaryProvider);
+  const setSecondaryProvider = useContentStore((state) => state.setSecondaryProvider);
+  const installedProviders = useContentStore((state) => state.installedProviders) || [];
+  const setInstalledProviders = useContentStore((state) => state.setInstalledProviders);
+  const [settingsProvider, setSettingsProvider] = useState<any>(null);
+
+  // Native node handle of the "Add / Manage Addons" button, captured once
+  // it mounts (see its ref callback below) so the top row of provider
+  // cards -- and the empty-state "Install Providers" CTA -- can wire an
+  // explicit nextFocusUp to it. Without this, Android's default geometric
+  // focus search sometimes prefers the nav rail's own Search button over
+  // this pill when pressing Up from the top row: the rail sits closer in
+  // both x and y even though "Add / Manage Addons" is the button that's
+  // actually directly above with nothing else in between.
+  const [manageAddonsHandle, setManageAddonsHandle] = useState<number | null>(null);
+  // Raw node (not just its handle tag) so `onFocus` below can re-run
+  // `registerRailLeftEdge` -- see that handler for why a one-time,
+  // mount-only registration isn't enough for this particular button.
+  const manageAddonsNodeRef = useRef<unknown>(null);
+
+  // Defensive second attempt at regaining real Android focus on this
+  // button specifically. `useTVEntryFocus`'s generic remount trick (the
+  // same one every other left-edge item on this screen relies on) already
+  // fires an *immediate* remount the instant the rail's Right key event
+  // comes back from native -- but this button, unlike the provider grid
+  // and the chip row, isn't inside the ScrollView: it sits in a flex
+  // header row that can still be settling its own layout pass at that
+  // exact moment, and `hasTVPreferredFocus` silently does nothing if it
+  // fires before the new view is actually laid out/attached. Re-running
+  // the same remount one frame later is a no-op if the first attempt
+  // already landed, and recovers it if it didn't.
+  const [addonsBtnRetryNonce, setAddonsBtnRetryNonce] = useState(0);
+  useEffect(() => {
+    const sub = NavRail.onRouteReselected((route) => {
+      if (route !== 'sources' || lastFocusedSourcesKey !== 'manage-addons-btn') return;
+      requestAnimationFrame(() => {
+        if (lastFocusedSourcesKey === 'manage-addons-btn') {
+          setAddonsBtnRetryNonce((n) => n + 1);
+        }
+      });
+    });
+    return () => sub?.remove();
+  }, []);
+
+  // No local back-stack on this screen — Back is handled centrally by
+  // App.tsx, which moves focus to the Sources button on the rail.
+
+  const handleSelectProvider = (item: Provider) => {
+    setProvider(item);
+    if (onNavigateHome) {
+      onNavigateHome();
+    }
+  };
+
+  const handleUninstallProvider = (item: any, index: number) => {
+    const remaining = installedProviders.filter((p: any) => p.value !== item.value);
+    extensionManager.uninstallProvider(item.value, item.source?.author);
+    setInstalledProviders(extensionStorage.getInstalledProviders());
+
+    if (provider?.value === item.value) {
+      const next = extensionStorage.getInstalledProviders()[0];
+      setProvider(
+        next ?? {
+          value: '',
+          display_name: '',
+          type: 'global',
+          installed: false,
+          disabled: false,
+          version: '0.0.1',
+          icon: '',
+          source: { author: '', url: '' },
+          installedAt: 0,
+          lastUpdated: 0,
+        }
+      );
+    }
+    if (secondaryProvider?.value === item.value) {
+      setSecondaryProvider(null);
+    }
+    ToastAndroid.show(`Uninstalled ${item.display_name || item.value}`, ToastAndroid.SHORT);
+
+    // The focused row is about to disappear -- hand focus to its
+    // neighbour so the D-pad doesn't get stranded.
+    const neighbour: any = remaining[Math.min(index, remaining.length - 1)];
+    lastFocusedSourcesKey = neighbour ? `provider-${neighbour.value}` : null;
+    if (neighbour) requestAnimationFrame(() => requestRefocus());
+  };
+
+  const secondaryChoices = installedProviders.filter(
+    (item: any) => item.value !== provider?.value,
+  );
+
+  const handleSelectSecondaryProvider = (item: Provider) => {
+    setSecondaryProvider(secondaryProvider?.value === item.value ? null : item);
+  };
+
+  return (
+    <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.headerTitle}>Select Provider Source</Text>
+          <Text style={styles.headerSubtitle}>
+            Choose which provider supplies the catalog and stream links on your Home Screen
+          </Text>
+        </View>
+
+        {onNavigateAddons && (
+          <TVFocusablePressable
+            key={`${keyFor('manage-addons-btn')}-x${addonsBtnRetryNonce}`}
+            ref={(el) => {
+              setItemRef('manage-addons-btn', el);
+              manageAddonsNodeRef.current = el;
+              // The header title beside this button isn't focusable, so
+              // Left from here has nothing else to land on within the
+              // screen -- it should always reach the Sources rail button.
+              if (el) registerRailLeftEdge('sources', el);
+              const tag = el ? findNodeHandle(el) : null;
+              if (tag != null) setManageAddonsHandle(tag);
+            }}
+            hasTVPreferredFocus={shouldPreferFocus('manage-addons-btn', false)}
+            // Left from here must always reach the Sources rail button. The
+            // provider rows below sit down-and-left of this button, so
+            // Android's geometric search can pick one of them instead; this
+            // ID makes the native DPAD_LEFT handler go straight to the rail.
+            nativeID="rail-left-exit"
+            onFocus={() => {
+              lastFocusedSourcesKey = 'manage-addons-btn';
+              // Re-claim the rail's Right-key return target every time this
+              // button is actually focused, not just once at mount. Every
+              // other left-edge item on this screen (the provider grid's
+              // first column, the secondary-source chip row, ...) also
+              // calls `registerRailLeftEdge` from its own `ref` callback,
+              // and those all mount/re-mount *after* this header -- so
+              // without this, whichever of them rendered last silently
+              // steals the "Right from Sources" target, and pressing Right
+              // from the rail while sitting on this button lands somewhere
+              // else (or, if that element later unmounts, nowhere at all).
+              if (manageAddonsNodeRef.current) {
+                registerRailLeftEdge('sources', manageAddonsNodeRef.current);
+              }
+            }}
+            // This is the topmost focusable item on the screen -- nothing
+            // sits above it to receive an Up press. Once mounted,
+            // `manageAddonsHandle` is this button's own node handle, so
+            // this is a deliberate self-loop: Up does nothing instead of
+            // Android's default geometric search either finding a distant,
+            // wrong target or nothing at all (which drops focus entirely).
+            nextFocusUp={manageAddonsHandle ?? undefined}
+            scaleFocused={1.05}
+            focusedBorderColor="#8A5CF6"
+            borderRadius={12}
+            onPress={onNavigateAddons}
+            style={styles.manageBtn}
+          >
+            {() => (
+              <View style={styles.btnInner}>
+                <MaterialCommunityIcons name="puzzle-outline" size={20} color="#FFFFFF" />
+                <Text style={styles.manageBtnText}>Add / Manage Addons</Text>
+              </View>
+            )}
+          </TVFocusablePressable>
+        )}
+      </View>
+
+      {/* Installed Providers List */}
+      {installedProviders.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <MaterialCommunityIcons name="cloud-off-outline" size={72} color="#4B5563" />
+          <Text style={styles.emptyText}>No Providers Installed</Text>
+          <Text style={styles.emptySubtext}>
+            Head over to the Addons tab to install a provider extension first.
+          </Text>
+          {onNavigateAddons && (
+            <TVFocusablePressable
+              key={keyFor('install-now-btn')}
+              ref={(el) => {
+                setItemRef('install-now-btn', el);
+                if (el) registerRailLeftEdge('sources', el);
+              }}
+              hasTVPreferredFocus={shouldPreferFocus('install-now-btn', true)}
+              onFocus={() => (lastFocusedSourcesKey = 'install-now-btn')}
+              nextFocusUp={manageAddonsHandle ?? undefined}
+              scaleFocused={1.06}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={12}
+              onPress={onNavigateAddons}
+              style={styles.installNowBtn}
+            >
+              {() => (
+                <View style={styles.btnInner}>
+                  <MaterialCommunityIcons name="download" size={20} color="#FFFFFF" />
+                  <Text style={styles.installNowText}>Install Providers</Text>
+                </View>
+              )}
+            </TVFocusablePressable>
+          )}
+        </View>
+      ) : (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.pageScrollContent}
+        >
+          <View style={styles.listContainer}>
+            {installedProviders.map((item: any, index: number) => {
+              const isSelected = provider?.value === item.value;
+              const displayName = item.displayTitle || item.name || item.display_name || item.value || `Source ${index + 1}`;
+              const version = item.version ? `v${item.version}` : 'v1.0.0';
+              const author = item.source?.author || item.author || 'global';
+              const cardKey = `provider-${item.value}`;
+              const uninstallKey = `uninstall-${item.value}`;
+              const settingsKey = `settings-${item.value}`;
+              const showSettings =
+                Boolean(item.hasSettings) && SETTINGS_ENABLED_PROVIDERS.includes(item.value);
+              // Only the first row has nothing else above it -- rows
+              // below correctly fall back to Android's default search.
+              const upTarget = index === 0 ? manageAddonsHandle ?? undefined : undefined;
+
+              return (
+                <View key={cardKey} style={styles.providerRow}>
+                  <TVFocusablePressable
+                    key={keyFor(cardKey)}
+                    ref={(el) => {
+                      setItemRef(cardKey, el);
+                      if (el) registerRailLeftEdge('sources', el);
+                    }}
+                    hasTVPreferredFocus={shouldPreferFocus(cardKey, isSelected || index === 0)}
+                    onFocus={() => (lastFocusedSourcesKey = cardKey)}
+                    nextFocusUp={upTarget}
+                    scaleFocused={1.02}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={14}
+                    onPress={() => handleSelectProvider(item)}
+                    style={[styles.rowMain, isSelected && styles.rowMainSelected]}
+                  >
+                    {({ focused }) => (
+                      <View style={styles.rowMainInner}>
+                        <View style={[styles.iconCircle, isSelected && styles.iconCircleSelected]}>
+                          {item.icon ? (
+                            <Image
+                              source={{ uri: item.icon }}
+                              style={styles.providerIconImage}
+                              resizeMode="contain"
+                            />
+                          ) : (
+                            <MaterialCommunityIcons
+                              name="server"
+                              size={26}
+                              color={isSelected || focused ? '#8A5CF6' : '#9CA3AF'}
+                            />
+                          )}
+                        </View>
+                        <View style={styles.rowInfo}>
+                          <View style={styles.titleLine}>
+                            <Text numberOfLines={1} style={styles.providerTitle}>
+                              {displayName}
+                            </Text>
+                            <Text style={styles.versionBadge}>{version}</Text>
+                          </View>
+                          <Text numberOfLines={1} style={styles.providerDetails}>
+                            {item.type || 'global'} • {author}
+                          </Text>
+                        </View>
+                        {isSelected ? (
+                          <View style={styles.activePill}>
+                            <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" />
+                            <Text style={styles.activePillText}>Active</Text>
+                          </View>
+                        ) : (
+                          <Text style={styles.actionHint}>Press OK to Switch</Text>
+                        )}
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+
+                  {showSettings && (
+                    <TVFocusablePressable
+                      key={keyFor(settingsKey)}
+                      ref={(el) => setItemRef(settingsKey, el)}
+                      hasTVPreferredFocus={shouldPreferFocus(settingsKey, false)}
+                      onFocus={() => (lastFocusedSourcesKey = settingsKey)}
+                      nextFocusUp={upTarget}
+                      scaleFocused={1.05}
+                      focusedBorderColor="#FFFFFF"
+                      borderRadius={10}
+                      onPress={() => setSettingsProvider(item)}
+                      style={[styles.rowBtn, styles.settingsBtn]}
+                    >
+                      {() => (
+                        <View style={styles.btnInner}>
+                          <MaterialCommunityIcons name="cog-outline" size={18} color="#FFFFFF" />
+                          <Text style={styles.rowBtnText}>Settings</Text>
+                        </View>
+                      )}
+                    </TVFocusablePressable>
+                  )}
+
+                  <TVFocusablePressable
+                    key={keyFor(uninstallKey)}
+                    ref={(el) => setItemRef(uninstallKey, el)}
+                    hasTVPreferredFocus={shouldPreferFocus(uninstallKey, false)}
+                    onFocus={() => (lastFocusedSourcesKey = uninstallKey)}
+                    nextFocusUp={upTarget}
+                    scaleFocused={1.05}
+                    focusedBorderColor="#FFFFFF"
+                    borderRadius={10}
+                    onPress={() => handleUninstallProvider(item, index)}
+                    style={[styles.rowBtn, styles.uninstallBtn]}
+                  >
+                    {() => (
+                      <View style={styles.btnInner}>
+                        <MaterialCommunityIcons name="trash-can-outline" size={18} color="#FFFFFF" />
+                        <Text style={styles.rowBtnText}>Uninstall</Text>
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                </View>
+              );
+            })}
+          </View>
+
+          {/* Secondary Source (fills the bottom rows on Home) */}
+          {secondaryChoices.length > 0 && (
+            <View style={styles.secondarySection}>
+              <Text style={styles.secondaryHeading}>2nd Source (optional)</Text>
+              <Text style={styles.secondarySubheading}>
+                Adds a second addon's catalog to the bottom of your Home Screen, below{' '}
+                {provider?.display_name || 'the primary source'}
+              </Text>
+
+              <View style={styles.chipRow}>
+                <TVFocusablePressable
+                  key={keyFor('secondary-none')}
+                  ref={(el) => {
+                    setItemRef('secondary-none', el);
+                    // Fixed first chip in this row -- another left-edge row
+                    // on this screen, below the main provider grid.
+                    if (el) registerRailLeftEdge('sources', el);
+                  }}
+                  hasTVPreferredFocus={shouldPreferFocus('secondary-none', false)}
+                  onFocus={() => (lastFocusedSourcesKey = 'secondary-none')}
+                  scaleFocused={1.05}
+                  focusedBorderColor="#8A5CF6"
+                  borderRadius={16}
+                  onPress={() => setSecondaryProvider(null)}
+                  style={[
+                    styles.secondaryChip,
+                    !secondaryProvider && styles.secondaryChipSelected,
+                  ]}
+                >
+                  {() => (
+                    <Text
+                      style={[
+                        styles.secondaryChipText,
+                        !secondaryProvider && styles.secondaryChipTextSelected,
+                      ]}
+                    >
+                      None
+                    </Text>
+                  )}
+                </TVFocusablePressable>
+
+                {secondaryChoices.map((item: any) => {
+                  const isSelected = secondaryProvider?.value === item.value;
+                  const displayName =
+                    item.displayTitle || item.name || item.display_name || item.value;
+                  const chipKey = `secondary-${item.value}`;
+                  return (
+                    <TVFocusablePressable
+                      key={keyFor(chipKey)}
+                      ref={(el) => setItemRef(chipKey, el)}
+                      hasTVPreferredFocus={shouldPreferFocus(chipKey, false)}
+                      onFocus={() => (lastFocusedSourcesKey = chipKey)}
+                      scaleFocused={1.05}
+                      focusedBorderColor="#8A5CF6"
+                      borderRadius={16}
+                      onPress={() => handleSelectSecondaryProvider(item)}
+                      style={[
+                        styles.secondaryChip,
+                        isSelected && styles.secondaryChipSelected,
+                      ]}
+                    >
+                      {() => (
+                        <Text
+                          style={[
+                            styles.secondaryChipText,
+                            isSelected && styles.secondaryChipTextSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {displayName}
+                        </Text>
+                      )}
+                    </TVFocusablePressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+        </ScrollView>
+      )}
+
+      <TVProviderSettingsModal
+        visible={settingsProvider !== null}
+        provider={settingsProvider}
+        hiddenKeys={HIDDEN_SETTINGS_KEYS}
+        onClose={() => {
+          setSettingsProvider(null);
+          // Modal dismissal can drop native focus; reclaim the row.
+          requestAnimationFrame(() => requestRefocus());
+        }}
+      />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0A0A0E',
+    paddingLeft: 96,
+    paddingRight: 48,
+    paddingTop: 36,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  headerSubtitle: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    marginTop: 4,
+  },
+  manageBtn: {
+    backgroundColor: '#8A5CF6',
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+  },
+  manageBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  btnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pageScrollContent: {
+    paddingBottom: 40,
+  },
+  listContainer: {
+    gap: 12,
+    paddingHorizontal: 4,
+  },
+  providerRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 12,
+  },
+  rowMain: {
+    flex: 1,
+    backgroundColor: '#16161E',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  rowMainSelected: {
+    backgroundColor: '#1E1B2E',
+    borderColor: '#8A5CF6',
+  },
+  rowMainInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  rowInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  titleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  versionBadge: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  rowBtn: {
+    paddingHorizontal: 18,
+    justifyContent: 'center',
+  },
+  settingsBtn: {
+    backgroundColor: 'rgba(138, 92, 246, 0.25)',
+  },
+  uninstallBtn: {
+    backgroundColor: 'rgba(239, 68, 68, 0.25)',
+  },
+  rowBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  secondarySection: {
+    marginTop: 36,
+    paddingTop: 24,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  secondaryHeading: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  secondarySubheading: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    marginTop: 4,
+    marginBottom: 16,
+    maxWidth: 640,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  secondaryChip: {
+    backgroundColor: '#16161E',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    maxWidth: 220,
+  },
+  secondaryChipSelected: {
+    backgroundColor: '#1E1B2E',
+    borderColor: '#8A5CF6',
+  },
+  secondaryChipText: {
+    color: '#D1D5DB',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  secondaryChipTextSelected: {
+    color: '#8A5CF6',
+    fontWeight: '700',
+  },
+  iconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  iconCircleSelected: {
+    backgroundColor: 'rgba(138, 92, 246, 0.15)',
+  },
+  providerIconImage: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+  },
+  activePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#8A5CF6',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  activePillText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  providerTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  providerDetails: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    marginTop: 3,
+  },
+  actionHint: {
+    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingBottom: 80,
+  },
+  emptyText: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 16,
+  },
+  emptySubtext: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    marginTop: 6,
+    marginBottom: 24,
+  },
+  installNowBtn: {
+    backgroundColor: '#8A5CF6',
+    paddingVertical: 14,
+    paddingHorizontal: 22,
+  },
+  installNowText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+});
+
+export default TVSourceSelectScreen;
