@@ -124,7 +124,7 @@ const AUDIO_BOOST_GAIN_DB: Record<AudioBoostProfile, number> = {
   // (wind, whispers, distant chatter, foley). This value is the gain applied to loud content;
   // quiet bands receive up to ~+9 dB more on top (see applyCinematicBoost in the native patch).
   // Raise it (max 24) if 5.1 content is still too quiet; lower it if peaks start to crunch.
-  cinematic: 15,
+  cinematic: 13,
 };
 const KEYCODE_DPAD_CENTER = 23;
 const KEYCODE_ENTER = 66;
@@ -1128,7 +1128,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       nextMode === 'rich'
         ? 'Audio Boost: Rich & Immersive (+12dB)'
         : nextMode === 'cinematic'
-        ? 'Audio Boost: Cinematic Sound (+15dB, Low-Level Detail Lift)'
+        ? 'Audio Boost: Cinematic Sound (+13dB, Low-Level Detail Lift)'
         : nextMode === 'dialogue'
         ? 'Audio Boost: Dialogue / Night Mode (+6dB)'
         : 'Audio Boost: Standard (Off)';
