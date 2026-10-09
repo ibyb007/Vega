@@ -125,11 +125,12 @@ const AUDIO_BOOST_GAIN_DB: Record<AudioBoostProfile, number> = {
   off: 0,
   dialogue: 6,
   rich: 12,
-  // Cinematic = everything Rich does (full-range gain across dialogue, score, ambience and
-  // explosive peaks) pushed higher, PLUS an extra multiband lift for quiet low-level detail
-  // (wind, whispers, distant chatter, foley). This value is the gain applied to loud content;
-  // quiet bands receive up to ~+9 dB more on top (see applyCinematicBoost in the native patch).
-  // Raise it (max 24) if 5.1 content is still too quiet; lower it if peaks start to crunch.
+  // Cinematic = a level-dependent boost. This value is the gain for quiet detail and
+  // dialogue-level content (plus an extra per-band lift for wind, whispers, chatter, foley).
+  // Loud content (explosions, crowd cheers, score peaks) is compressed under full scale on the
+  // native side (see applyCinematicBoost in the native patch) so it can't hard-clip, which means
+  // a higher value squeezes the dynamics more rather than getting louder at the peaks.
+  // The native side clamps this to 14 dB; the default of 13 is the sweet spot.
   cinematic: 13,
 };
 const KEYCODE_DPAD_CENTER = 23;
