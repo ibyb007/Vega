@@ -1745,7 +1745,7 @@ index e16ac96..8ba29fe 100644
      }
  
      public void setSelectedAudioTrack(String type, String value) {
-@@ -2589,6 +3184,216 @@ public class ReactExoplayerView extends FrameLayout implements
+@@ -2589,6 +3184,230 @@ public class ReactExoplayerView extends FrameLayout implements
          }
      }
  
@@ -1753,7 +1753,7 @@ index e16ac96..8ba29fe 100644
 +     * Sets the requested audio boost gain in dB (0 = off). Backed by Android's
 +     * {@link android.media.audiofx.LoudnessEnhancer}, which applies real post-decode gain
 +     * (unlike ExoPlayer's volume, which is clamped to [0, 1] and can only attenuate).
-+     * In "cinematic" mode the value is the gain for loud content and quiet detail is lifted further on top.
++     * In "cinematic" mode the value is the gain for quiet/dialogue-level content; loud content is compressed under full scale.
 +     */
 +    public void setAudioBoostGain(float gainDb) {
 +        audioBoostGainDb = gainDb;
@@ -1849,19 +1849,24 @@ index e16ac96..8ba29fe 100644
 +    }
 +
 +    /**
-+     * Cinematic Sound = the full-range gain of the "Rich" profile, pushed higher, plus an extra
-+     * multiband lift for quiet detail.
++     * Cinematic Sound = a LEVEL-DEPENDENT boost. Quiet detail (wind, whispers, room tone, foley)
++     * and dialogue-level content get the full gain; loud content (explosions, crowd cheers,
++     * score peaks) is progressively compressed so it lands under full scale instead of being
++     * forced into the limiter.
 +     *
-+     * audioBoostGainDb is the gain applied to LOUD content (explosions, score peaks, dialogue
-+     * at normal level) - the same role it plays for the plain boost, just above Rich's 12 dB.
-+     * Each of the 5 bands then adds make-up gain so that quiet signals (wind, whispers, distant
-+     * chatter, room tone, foley) get several dB MORE than that, and the compressor in each band
-+     * pulls the gain back down as the signal gets louder. Make-up is computed per band so that
-+     * a signal at LOUD_REF_DB receives exactly the base gain:
-+     *     makeup = baseGain + (LOUD_REF_DB - threshold) * (1 - 1/ratio)
-+     * Quiet signals below the threshold get the full make-up (base + up to ~9-13 dB). A
-+     * per-band noise gate keeps the lift from raising hiss, and a brick-wall style limiter
-+     * stops the large total gain from clipping.
++     * Why: the previous version anchored the gain at a "loud" level of -8 dBFS, so +13 dB there
++     * meant peaks were driven 10-20 dB OVER full scale. The platform limiter has no look-ahead,
++     * so the overshoot was hard-clipped -> crackle on explosions and crowds, at any TV volume
++     * (the clipping happens in the digital domain, before the volume control). It also gave the
++     * 120-500 Hz and 6-20 kHz bands the biggest lift, which made voices boomy and harsh.
++     *
++     * Per band:
++     *     Q = baseGain + lift       gain for signals below the threshold (quiet / dialogue)
++     *     C = ceiling               most the band may output when its input hits 0 dBFS
++     *     ratio = -threshold / (C - Q - threshold)
++     * The ratio is derived from Q and C, so the ceiling always holds: asking for more gain
++     * squeezes the dynamics a little more rather than clipping. The limiter is then only a
++     * safety net (threshold -4 dBFS) and rarely has to work hard.
 +     *
 +     * @return true if the effect is active, false if the device rejected it (caller falls back
 +     *         to the plain LoudnessEnhancer gain boost).
@@ -1879,21 +1884,27 @@ index e16ac96..8ba29fe 100644
 +            }
 +
 +            final int channels = 2;
-+            // Gain for loud content, in dB. Above Rich (12 dB) by design.
-+            final float baseGainDb = Math.max(0f, Math.min(audioBoostGainDb, 24f));
-+            // Approximate level (dBFS, per band) of "loud" content used to anchor the base gain.
-+            final float loudRefDb = -8f;
++            // Gain for quiet / dialogue-level content, in dB. Capped at 14: beyond that the
++            // compression ratios needed to hold the ceiling get extreme and the effect pumps.
++            final float baseGainDb = Math.max(0f, Math.min(audioBoostGainDb, 14f));
 +
-+            // Band upper edges (Hz): rumble/LFE | wind & body | dialogue & chatter | whisper, steps, cloth | air & ambience
++            // Band upper edges (Hz): rumble/LFE | body | dialogue core | consonants, foley | air
 +            final float[] mbcCutoff  = {120f, 500f, 2000f, 6000f, 20000f};
-+            final float[] mbcThresh  = { -24f, -28f,  -26f,  -28f,  -30f};
-+            final float[] mbcRatio   = { 1.5f, 2.4f,  1.9f,  2.2f,  2.4f};
-+            final float[] mbcAttack  = { 30f,  20f,   12f,     8f,    6f };
-+            final float[] mbcRelease = {400f, 300f,  220f,   180f,  160f };
-+            final float[] mbcGate    = {-80f, -78f,  -76f,   -74f,  -72f };
-+            // Pre-EQ: a little extra body for wind/ambience, presence for whispers, air for room tone.
++            // Extra gain (dB, on top of baseGainDb) for quiet content. Deliberately small in the
++            // lows (bass carries most of the peak energy and makes voices boomy) and in the air
++            // band (hiss / sibilance), largest where dialogue and quiet foley live.
++            final float[] mbcLift    = {  3f,   9f,  12f,   7f,   2f};
++            final float[] mbcThresh  = {-42f, -40f, -40f, -40f, -44f};
++            // Max output (dBFS) of each band when its input is at 0 dBFS. Lower in the lows
++            // because that is where explosion peaks are.
++            final float[] mbcCeiling = {-12f,  -6f,  -6f,  -6f, -10f};
++            // Attack is slowest in the lows (a fast attack there distorts the bass waveform).
++            final float[] mbcAttack  = {  8f,   4f,   3f,   2f,  1.5f};
++            final float[] mbcRelease = {250f, 200f, 160f, 140f, 120f};
++            final float[] mbcGate    = {-72f, -70f, -68f, -66f, -64f};
++            // Pre-EQ: gently trimmed lows (keeps voices natural), slight presence/air.
 +            final float[] eqCutoff = {60f, 150f, 400f, 1000f, 3000f, 8000f, 20000f};
-+            final float[] eqGain   = { 2f,  3f,  2f,    1f,    2f,    3f,     2f };
++            final float[] eqGain   = {-2f,  -1f,   0f,    0f,   0.5f,  0.5f,    0f};
 +
 +            if (dynamicsProcessing == null) {
 +                android.media.audiofx.DynamicsProcessing.Config config =
@@ -1913,18 +1924,21 @@ index e16ac96..8ba29fe 100644
 +                        new android.media.audiofx.DynamicsProcessing.EqBand(true, eqCutoff[i], eqGain[i]));
 +            }
 +            for (int i = 0; i < mbcCutoff.length; i++) {
-+                float makeupDb = baseGainDb + (loudRefDb - mbcThresh[i]) * (1f - 1f / mbcRatio[i]);
-+                makeupDb = Math.min(makeupDb, 36f);
++                float makeupDb = baseGainDb + mbcLift[i];
++                float headroomDb = mbcCeiling[i] - makeupDb - mbcThresh[i];
++                float ratio = headroomDb > 1f ? -mbcThresh[i] / headroomDb : 8f;
++                ratio = Math.max(1.5f, Math.min(ratio, 8f));
 +                dynamicsProcessing.setMbcBandAllChannelsTo(i,
 +                        new android.media.audiofx.DynamicsProcessing.MbcBand(
 +                                true, mbcCutoff[i], mbcAttack[i], mbcRelease[i],
-+                                mbcRatio[i], mbcThresh[i], 6f /* knee */, mbcGate[i], 1.5f /* expander */,
++                                ratio, mbcThresh[i], 14f /* knee */, mbcGate[i], 1.3f /* expander */,
 +                                0f, makeupDb));
 +            }
-+            // Limiter catches the peaks that the large total gain would otherwise push past 0 dBFS.
++            // Safety net only: the bands already hold peaks near -6 dBFS. No look-ahead exists,
++            // so a slightly slower release (120 ms) avoids pumping the bass.
 +            dynamicsProcessing.setLimiterAllChannelsTo(
 +                    new android.media.audiofx.DynamicsProcessing.Limiter(
-+                            true, true, 0, 1f, 80f, 20f, -1.5f, 0f));
++                            true, true, 0, 0.6f, 120f, 20f, -4f, 0f));
 +            dynamicsProcessing.setEnabled(true);
 +            return true;
 +        } catch (Throwable t) {
