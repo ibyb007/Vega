@@ -96,7 +96,7 @@ module.exports = () => {
   return {
     expo: {
       name: 'Vega TV',
-      scheme: 'com.vega',
+      scheme: 'com.vegatv.ib',
       displayName: 'Vega TV',
       icon: './assets/icon.png',
       jsEngine: 'hermes',
@@ -112,7 +112,7 @@ module.exports = () => {
       android: {
         isTV: true,
         minSdkVersion: 28,
-        package: 'com.vega',
+        package: 'com.vegatv.ib',
         versionCode: parseInt(process.env.APP_VERSION_CODE || '192', 10),
         permissions: [
           'ACCESS_NETWORK_STATE',
