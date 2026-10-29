@@ -1,3 +1,4 @@
+import { getPlaybackPrefs, pickPreferredStream } from '../../lib/zustand/playbackPrefsStore';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
@@ -1007,7 +1008,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           return;
         }
 
-        const best = streams[0];
+        // Same server/quality the viewer last chose for this title.
+        const best = pickPreferredStream(streams, getPlaybackPrefs(item?.link)) || streams[0];
         const qualities = streams.map((s, idx) => ({
           name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
           url: s.link,
