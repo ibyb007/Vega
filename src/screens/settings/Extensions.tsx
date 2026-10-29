@@ -478,7 +478,16 @@ export default function Extensions({
             ref={(el) => {
               refreshBtnRef.current = el;
               setItemRef('refresh-btn', el);
-              if (el) registerRailLeftEdge('addons', el);
+              if (el) {
+                registerRailLeftEdge('addons', el);
+                // Topmost control on the screen: nothing is above it, but
+                // the full-height rail made Android's geometric search jump
+                // there on Up. Self-pointing nextFocusUp makes Up a no-op.
+                const selfHandle = findNodeHandle(el);
+                if (selfHandle != null) {
+                  (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+                }
+              }
             }}
             hasTVPreferredFocus={shouldPreferFocus('refresh-btn', false)}
             onFocus={() => (lastFocusedAddonsKey = 'refresh-btn')}
@@ -499,7 +508,15 @@ export default function Extensions({
 
           <TVFocusablePressable
             key={keyFor('add-source-btn')}
-            ref={(el) => setItemRef('add-source-btn', el)}
+            ref={(el) => {
+              setItemRef('add-source-btn', el);
+              if (el) {
+                const selfHandle = findNodeHandle(el);
+                if (selfHandle != null) {
+                  (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+                }
+              }
+            }}
             hasTVPreferredFocus={shouldPreferFocus('add-source-btn', visibleProviders.length === 0)}
             onFocus={() => (lastFocusedAddonsKey = 'add-source-btn')}
             scaleFocused={1.05}
@@ -545,7 +562,10 @@ export default function Extensions({
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContainer}
-          removeClippedSubviews={true}
+          // Off-screen rows must stay attached: with key-repeat, Android's
+          // focus search runs faster than clipped rows re-attach, finds no
+          // row below/above, and jumps focus to the header buttons.
+          removeClippedSubviews={false}
           scrollEventThrottle={16}
         >
           {visibleProviders.map((item) => {
