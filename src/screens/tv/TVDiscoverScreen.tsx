@@ -1,3 +1,4 @@
+import { getPlaybackPrefs, pickPreferredStream } from '../../lib/zustand/playbackPrefsStore';
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
@@ -1459,7 +1460,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         );
         const usableStreams = filteredStreams.length > 0 ? filteredStreams : streams;
 
-        const best = usableStreams[0];
+        const best =
+          pickPreferredStream(usableStreams, getPlaybackPrefs(activeSourcePost?.link)) || usableStreams[0];
         const qualities = usableStreams.map((s, idx) => ({
           name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
           url: s.link,
