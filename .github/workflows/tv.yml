@@ -56,7 +56,7 @@ jobs:
         id: release_meta
         run: |
           # Keep manual version from package.json/app.config.js
-          VERSION_NAME=$(node -p "require('./package.json').version || '4.0.6'")
+          VERSION_NAME=$(node -p "require('./package.json').version || '5.0.0'")
 
           # Automatically increment versionCode above 192 (e.g., Run 103 -> 203)
           VERSION_CODE=$((100 + ${{ github.run_number }}))
