@@ -223,6 +223,40 @@ const extractStreamTags = (stream: any): string[] => {
     .filter((t) => Boolean(t) && t.toLowerCase() !== quality);
 };
 
+// After a refetch the provider hands the same servers back with new links.
+// Match the server first, then its quality and tags, so playback stays on the
+// one the viewer had instead of jumping to the first server in the list.
+const matchSameServer = (
+  fresh: any[],
+  current?: { server?: string; quality?: string; tags?: string[] },
+): any | undefined => {
+  if (!current?.server) return undefined;
+  const curTags = (current.tags || []).join('|');
+  let best: any;
+  let bestScore = -1;
+  for (const f of fresh) {
+    if (f?.server !== current.server) continue;
+    const score =
+      (String(f.quality ?? '') === String(current.quality ?? '') ? 2 : 0) +
+      (extractStreamTags(f).join('|') === curTags ? 1 : 0);
+    if (score > bestScore) {
+      best = f;
+      bestScore = score;
+    }
+  }
+  return best;
+};
+
+// Gives every listed option its new link (same server/quality/tags) so the
+// Server/Quality menus and "next server" fallbacks stop pointing at dead links.
+const remapOptions = (options: StreamOption[], fresh: any[]): StreamOption[] =>
+  options.map((o) => {
+    const match = matchSameServer(fresh, o);
+    return match?.link
+      ? { ...o, url: match.link, headers: match.headers, sourceType: match.type }
+      : o;
+  });
+
 const describeVideoTrack = (track: any) => {
   const title = track?.height
     ? `${track.height}p`
@@ -457,8 +491,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   subtitles,
   episodes = [],
   currentEpisodeIndex = 0,
-  servers = [],
-  qualities = [],
+  servers: serversProp = [],
+  qualities: qualitiesProp = [],
   skip,
   tmdbId,
   imdbId,
@@ -525,6 +559,15 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [textTracks, setTextTracks] = useState<any[]>([]);
   const [selectedAudio, setSelectedAudio] = useState<any>({ type: SelectedTrackType.INDEX, value: 0 });
   const [selectedSub, setSelectedSub] = useState<any>({ type: SelectedTrackType.DISABLED });
+  // Lists replaced after a link refresh (expired links); null = use the props.
+  const [refreshedOptions, setRefreshedOptions] = useState<{
+    qualities: StreamOption[];
+    servers: StreamOption[];
+  } | null>(null);
+  const qualities = refreshedOptions?.qualities ?? qualitiesProp;
+  const servers = refreshedOptions?.servers ?? serversProp;
+  // Bumped to remount the player and reload the same link.
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
   const [activeHeaders, setActiveHeaders] = useState<Record<string, string> | undefined>(headers);
   const [activeSourceType, setActiveSourceType] = useState<string | undefined>(sourceType);
@@ -679,6 +722,12 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const prevStreamUrlRef = useRef(streamUrl);
   const pendingRecoverySeekRef = useRef<number | null>(null);
   const recoveryAttemptsRef = useRef(0);
+  // Expired-link recovery, per source: reload the same link once, then ask the
+  // provider for new links once and stay on the same server.
+  const linkRecoveryRef = useRef<{ url: string; reloaded: boolean; refreshed: boolean } | null>(null);
+  const pendingLinkRefreshRef = useRef<string | null>(null);
+  const linkRefreshCountRef = useRef(0);
+  const activeMediaUrlRef = useRef(streamUrl);
   // Auto "try next server" bookkeeping. `playbackStartedRef` flips true on the
   // first onLoad of the current source, so an error before that point is a
   // start-up failure (dead link, 403/404, blocked host...) rather than a
@@ -694,6 +743,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     if (streamUrl && streamUrl !== prevStreamUrlRef.current) {
       prevStreamUrlRef.current = streamUrl;
       recoveryAttemptsRef.current = 0;
+      linkRecoveryRef.current = null;
+      pendingLinkRefreshRef.current = null;
+      linkRefreshCountRef.current = 0;
+      setRefreshedOptions(null);
       triedSourceUrlsRef.current = new Set();
       setActiveMediaUrl(streamUrl);
       setActiveHeaders(headers);
@@ -837,6 +890,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   // Every new source (picked by hand, auto-advanced, or a new episode) starts
   // out "not started yet" until its first onLoad.
+  activeMediaUrlRef.current = activeMediaUrl;
+
   useEffect(() => {
     playbackStartedRef.current = false;
     // Once the active source has moved on from the one we switched away from,
@@ -1458,9 +1513,14 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   };
 
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    const total = Math.max(0, Math.floor(seconds || 0));
+    const hrs = Math.floor(total / 3600);
+    const mins = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    const ss = String(secs).padStart(2, '0');
+    // hh:mm:ss from one hour up, plain mm:ss below it.
+    if (hrs > 0) return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${ss}`;
+    return `${mins}:${ss}`;
   };
 
   const hasNextEpisode = episodes.length > currentEpisodeIndex + 1;
@@ -1584,6 +1644,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     <View style={styles.container}>
       {!!playableUrl && (
       <Video
+        key={`player-${reloadNonce}`}
         ref={videoRef}
         source={videoSource}
         style={StyleSheet.absoluteFill}
@@ -1612,6 +1673,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           // and the failed-server history no longer applies.
           playbackStartedRef.current = true;
           triedSourceUrlsRef.current = new Set();
+          // Loaded fine: a later failure of this link starts its recovery over.
+          linkRecoveryRef.current = null;
           const totalDur = meta.duration || 0;
           setDuration(totalDur);
           currentProgRef.current.duration = totalDur;
@@ -1737,10 +1800,79 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             return;
           }
 
-          // Failed before the first frame loaded: the link itself is dead, so
-          // try the next available server automatically.
-          if (!playbackStartedRef.current) {
-            if (tryNextSourceAfterStartError()) return;
+          // Link failed (often an expired link). Reload the same link once,
+          // then ask the provider for new links once and carry on with the same
+          // server from the same position. Only when that gives nothing do we
+          // move to another server.
+          const failedUrl = activeMediaUrl;
+          if (pendingLinkRefreshRef.current === failedUrl) return;
+          if (linkRecoveryRef.current?.url !== failedUrl) {
+            linkRecoveryRef.current = { url: failedUrl, reloaded: false, refreshed: false };
+          }
+          const recovery = linkRecoveryRef.current;
+          const startedBefore = playbackStartedRef.current;
+          const resumeAt = currentProgRef.current.currentTime;
+
+          if (!recovery.reloaded) {
+            recovery.reloaded = true;
+            if (startedBefore) pendingRecoverySeekRef.current = resumeAt;
+            setBuffering(true);
+            ToastAndroid.show('Connection lost, retrying', ToastAndroid.SHORT);
+            setReloadNonce((n) => n + 1);
+            return;
+          }
+
+          const recoveryLink = episodes[currentEpisodeIndex]?.link || itemLink;
+          if (
+            !recovery.refreshed &&
+            recoveryLink &&
+            providerValue &&
+            linkRefreshCountRef.current < 3
+          ) {
+            recovery.refreshed = true;
+            linkRefreshCountRef.current += 1;
+            pendingLinkRefreshRef.current = failedUrl;
+            setBuffering(true);
+            ToastAndroid.show('Getting a new link', ToastAndroid.SHORT);
+            let fresh: any;
+            let freshList: any[] = [];
+            try {
+              freshList =
+                (await providerManager.getStream({
+                  link: recoveryLink,
+                  type: episodes.length > 0 ? 'series' : 'movie',
+                  providerValue,
+                })) || [];
+              const current =
+                qualities.find((q) => q.url === failedUrl) ||
+                servers.find((q) => q.url === failedUrl);
+              fresh = matchSameServer(freshList, current);
+              // Without server names to match on, a single result is still the
+              // same video; never guess among several.
+              if (!fresh && !current?.server && freshList.length === 1) fresh = freshList[0];
+            } catch (e) {
+              console.warn('[TVPlayerScreen] Link refresh failed:', e);
+            } finally {
+              if (pendingLinkRefreshRef.current === failedUrl) pendingLinkRefreshRef.current = null;
+            }
+            // Viewer switched source/episode while we waited.
+            if (activeMediaUrlRef.current !== failedUrl) return;
+            if (fresh?.link && fresh.link !== failedUrl) {
+              if (startedBefore) pendingRecoverySeekRef.current = resumeAt;
+              setRefreshedOptions({
+                qualities: remapOptions(qualities, freshList),
+                servers: remapOptions(servers, freshList),
+              });
+              setActiveMediaUrl(fresh.link);
+              setActiveHeaders(fresh.headers);
+              setActiveSourceType(fresh.type);
+              return;
+            }
+          }
+
+          if (startedBefore) pendingRecoverySeekRef.current = resumeAt;
+          if (tryNextSourceAfterStartError()) return;
+          if (!startedBefore) {
             ToastAndroid.show(
               'No working server found. Open the Server menu to pick another one.',
               ToastAndroid.LONG
@@ -1748,32 +1880,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
             setBuffering(false);
             return;
           }
-
-          const recoveryLink = episodes[currentEpisodeIndex]?.link || itemLink;
-          if (isIoError && recoveryLink && providerValue && recoveryAttemptsRef.current < 2) {
-            recoveryAttemptsRef.current += 1;
-            const resumeAt = currentProgRef.current.currentTime;
-            setBuffering(true);
-            ToastAndroid.show('Connection dropped, reconnecting...', ToastAndroid.SHORT);
-            try {
-              const freshStreams = await providerManager.getStream({
-                link: recoveryLink,
-                type: episodes.length > 0 ? 'series' : 'movie',
-                providerValue,
-              });
-              const fresh = freshStreams?.[0];
-              if (fresh?.link) {
-                pendingRecoverySeekRef.current = resumeAt;
-                setActiveMediaUrl(fresh.link);
-                setActiveHeaders(fresh.headers);
-                setActiveSourceType(fresh.type);
-                return;
-              }
-            } catch (e) {
-              console.warn('[TVPlayerScreen] Stream recovery failed:', e);
-            }
-            setBuffering(false);
-          }
+          pendingRecoverySeekRef.current = null;
 
           ToastAndroid.show(`Playback error: ${err.error?.errorString || 'Failed to play stream'}`, ToastAndroid.LONG);
           setBuffering(false);
