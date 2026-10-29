@@ -1,3 +1,4 @@
+import usePlaybackPrefsStore, { getPlaybackPrefs, pickPreferredStream, findPreferredAudioIndex } from '../../lib/zustand/playbackPrefsStore';
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
@@ -991,6 +992,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   // disambiguator (see `episodeKey` below), not the row id.
   const continueWatchingId = itemLink || episodeId || streamUrl;
 
+  // Re-apply the audio track chosen earlier for this title (also on the next
+  // episode, where the track list is new).
+  useEffect(() => {
+    if (!audioTracks.length) return;
+    const idx = findPreferredAudioIndex(audioTracks, getPlaybackPrefs(continueWatchingId));
+    if (idx >= 0 && idx !== selectedAudio.value) {
+      setSelectedAudio({ type: SelectedTrackType.INDEX, value: idx });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioTracks]);
+
   const syncProgressToStore = useCallback(
     (timeSec: number, totalDur: number) => {
       if (totalDur <= 0 || timeSec <= 0 || !continueWatchingId) return;
@@ -1471,7 +1483,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         return;
       }
 
-      const best = streams[0];
+      const best = pickPreferredStream(streams, getPlaybackPrefs(continueWatchingId)) || streams[0];
       const qualList = streams.map((s: any, idx: number) => ({
         name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
         url: s.link,
@@ -2494,6 +2506,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                       borderRadius={10}
                       onPress={() => {
                         setSelectedAudio({ type: SelectedTrackType.INDEX, value: i });
+                        usePlaybackPrefsStore.getState().setAudio(continueWatchingId, {
+                          language: String(trk?.language || trk?.lang || '').toLowerCase(),
+                          title: String(trk?.title || trk?.label || '').trim(),
+                        });
                         setActiveDialog(null);
                         resetInactivityTimer();
                       }}
@@ -2542,6 +2558,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                         setActiveHeaders(srv.headers);
                         setActiveSourceType(srv.sourceType);
                         onSelectServer?.(srv.url);
+                        usePlaybackPrefsStore.getState().setSource(continueWatchingId, srv);
                         setActiveDialog(null);
                         resetInactivityTimer();
                       }}
@@ -2579,6 +2596,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                           setActiveHeaders(q.headers);
                           setActiveSourceType(q.sourceType);
                           onSelectQuality?.(q.url);
+                          usePlaybackPrefsStore.getState().setSource(continueWatchingId, q);
                           setActiveDialog(null);
                           resetInactivityTimer();
                         }}
