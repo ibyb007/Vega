@@ -25,6 +25,7 @@ module.exports = () => {
     './plugins/with-proguard-rules.js',
     './plugins/with-jvm-args.js',
     './plugins/with-android-release-gradle.js',
+    './plugins/with-apk-size.js',
     './plugins/with-android-signing.js',
     './plugins/with-android-okhttp.js',
     [
@@ -62,6 +63,10 @@ module.exports = () => {
         android: {
           usePrecompiledHeaders: true,
           enableProguardInReleaseBuilds: true,
+          enableShrinkResourcesInReleaseBuilds: true,
+          // Libs stay extracted at install (libusque/libciadpi are exec'd);
+          // compressing them in the APK keeps the download small.
+          useLegacyPackaging: true,
           splits: {
             abi: { enable: true, universalApk: false },
           },
