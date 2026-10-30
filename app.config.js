@@ -109,7 +109,7 @@ module.exports = () => {
       autolinking: { exclude: ['expo-splash-screen'] },
       plugins,
       slug: 'vega',
-      version: '5.0.1',
+      version: process.env.APP_VERSION_NAME || require('./package.json').version,
       userInterfaceStyle: 'dark',
       experiments: {
         reactCompiler: true,
