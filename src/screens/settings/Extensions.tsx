@@ -130,6 +130,10 @@ interface ProviderRowItemProps {
   onItemFocus: (key: string) => void;
   registerItemRef: (key: string, node: View | null) => void;
   onRowLayout: (key: string, y: number, height: number) => void;
+  // Native handles of the buttons above/below, passed as real props so they
+  // survive re-renders (setNativeProps values can be dropped on the next commit).
+  nextUp?: number;
+  nextDown?: number;
 }
 
 // Memoized item row preventing unnecessary re-renders of 50+ items during scroll/state changes
@@ -143,6 +147,8 @@ const ProviderRowItem = memo(({
   onItemFocus,
   registerItemRef,
   onRowLayout,
+  nextUp,
+  nextDown,
 }: ProviderRowItemProps) => {
   // Stable per-row callbacks, so a re-render of this row doesn't detach and
   // re-attach the ref (which re-registered every row with the nav rail).
@@ -188,6 +194,8 @@ const ProviderRowItem = memo(({
         ref={handleRef}
         hasTVPreferredFocus={hasPreferredFocus}
         onFocus={handleFocus}
+        {...(nextUp != null ? { nextFocusUp: nextUp } : {})}
+        {...(nextDown != null ? { nextFocusDown: nextDown } : {})}
         scaleFocused={1.04}
         focusedBorderColor="#FFFFFF"
         borderRadius={10}
@@ -490,68 +498,73 @@ export default function Extensions({
   const contentHeightRef = useRef(0);
   const orderedKeysRef = useRef<string[]>([]);
   orderedKeysRef.current = visibleProviders.map((p) => `provider-${p.value}`);
-  const wireScheduledRef = useRef(false);
+  const lastRowFocusAtRef = useRef(0);
 
   // Up/Down between rows is wired explicitly instead of left to Android's
-  // geometric focus search. While a key is held, that search races the list's
-  // own scrolling and sometimes finds no row below, so focus fell out to the
-  // header's Refresh button. The last row points at itself, so Down at the
-  // bottom is a no-op. The first row keeps the default so Up still reaches
-  // the header.
-  const wireRowFocusChain = useCallback(() => {
-    wireScheduledRef.current = false;
-    const keys = orderedKeysRef.current;
-    const handles = keys.map((k) => {
-      const node = rowNodesRef.current[k];
-      return node ? findNodeHandle(node) : null;
-    });
-    keys.forEach((k, i) => {
-      const node = rowNodesRef.current[k];
-      const self = handles[i];
-      if (!node || self == null) return;
-      const down = i < keys.length - 1 ? handles[i + 1] : self;
-      const up = i > 0 ? handles[i - 1] : null;
-      (node as any).setNativeProps?.({
-        nextFocusDown: down ?? self,
-        ...(up != null ? { nextFocusUp: up } : {}),
-      });
-    });
-  }, []);
-
-  const scheduleWire = useCallback(() => {
-    if (wireScheduledRef.current) return;
-    wireScheduledRef.current = true;
-    // Rows register one by one while mounting; wire once they all have.
-    setTimeout(wireRowFocusChain, 0);
-  }, [wireRowFocusChain]);
+  // geometric focus search (which races the list's scrolling while a key is
+  // held and could fall out to the header buttons). Handles are resolved once
+  // the rows are mounted and then passed to each row as plain props.
+  const [focusLinks, setFocusLinks] = useState<Record<string, { up?: number; down?: number }>>({});
+  const [firstRowHandle, setFirstRowHandle] = useState<number | null>(null);
 
   const registerRow = useCallback(
     (key: string, node: View | null) => {
       setItemRef(key, node);
       if (node) {
         rowNodesRef.current[key] = node;
-        scheduleWire();
       } else {
         delete rowNodesRef.current[key];
       }
     },
-    [setItemRef, scheduleWire],
+    [setItemRef],
   );
 
   useEffect(() => {
-    scheduleWire();
-  }, [visibleProviders, isRefreshing, scheduleWire]);
+    if (isRefreshing) return;
+    const keys = orderedKeysRef.current;
+    const handles = keys.map((k) => {
+      const node = rowNodesRef.current[k];
+      return node ? findNodeHandle(node) : null;
+    });
+    const next: Record<string, { up?: number; down?: number }> = {};
+    keys.forEach((k, i) => {
+      const self = handles[i];
+      if (self == null) return;
+      const below = i < keys.length - 1 ? handles[i + 1] : self; // last row: Down is a no-op
+      const above = i > 0 ? handles[i - 1] : refreshBtnHandle; // first row: Up -> Refresh
+      next[k] = {
+        down: below ?? undefined,
+        up: above ?? undefined,
+      };
+    });
+    setFocusLinks((prev) => {
+      const pk = Object.keys(prev);
+      const nk = Object.keys(next);
+      if (
+        pk.length === nk.length &&
+        nk.every((k) => prev[k]?.up === next[k].up && prev[k]?.down === next[k].down)
+      ) {
+        return prev;
+      }
+      return next;
+    });
+    setFirstRowHandle(handles[0] ?? null);
+  }, [visibleProviders, isRefreshing, refreshBtnHandle]);
 
   const handleRowLayout = useCallback((key: string, y: number, height: number) => {
     rowLayoutsRef.current[key] = { y, h: height };
   }, []);
 
-  // Keeps the focused row at a steady spot in the viewport with an animated
-  // scroll. Android's own scroll-to-focus moves by one row per key press and,
-  // for presses closer than ~250ms apart, does it instantly -- which is what
-  // made holding Down/Up look steppy.
+  // Keeps the focused row at a steady spot in the viewport. Presses that come
+  // in quick succession (a held key) jump straight to the absolute target --
+  // restarting an animation on every repeat is what made it stutter and fight
+  // Android's own scroll-to-focus. A single, isolated press still glides.
   const handleRowFocus = useCallback((key: string) => {
     lastFocusedAddonsKey = key;
+    const now = Date.now();
+    const rapid = now - lastRowFocusAtRef.current < 250;
+    lastRowFocusAtRef.current = now;
+
     const layout = rowLayoutsRef.current[key];
     const viewportH = viewportHeightRef.current;
     if (!layout || !viewportH) return;
@@ -560,7 +573,7 @@ export default function Extensions({
       maxY,
       Math.max(0, layout.y + layout.h / 2 - viewportH * FOCUS_ANCHOR),
     );
-    scrollRef.current?.scrollTo({ y: target, animated: true });
+    scrollRef.current?.scrollTo({ y: target, animated: !rapid });
   }, []);
 
   return (
@@ -590,6 +603,7 @@ export default function Extensions({
                 }
               }
             }}
+            {...(firstRowHandle != null ? { nextFocusDown: firstRowHandle } : {})}
             hasTVPreferredFocus={shouldPreferFocus('refresh-btn', false)}
             onFocus={() => (lastFocusedAddonsKey = 'refresh-btn')}
             scaleFocused={1.05}
@@ -624,6 +638,7 @@ export default function Extensions({
             focusedBorderColor="#8A5CF6"
             borderRadius={12}
             {...(refreshBtnHandle ? { nextFocusLeft: refreshBtnHandle } : {})}
+            {...(firstRowHandle != null ? { nextFocusDown: firstRowHandle } : {})}
             onPress={() => setIsModalVisible(true)}
             style={[styles.addSourceBtn, { backgroundColor: primaryColor }]}
           >
@@ -688,6 +703,8 @@ export default function Extensions({
                 onItemFocus={handleRowFocus}
                 registerItemRef={registerRow}
                 onRowLayout={handleRowLayout}
+                nextUp={focusLinks[rowKey]?.up}
+                nextDown={focusLinks[rowKey]?.down}
               />
             );
           })}
@@ -833,9 +850,13 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 13,
   },
+  // Fixed width so Install and Uninstall rows share the same left/right
+  // edges -- no horizontal shift (or focus-geometry change) between them.
   actionBtn: {
+    width: 136,
     paddingVertical: 10,
-    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   installBtn: {
     backgroundColor: '#8A5CF6',
