@@ -161,17 +161,29 @@ export const peekCinemetaMeta = (
 // index of the selected `Link` within `Info.linkList`, episode is the
 // index within that season's episode list. This matches how Cinemeta's
 // own `videos` entries are ordered for the vast majority of shows.
+type EpisodeIndex = Map<string, CinemetaVideo> & {source?: unknown};
+const episodeIndexCache = new WeakMap<object, EpisodeIndex>();
+
 export const findCinemetaEpisode = (
   meta: CinemetaMeta | null | undefined,
   seasonNumber: number,
   episodeNumber: number,
 ): CinemetaVideo | null => {
   if (!meta?.videos?.length) return null;
-  return (
-    meta.videos.find(
-      (v) => (v.season ?? 0) === seasonNumber && (v.episode ?? v.number ?? 0) === episodeNumber,
-    ) || null
-  );
+  // Long shows (hundreds/thousands of videos) are looked up once per episode
+  // row, so index them once per Cinemeta result instead of scanning each time.
+  let index = episodeIndexCache.get(meta);
+  if (!index || index.size === 0 || index.source !== meta.videos) {
+    const map = new Map<string, CinemetaVideo>() as EpisodeIndex;
+    for (const v of meta.videos) {
+      const key = `${v.season ?? 0}:${v.episode ?? v.number ?? 0}`;
+      if (!map.has(key)) map.set(key, v);
+    }
+    map.source = meta.videos;
+    episodeIndexCache.set(meta, map);
+    index = map;
+  }
+  return index.get(`${seasonNumber}:${episodeNumber}`) || null;
 };
 
 // Cinemeta usually already returns something like "148 min", but some
