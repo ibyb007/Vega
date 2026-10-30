@@ -1291,6 +1291,47 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   activeSkipPopupRef.current = activeSkipPopup;
   const showEpisodesListRef = useRef(showEpisodesList);
   showEpisodesListRef.current = showEpisodesList;
+
+  // ---- "Videos" picker: open on the playing episode ------------------------
+  // The list is a plain ScrollView, so the playing episode can start well
+  // below the fold. On open we scroll it into view ourselves (focus alone
+  // fires before layout and the row stays off-screen), then keep the focused
+  // episode at a steady spot while moving through the list.
+  const episodesScrollRef = useRef<ScrollView | null>(null);
+  const episodeLayoutsRef = useRef<Record<number, { y: number; h: number }>>({});
+  const episodesViewportHRef = useRef(0);
+  const episodesContentHRef = useRef(0);
+  const episodesInitialScrollDoneRef = useRef(false);
+  const lastEpisodeFocusAtRef = useRef(0);
+  const currentEpisodeIndexRef = useRef(currentEpisodeIndex);
+  currentEpisodeIndexRef.current = currentEpisodeIndex;
+
+  const scrollEpisodesTo = useCallback((idx: number, animated: boolean) => {
+    const layout = episodeLayoutsRef.current[idx];
+    const viewportH = episodesViewportHRef.current;
+    if (!layout || !viewportH) return false;
+    const maxY = Math.max(0, episodesContentHRef.current - viewportH);
+    const target = Math.min(
+      maxY,
+      Math.max(0, layout.y + layout.h / 2 - viewportH * 0.35)
+    );
+    episodesScrollRef.current?.scrollTo({ y: target, animated });
+    return true;
+  }, []);
+
+  const tryInitialEpisodeScroll = useCallback(() => {
+    if (episodesInitialScrollDoneRef.current) return;
+    if (scrollEpisodesTo(currentEpisodeIndexRef.current, false)) {
+      episodesInitialScrollDoneRef.current = true;
+    }
+  }, [scrollEpisodesTo]);
+
+  useEffect(() => {
+    if (!showEpisodesList) {
+      episodeLayoutsRef.current = {};
+      episodesInitialScrollDoneRef.current = false;
+    }
+  }, [showEpisodesList]);
   const showControlsRef = useRef(showControls);
   showControlsRef.current = showControls;
   const isSeekbarFocusedRef = useRef(isSeekbarFocused);
@@ -2982,8 +3023,17 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
           <View style={styles.episodesCard}>
             <Text style={styles.episodesTitle}>Videos</Text>
             <ScrollView
+              ref={episodesScrollRef}
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.episodesListContent}
+              onLayout={(e) => {
+                episodesViewportHRef.current = e.nativeEvent.layout.height;
+                tryInitialEpisodeScroll();
+              }}
+              onContentSizeChange={(_w, h) => {
+                episodesContentHRef.current = h;
+                tryInitialEpisodeScroll();
+              }}
             >
               {/* Built only while open: this component re-renders on every
                   progress tick, and a hidden list of hundreds of episodes was
@@ -3003,7 +3053,21 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     scaleFocused={1.01}
                     focusedBorderColor="#8A5CF6"
                     borderRadius={12}
-                    onFocus={() => resetInactivityTimer()}
+                    onLayout={(e) => {
+                      episodeLayoutsRef.current[idx] = {
+                        y: e.nativeEvent.layout.y,
+                        h: e.nativeEvent.layout.height,
+                      };
+                      if (isCurrent) tryInitialEpisodeScroll();
+                    }}
+                    onFocus={() => {
+                      resetInactivityTimer();
+                      // Held key: jump straight to the target; single press: glide.
+                      const now = Date.now();
+                      const rapid = now - lastEpisodeFocusAtRef.current < 250;
+                      lastEpisodeFocusAtRef.current = now;
+                      scrollEpisodesTo(idx, !rapid);
+                    }}
                     onPress={() => {
                       setShowEpisodesList(false);
                       if (idx !== currentEpisodeIndex) playEpisodeAtIndex(idx);
