@@ -89,6 +89,7 @@ function withCustomNativeModules(config) {
       'TorrentPackage()',
       'LauncherIconPackage()',
       'VideoThumbnailPackage()',
+      'PlaybackSessionPackage()',
     ];
 
     for (const pkg of packagesToAdd) {
