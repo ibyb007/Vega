@@ -267,6 +267,7 @@ export interface DiscoverResumeHint {
   episodeKey?: string;
   episodeLink?: string;
   position?: number;
+  duration?: number;
   // Exact label of the season/quality/dub dropdown entry (`activeLink.title`)
   // this episode was played from -- see ContinueWatchingItem.linkTitle.
   linkTitle?: string;
