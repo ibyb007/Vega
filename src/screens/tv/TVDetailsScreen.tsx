@@ -28,6 +28,7 @@ import {
 import { settingsStorage } from '../../lib/storage';
 import { launchVideo, PlayerChoice } from '../../lib/services/PlayerLauncher';
 import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel } from '../../lib/utils/episodeParsing';
+import { buildEpisodeRanges, rangeForIndex } from '../../lib/utils/episodeRanges';
 import { getFileSizeLabel, stripFileSize } from '../../lib/utils/fileSize';
 import {
   DetailsReturnState,
@@ -123,6 +124,14 @@ interface DetailRow {
 // enough; `onPress`/`onLayout` are passed down as the single stable
 // callbacks the parent already memoizes, rather than a fresh closure per
 // row, so they never trip that comparison either.
+const formatRemainingLabel = (seconds: number): string => {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes}m left`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}h ${rest}m left` : `${hours}h left`;
+};
+
 const EpisodeRow = React.memo(function EpisodeRow({
   row,
   isFocusTarget,
@@ -218,6 +227,9 @@ interface ResumeHint {
   // fallback for entries saved before this key existed.
   episodeKey?: string;
   position?: number;
+  // Length of that episode (seconds), when known -- drives the resume card's
+  // progress bar and the "Up next" switch near the end.
+  duration?: number;
   // Exact label of the season/quality/dub dropdown entry (`activeLink.title`)
   // that was active when this episode was played -- see
   // ContinueWatchingItem.linkTitle. Lets a Continue Watching press land back
@@ -1142,6 +1154,74 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     ? { kind: 'row', key: restoredRow.key }
     : { kind: 'top' };
 
+  // ---- Episode ranges (blocks of 50) -----------------------------------------
+  // Long lists (a 20-season show) are shown 50 rows at a time: mounting every
+  // row is what made this screen crawl. `rangeStart === null` means "pick the
+  // block holding the episode focus will land on" (restored / resume / first).
+  const [rangeStart, setRangeStart] = useState<number | null>(null);
+  const episodeRanges = useMemo(
+    () => (rows.length > 0 && rows[0].isEpisode ? buildEpisodeRanges(rows.length) : []),
+    [rows],
+  );
+  const activeRange = useMemo(() => {
+    if (episodeRanges.length === 0) return undefined;
+    if (rangeStart !== null) {
+      return episodeRanges.find((r) => r.start === rangeStart) || episodeRanges[0];
+    }
+    const focusIdx = restoreActive && restoredRow
+      ? rows.findIndex((r) => r.key === restoredRow.key)
+      : rows.findIndex((r) => r.isDefaultFocus);
+    return rangeForIndex(episodeRanges, Math.max(focusIdx, 0));
+  }, [episodeRanges, rangeStart, rows, restoreActive, restoredRow]);
+  const visibleRows = useMemo(
+    () => (activeRange ? rows.slice(activeRange.start, activeRange.end) : rows),
+    [rows, activeRange],
+  );
+  // A different season/quality entry starts over on its own default block.
+  useEffect(() => {
+    setRangeStart(null);
+  }, [activeIndex]);
+
+  // ---- Resume / Up next / Start card ------------------------------------------
+  const resumeTarget = useMemo(() => {
+    if (rows.length === 0 || !rows[0].isEpisode) return null;
+    const idx = rows.findIndex((r) => r.isResumeTarget);
+    const position = resumeHint?.position || 0;
+    const duration = resumeHint?.duration || 0;
+    if (idx >= 0) {
+      const fraction = duration > 0 ? position / duration : 0;
+      if (duration > 0 && fraction > 0.85 && rows[idx + 1]) {
+        return { mode: 'next' as const, row: rows[idx + 1], title: rows[idx + 1].title };
+      }
+      return {
+        mode: 'resume' as const,
+        row: rows[idx],
+        title: rows[idx].title,
+        progress: fraction > 0 ? fraction : undefined,
+        remaining: duration > position ? duration - position : undefined,
+      };
+    }
+    // Played from another dropdown entry (season/dub): go back to it.
+    if (resumeHint?.linkTitle && resumeHint.linkTitle !== activeLink?.title) {
+      const target = linkList.findIndex((l) => l.title === resumeHint.linkTitle);
+      if (target >= 0) {
+        return {
+          mode: 'resume' as const,
+          title: resumeHint.episodeKey || 'Last episode',
+          seasonTitle: resumeHint.linkTitle,
+          switchTo: target,
+          episodeKey: resumeHint.episodeKey,
+          remaining: duration > position ? duration - position : undefined,
+          progress: duration > 0 ? position / duration : undefined,
+        };
+      }
+    }
+    if (!resumeHint?.episodeKey && !resumeHint?.episodeLink && rows.length > 1) {
+      return { mode: 'start' as const, row: rows[0], title: rows[0].title };
+    }
+    return null;
+  }, [rows, resumeHint, activeLink, linkList]);
+
   // `hasTVPreferredFocus` alone is not enough after a remount: the target
   // is usually below the fold, and the details ScrollView only has views
   // attached for what is on screen, so the focus request has nothing to
@@ -1226,10 +1306,48 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       ),
     [resolveAndPlay],
   );
+  // Resume card on another dropdown entry: switch to it, then play once its
+  // episodes have loaded.
+  const pendingResumeKeyRef = useRef<string | null>(null);
+  const handleResumeCardPress = useCallback(() => {
+    if (!resumeTarget) return;
+    if ('row' in resumeTarget && resumeTarget.row) {
+      handleRowPress(resumeTarget.row);
+      return;
+    }
+    if ('switchTo' in resumeTarget && resumeTarget.switchTo !== undefined) {
+      pendingResumeKeyRef.current = resumeTarget.episodeKey || null;
+      restoreModeRef.current = false;
+      setSeasonIndex(resumeTarget.switchTo);
+    }
+  }, [resumeTarget, handleRowPress]);
+  useEffect(() => {
+    const key = pendingResumeKeyRef.current;
+    if (!key || episodesLoading || rows.length === 0) return;
+    const row = rows.find((r) => r.stableKey === key);
+    pendingResumeKeyRef.current = null;
+    if (row) handleRowPress(row);
+  }, [rows, episodesLoading, handleRowPress]);
   const handleRowLayout = useCallback((key: string, y: number) => {
     rowLayoutsRef.current[key] = y;
   }, []);
+  const renderRowElement = (row: DetailRow, isFocusTarget: boolean) => (
+    <EpisodeRow
+      key={`row-${row.key}-${row.index}${isFocusTarget ? `-f${episodeFocusNonce}` : ''}`}
+      row={row}
+      isFocusTarget={isFocusTarget}
+      focusNonce={episodeFocusNonce}
+      resumePosition={row.isResumeTarget ? resumeHint?.position : undefined}
+      onPress={handleRowPress}
+      onLayout={handleRowLayout}
+    />
+  );
   const renderRow = (row: DetailRow) => {
+    // After the viewer picks a block themselves, focus stays on the chips
+    // instead of jumping to the resume row if it lives in that block.
+    if (rangeStart !== null) {
+      return renderRowElement(row, false);
+    }
     const isFocusTarget = restoreActive
       ? restoredRow
         ? row.key === restoredRow.key
@@ -1238,17 +1356,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         : row.isDefaultFocus
       : row.isDefaultFocus;
 
-    return (
-      <EpisodeRow
-        key={`row-${row.key}-${row.index}${isFocusTarget ? `-f${episodeFocusNonce}` : ''}`}
-        row={row}
-        isFocusTarget={isFocusTarget}
-        focusNonce={episodeFocusNonce}
-        resumePosition={row.isResumeTarget ? resumeHint?.position : undefined}
-        onPress={handleRowPress}
-        onLayout={handleRowLayout}
-      />
-    );
+    return renderRowElement(row, isFocusTarget);
   };
 
   if (error && !info) {
@@ -1419,8 +1527,92 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             </View>
           ) : rows.length > 0 ? (
             <View style={styles.listSection}>
+              {resumeTarget && (
+                <TVFocusablePressable
+                  scaleFocused={1.02}
+                  focusedBorderColor="#FFFFFF"
+                  borderRadius={14}
+                  onPress={handleResumeCardPress}
+                  style={styles.resumeCard}
+                >
+                  {() => (
+                    <View>
+                      <View style={styles.resumeCardInner}>
+                        <MaterialCommunityIcons
+                          name={resumeTarget.mode === 'next' ? 'skip-next' : 'play'}
+                          size={28}
+                          color="#FFFFFF"
+                        />
+                        <View style={styles.resumeCardTextCol}>
+                          <Text style={styles.resumeCardHeading}>
+                            {resumeTarget.mode === 'resume'
+                              ? 'Resume'
+                              : resumeTarget.mode === 'next'
+                              ? 'Up next'
+                              : 'Start watching'}
+                          </Text>
+                          <Text numberOfLines={1} style={styles.resumeCardDetail}>
+                            {[
+                              'seasonTitle' in resumeTarget ? resumeTarget.seasonTitle : undefined,
+                              resumeTarget.title,
+                              resumeTarget.mode === 'resume' && 'remaining' in resumeTarget && resumeTarget.remaining
+                                ? formatRemainingLabel(resumeTarget.remaining)
+                                : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(' \u00B7 ')}
+                          </Text>
+                        </View>
+                      </View>
+                      {resumeTarget.mode === 'resume' &&
+                        'progress' in resumeTarget &&
+                        resumeTarget.progress !== undefined && (
+                          <View style={styles.resumeCardTrack}>
+                            <View
+                              style={[
+                                styles.resumeCardFill,
+                                { width: `${Math.min(100, Math.max(2, resumeTarget.progress * 100))}%` },
+                              ]}
+                            />
+                          </View>
+                        )}
+                    </View>
+                  )}
+                </TVFocusablePressable>
+              )}
               <Text style={styles.sectionHeader}>{rows[0].isEpisode ? 'Episodes' : 'Select Source'}</Text>
-              {rows.map(renderRow)}
+              {episodeRanges.length > 0 && (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.rangeChipRow}
+                  style={styles.rangeChipScroll}
+                >
+                  {episodeRanges.map((range) => {
+                    const selected = activeRange?.start === range.start;
+                    return (
+                      <TVFocusablePressable
+                        key={`range-${range.start}`}
+                        scaleFocused={1.05}
+                        focusedBorderColor="#8A5CF6"
+                        borderRadius={16}
+                        onPress={() => {
+                          restoreModeRef.current = false;
+                          setRangeStart(range.start);
+                        }}
+                        style={[styles.rangeChip, selected && styles.rangeChipSelected]}
+                      >
+                        {() => (
+                          <Text style={[styles.rangeChipText, selected && styles.rangeChipTextSelected]}>
+                            {range.start + 1}{'\u2013'}{range.end}
+                          </Text>
+                        )}
+                      </TVFocusablePressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
+              {visibleRows.map(renderRow)}
             </View>
           ) : (
             <View style={styles.playActionSection}>
@@ -1850,6 +2042,35 @@ const styles = StyleSheet.create({
   listSection: {
     marginBottom: 12,
   },
+  resumeCard: {
+    backgroundColor: '#7C4DFF',
+    marginBottom: 18,
+    overflow: 'hidden',
+  },
+  resumeCardInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  resumeCardTextCol: { flex: 1 },
+  resumeCardHeading: { color: '#FFFFFF', fontSize: 18, fontWeight: '700' },
+  resumeCardDetail: { color: 'rgba(255,255,255,0.85)', fontSize: 15, marginTop: 2 },
+  resumeCardTrack: { height: 4, backgroundColor: 'rgba(0,0,0,0.2)' },
+  resumeCardFill: { height: 4, backgroundColor: 'rgba(255,255,255,0.6)' },
+  rangeChipScroll: { marginBottom: 14 },
+  rangeChipRow: { gap: 8, paddingVertical: 4 },
+  rangeChip: {
+    backgroundColor: 'rgba(22, 22, 30, 0.6)',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.25)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  rangeChipSelected: { backgroundColor: 'rgba(124, 77, 255, 0.35)', borderColor: '#A78BFA' },
+  rangeChipText: { color: '#C4B5FD', fontSize: 15, fontWeight: '600' },
+  rangeChipTextSelected: { color: '#FFFFFF' },
   // Episode card -- values match the Discover episode card.
   episodeCard: {
     backgroundColor: 'rgba(22, 22, 30, 0.6)',
