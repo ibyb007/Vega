@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   ToastAndroid,
   findNodeHandle,
+  LayoutChangeEvent,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
@@ -128,6 +129,7 @@ interface ProviderRowItemProps {
   hasPreferredFocus: boolean;
   onItemFocus: (key: string) => void;
   registerItemRef: (key: string, node: View | null) => void;
+  onRowLayout: (key: string, y: number, height: number) => void;
 }
 
 // Memoized item row preventing unnecessary re-renders of 50+ items during scroll/state changes
@@ -140,9 +142,29 @@ const ProviderRowItem = memo(({
   hasPreferredFocus,
   onItemFocus,
   registerItemRef,
+  onRowLayout,
 }: ProviderRowItemProps) => {
+  // Stable per-row callbacks, so a re-render of this row doesn't detach and
+  // re-attach the ref (which re-registered every row with the nav rail).
+  const handleRef = useCallback(
+    (el: View | null) => {
+      registerItemRef(itemKey, el);
+      // This button is the only focusable element in the row -- there's
+      // nothing else to its left -- so Left from it should always reach
+      // the Addons rail button, for every row, not just the first.
+      if (el) registerRailLeftEdge('addons', el);
+    },
+    [itemKey, registerItemRef],
+  );
+  const handleFocus = useCallback(() => onItemFocus(itemKey), [itemKey, onItemFocus]);
+  const handlePress = useCallback(() => onToggleInstall(item), [item, onToggleInstall]);
+  const handleLayout = useCallback(
+    (e: LayoutChangeEvent) => onRowLayout(itemKey, e.nativeEvent.layout.y, e.nativeEvent.layout.height),
+    [itemKey, onRowLayout],
+  );
+
   return (
-    <View style={styles.providerRow}>
+    <View style={styles.providerRow} onLayout={handleLayout}>
       <View style={styles.providerLeft}>
         <View style={styles.providerIconWrapper}>
           {item.icon ? (
@@ -163,19 +185,13 @@ const ProviderRowItem = memo(({
       </View>
 
       <TVFocusablePressable
-        ref={(el) => {
-          registerItemRef(itemKey, el);
-          // This button is the only focusable element in the row -- there's
-          // nothing else to its left -- so Left from it should always reach
-          // the Addons rail button, for every row, not just the first.
-          if (el) registerRailLeftEdge('addons', el);
-        }}
+        ref={handleRef}
         hasTVPreferredFocus={hasPreferredFocus}
-        onFocus={() => onItemFocus(itemKey)}
+        onFocus={handleFocus}
         scaleFocused={1.04}
         focusedBorderColor="#FFFFFF"
         borderRadius={10}
-        onPress={() => onToggleInstall(item)}
+        onPress={handlePress}
         style={[
           styles.actionBtn,
           isInstalled ? styles.uninstallBtn : styles.installBtn,
@@ -217,6 +233,10 @@ interface ExtensionsScreenProps {
 // the Addons tab and comes back -- same pattern as TVHomeScreen's
 // `lastFocusedKey`.
 let lastFocusedAddonsKey: string | null = null;
+
+// Where the focused row is kept inside the list viewport while moving through
+// it (0 = top edge, 1 = bottom edge).
+const FOCUS_ANCHOR = 0.4;
 
 export default function Extensions({
   navigation,
@@ -462,6 +482,87 @@ export default function Extensions({
     [availableProviders, installedSet],
   );
 
+  // ---- list focus + scrolling ---------------------------------------------
+  const scrollRef = useRef<ScrollView | null>(null);
+  const rowNodesRef = useRef<Record<string, any>>({});
+  const rowLayoutsRef = useRef<Record<string, { y: number; h: number }>>({});
+  const viewportHeightRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  const orderedKeysRef = useRef<string[]>([]);
+  orderedKeysRef.current = visibleProviders.map((p) => `provider-${p.value}`);
+  const wireScheduledRef = useRef(false);
+
+  // Up/Down between rows is wired explicitly instead of left to Android's
+  // geometric focus search. While a key is held, that search races the list's
+  // own scrolling and sometimes finds no row below, so focus fell out to the
+  // header's Refresh button. The last row points at itself, so Down at the
+  // bottom is a no-op. The first row keeps the default so Up still reaches
+  // the header.
+  const wireRowFocusChain = useCallback(() => {
+    wireScheduledRef.current = false;
+    const keys = orderedKeysRef.current;
+    const handles = keys.map((k) => {
+      const node = rowNodesRef.current[k];
+      return node ? findNodeHandle(node) : null;
+    });
+    keys.forEach((k, i) => {
+      const node = rowNodesRef.current[k];
+      const self = handles[i];
+      if (!node || self == null) return;
+      const down = i < keys.length - 1 ? handles[i + 1] : self;
+      const up = i > 0 ? handles[i - 1] : null;
+      (node as any).setNativeProps?.({
+        nextFocusDown: down ?? self,
+        ...(up != null ? { nextFocusUp: up } : {}),
+      });
+    });
+  }, []);
+
+  const scheduleWire = useCallback(() => {
+    if (wireScheduledRef.current) return;
+    wireScheduledRef.current = true;
+    // Rows register one by one while mounting; wire once they all have.
+    setTimeout(wireRowFocusChain, 0);
+  }, [wireRowFocusChain]);
+
+  const registerRow = useCallback(
+    (key: string, node: View | null) => {
+      setItemRef(key, node);
+      if (node) {
+        rowNodesRef.current[key] = node;
+        scheduleWire();
+      } else {
+        delete rowNodesRef.current[key];
+      }
+    },
+    [setItemRef, scheduleWire],
+  );
+
+  useEffect(() => {
+    scheduleWire();
+  }, [visibleProviders, isRefreshing, scheduleWire]);
+
+  const handleRowLayout = useCallback((key: string, y: number, height: number) => {
+    rowLayoutsRef.current[key] = { y, h: height };
+  }, []);
+
+  // Keeps the focused row at a steady spot in the viewport with an animated
+  // scroll. Android's own scroll-to-focus moves by one row per key press and,
+  // for presses closer than ~250ms apart, does it instantly -- which is what
+  // made holding Down/Up look steppy.
+  const handleRowFocus = useCallback((key: string) => {
+    lastFocusedAddonsKey = key;
+    const layout = rowLayoutsRef.current[key];
+    const viewportH = viewportHeightRef.current;
+    if (!layout || !viewportH) return;
+    const maxY = Math.max(0, contentHeightRef.current - viewportH);
+    const target = Math.min(
+      maxY,
+      Math.max(0, layout.y + layout.h / 2 - viewportH * FOCUS_ANCHOR),
+    );
+    scrollRef.current?.scrollTo({ y: target, animated: true });
+  }, []);
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
@@ -560,13 +661,18 @@ export default function Extensions({
         </View>
       ) : (
         <ScrollView
+          ref={scrollRef}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContainer}
-          // Off-screen rows must stay attached: with key-repeat, Android's
-          // focus search runs faster than clipped rows re-attach, finds no
-          // row below/above, and jumps focus to the header buttons.
+          // Off-screen rows must stay attached so focus can reach them.
           removeClippedSubviews={false}
-          scrollEventThrottle={16}
+          overScrollMode="never"
+          onLayout={(e) => {
+            viewportHeightRef.current = e.nativeEvent.layout.height;
+          }}
+          onContentSizeChange={(_w, h) => {
+            contentHeightRef.current = h;
+          }}
         >
           {visibleProviders.map((item) => {
             const rowKey = `provider-${item.value}`;
@@ -579,8 +685,9 @@ export default function Extensions({
                 isInstalling={Boolean(installingMap[item.value])}
                 onToggleInstall={handleToggleInstall}
                 hasPreferredFocus={shouldPreferFocus(rowKey, false)}
-                onItemFocus={(key) => (lastFocusedAddonsKey = key)}
-                registerItemRef={setItemRef}
+                onItemFocus={handleRowFocus}
+                registerItemRef={registerRow}
+                onRowLayout={handleRowLayout}
               />
             );
           })}
