@@ -24,6 +24,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import Svg, { Path } from 'react-native-svg';
 import KeyEvent from 'react-native-keyevent';
+import { PlaybackSession } from '../../lib/native/PlaybackSession';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
@@ -137,6 +138,13 @@ const AUDIO_BOOST_GAIN_DB: Record<AudioBoostProfile, number> = {
 const KEYCODE_DPAD_CENTER = 23;
 const KEYCODE_ENTER = 66;
 const KEYCODE_MEDIA_PLAY_PAUSE = 85;
+
+// Playback keeps running while the activity is merely paused (e.g. Sony
+// Bravia's Quick Settings panel or any other overlay opens on top of the app).
+// When the app becomes fully hidden (Home pressed, another app launched, TV
+// screen off) playback is paused unless this is set to false -- set it to
+// false only if you want audio to keep playing in the background.
+const PAUSE_WHEN_APP_STOPPED = true;
 const KEYCODE_BACK = 4;
 
 const LANGUAGE_NAMES: Record<string, string> = {
@@ -1641,6 +1649,127 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     setSelectedSub({ type: SelectedTrackType.INDEX, value: idx });
   }, []);
 
+  // ---- system media session (atvTools / TV remote apps) ------------------
+  // Latest closures for the native session callbacks, refreshed every render
+  // so the listener below can be registered once.
+  const sessionHandlersRef = useRef<{
+    play: () => void;
+    pause: () => void;
+    seekTo: (sec: number) => void;
+    seekBy: (delta: number) => void;
+    next: () => void;
+    previous: () => void;
+    appStopped: () => void;
+  } | null>(null);
+  sessionHandlersRef.current = {
+    play: () => setPaused(false),
+    pause: () => {
+      setPaused(true);
+      syncProgressToStore(currentProgRef.current.currentTime, currentProgRef.current.duration);
+    },
+    seekTo: (sec: number) => {
+      const max = currentProgRef.current.duration || duration;
+      const next = Math.max(0, max > 0 ? Math.min(max, sec) : sec);
+      videoRef.current?.seek(next);
+      setCurrentTime(next);
+      currentProgRef.current.currentTime = next;
+      syncProgressToStore(next, max);
+    },
+    seekBy: (delta: number) => handleSeek(delta),
+    next: () => {
+      if (hasNextEpisode) handleNextEpisode();
+    },
+    previous: () => {
+      if (currentEpisodeIndex > 0 && episodes.length > 0) {
+        playEpisodeAtIndex(currentEpisodeIndex - 1);
+      } else {
+        sessionHandlersRef.current?.seekTo(0);
+      }
+    },
+    appStopped: () => {
+      if (!PAUSE_WHEN_APP_STOPPED) return;
+      setPaused(true);
+      syncProgressToStore(currentProgRef.current.currentTime, currentProgRef.current.duration);
+    },
+  };
+
+  useEffect(() => {
+    if (!PlaybackSession.available) return;
+    const cmdSub = PlaybackSession.onCommand((cmd) => {
+      const h = sessionHandlersRef.current;
+      if (!h) return;
+      switch (cmd.action) {
+        case 'play':
+          h.play();
+          break;
+        case 'pause':
+          h.pause();
+          break;
+        case 'seekTo':
+          h.seekTo(cmd.positionMs / 1000);
+          break;
+        case 'fastForward':
+          h.seekBy(10);
+          break;
+        case 'rewind':
+          h.seekBy(-10);
+          break;
+        case 'next':
+          h.next();
+          break;
+        case 'previous':
+          h.previous();
+          break;
+      }
+    });
+    const stopSub = PlaybackSession.onActivityStopped(() => sessionHandlersRef.current?.appStopped());
+    return () => {
+      cmdSub?.remove();
+      stopSub?.remove();
+      PlaybackSession.stop();
+    };
+  }, []);
+
+  // Title / artwork: re-published whenever the playing item or episode changes.
+  const sessionEpisode = episodes[currentEpisodeIndex];
+  const sessionSubtitle =
+    sessionEpisode && sessionEpisode.title !== title
+      ? formatSeasonEpisodeLabel(
+          sessionEpisode.season,
+          sessionEpisode.episodeNumber,
+          sessionEpisode.title,
+          ''
+        )
+      : '';
+  useEffect(() => {
+    if (!PlaybackSession.available || !playableUrl) return;
+    PlaybackSession.start({
+      title,
+      subtitle: sessionSubtitle,
+      artworkUrl: sessionEpisode?.image || posterUrl,
+      durationSec: currentProgRef.current.duration,
+      hasNext: hasNextEpisode,
+      hasPrevious: true,
+    });
+  }, [title, sessionSubtitle, posterUrl, sessionEpisode?.image, hasNextEpisode, playableUrl, reloadNonce]);
+
+  // State / position: on every play-pause-buffer change, plus a light periodic
+  // resync (the controller extrapolates the position in between).
+  useEffect(() => {
+    if (!PlaybackSession.available || !playableUrl) return;
+    const push = () =>
+      PlaybackSession.update({
+        state: paused ? 'paused' : buffering ? 'buffering' : 'playing',
+        positionSec: currentProgRef.current.currentTime,
+        durationSec: currentProgRef.current.duration,
+        hasNext: hasNextEpisode,
+        hasPrevious: true,
+      });
+    push();
+    const id = setInterval(push, 2000);
+    return () => clearInterval(id);
+  }, [paused, buffering, duration, hasNextEpisode, playableUrl]);
+
   const mergedSubtitles = useMemo(
     () =>
       addonTracks.length > 0
@@ -1662,6 +1791,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         style={StyleSheet.absoluteFill}
         resizeMode={resizeMode as ResizeMode}
         paused={paused}
+        playInBackground
         bufferConfig={bufferConfig}
         bufferingStrategy={BufferingStrategyType.DEPENDING_ON_MEMORY}
         selectedAudioTrack={selectedAudio}
