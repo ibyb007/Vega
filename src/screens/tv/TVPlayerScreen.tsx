@@ -2855,7 +2855,10 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.episodesListContent}
             >
-              {episodes.map((ep, idx) => {
+              {/* Built only while open: this component re-renders on every
+                  progress tick, and a hidden list of hundreds of episodes was
+                  being rebuilt each time, starving key events (Back). */}
+              {(showEpisodesList ? episodes : []).map((ep, idx) => {
                 const isCurrent = idx === currentEpisodeIndex;
                 const label = formatSeasonEpisodeLabel(
                   ep.season,
