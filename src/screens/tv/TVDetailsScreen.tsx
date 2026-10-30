@@ -313,7 +313,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // list already sorts into, just made pickable. Provider-specific by
   // design: other providers with a similarly flattened list are left alone.
   const isMovieBoxWeb = providerId === 'movieBoxWeb';
-  const [movieBoxSeasons, setMovieBoxSeasons] = useState<number[] | null>(null);
+  const [movieBoxSeasons, setMovieBoxSeasons] = useState<number[] | null>(
+    restored?.movieBoxSeasons ?? null,
+  );
 
   // This whole screen is one flat ScrollView, and the season/quality
   // picker now lives in its own Modal (see `seasonPickerVisible` below)
@@ -594,9 +596,22 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // expansion) passes the fetched list straight through.
   const seasonFilteredEpisodes = useMemo(() => {
     const season = activeLink?.__movieBoxSeason;
-    if (season == null) return rawEpisodes;
+    if (season == null) {
+      // Movieboxweb returns every season in one list (20 seasons can be
+      // 2000+ rows). Until the per-season split is detected (next effect),
+      // show only the first season instead of mounting every row twice.
+      if (isMovieBoxWeb && movieBoxSeasons === null && rawEpisodes.length > 0) {
+        let first = Infinity;
+        for (const ep of rawEpisodes) {
+          const n = parseSeasonNumber(ep.title) ?? 1;
+          if (n < first) first = n;
+        }
+        return rawEpisodes.filter((ep) => (parseSeasonNumber(ep.title) ?? 1) === first);
+      }
+      return rawEpisodes;
+    }
     return rawEpisodes.filter((ep) => (parseSeasonNumber(ep.title) ?? 1) === season);
-  }, [rawEpisodes, activeLink]);
+  }, [rawEpisodes, activeLink, isMovieBoxWeb, movieBoxSeasons]);
 
   // Ready to trust `linkList` for a one-time resume-hint match below: either
   // this isn't a Movieboxweb series at all (nothing to expand), or the
@@ -1033,6 +1048,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             rawEpisodes,
             cinemeta: cinemetaMeta,
             cinemetaSettled,
+            movieBoxSeasons,
             rowKey,
             episodeKey,
             episodeLink: link,
@@ -1088,6 +1104,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       rawEpisodes,
       cinemetaMeta,
       cinemetaSettled,
+      movieBoxSeasons,
       providerYear,
     ],
   );
