@@ -206,6 +206,7 @@ export default function App() {
         episodeKey?: string;
         episodeLink?: string;
         position?: number;
+        duration?: number;
         linkTitle?: string;
       },
     ) => {
