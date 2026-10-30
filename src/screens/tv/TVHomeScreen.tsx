@@ -542,6 +542,7 @@ interface TVHomeScreenProps {
       episodeKey?: string;
       episodeLink?: string;
       position?: number;
+      duration?: number;
     },
   ) => void;
   onNavigateRoute?: (route: TVRoute) => void;
@@ -1050,6 +1051,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             episodeKey: item.episodeKey,
             episodeLink: item.episode?.link,
             position: item.position,
+            duration: item.duration,
             linkTitle: item.linkTitle,
           });
           return;
@@ -1063,6 +1065,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             episodeLink: item.episode?.link,
             episodeKey: item.episodeKey,
             position: item.position,
+            duration: item.duration,
             linkTitle: item.linkTitle,
           },
         });
