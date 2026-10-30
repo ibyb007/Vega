@@ -31,6 +31,8 @@ export interface DetailsReturnState {
   cinemeta: CinemetaMeta | null;
   /** True once the Cinemeta lookup had finished (found something or not). */
   cinemetaSettled: boolean;
+  /** Movieboxweb's detected season numbers, so the restored list is already split per season. */
+  movieBoxSeasons?: number[] | null;
   /** Focus key of the row that was pressed (see `episodeRowKey`). */
   rowKey?: string;
   /** Stable "S{season}E{episode}" key of the last-played episode. */
