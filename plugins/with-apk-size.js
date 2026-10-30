@@ -11,6 +11,13 @@ const {withDangerousMod, withGradleProperties} = require('expo/config-plugins');
  *    leftovers from the APK
  * extractNativeLibs stays true elsewhere on purpose (libusque / libciadpi
  * must be exec()'d from nativeLibraryDir).
+ *
+ * DO NOT exclude "kotlin/**", "**\/*.kotlin_builtins", "**\/*.kotlin_metadata"
+ * or "META-INF/*.kotlin_module": kotlin-reflect (pulled in by
+ * expo-modules-core) reads those at runtime. Stripping them makes the app
+ * throw "Built-in class kotlin.* is not found" while native modules are
+ * registered, so JS never starts and the app hangs on the launch logo. They
+ * only save a few hundred KB.
  */
 const GRADLE = `// Auto-applied by with-apk-size config plugin
 android {
@@ -24,10 +31,9 @@ android {
     resources {
       excludes += [
         "META-INF/LICENSE*", "META-INF/NOTICE*", "META-INF/DEPENDENCIES",
-        "META-INF/AL2.0", "META-INF/LGPL2.1", "META-INF/*.kotlin_module",
+        "META-INF/AL2.0", "META-INF/LGPL2.1",
         "META-INF/versions/**", "META-INF/proguard/**",
-        "DebugProbesKt.bin", "kotlin-tooling-metadata.json",
-        "kotlin/**", "**/*.kotlin_builtins", "**/*.kotlin_metadata"
+        "DebugProbesKt.bin", "kotlin-tooling-metadata.json"
       ]
     }
   }
