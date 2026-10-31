@@ -150,6 +150,13 @@ const ProviderRowItem = memo(({
   nextUp,
   nextDown,
 }: ProviderRowItemProps) => {
+  // `hasTVPreferredFocus` makes the native view call requestFocus() every time
+  // the prop is applied as `true`. If it were allowed to flip false -> true on a
+  // later re-render, the request would land a moment later -- after a held
+  // Down key has already moved focus on -- and pull focus back to this row.
+  // So it is read once, when the row mounts (a remount re-reads it).
+  const preferFocusOnMount = useRef(hasPreferredFocus).current;
+
   // Stable per-row callbacks, so a re-render of this row doesn't detach and
   // re-attach the ref (which re-registered every row with the nav rail).
   const handleRef = useCallback(
@@ -192,7 +199,7 @@ const ProviderRowItem = memo(({
 
       <TVFocusablePressable
         ref={handleRef}
-        hasTVPreferredFocus={hasPreferredFocus}
+        hasTVPreferredFocus={preferFocusOnMount}
         onFocus={handleFocus}
         {...(nextUp != null ? { nextFocusUp: nextUp } : {})}
         {...(nextDown != null ? { nextFocusDown: nextDown } : {})}
@@ -498,7 +505,19 @@ export default function Extensions({
   const contentHeightRef = useRef(0);
   const orderedKeysRef = useRef<string[]>([]);
   orderedKeysRef.current = visibleProviders.map((p) => `provider-${p.value}`);
-  const lastRowFocusAtRef = useRef(0);
+  const pendingScrollKeyRef = useRef<string | null>(null);
+
+  // Same one-shot rule as the rows (see ProviderRowItem), for the two header
+  // buttons: the value is decided when the element mounts and then kept. Keyed
+  // by the React key, which `keyFor` changes whenever the element must remount
+  // to reclaim focus, so a forced refocus still re-reads it.
+  const preferredOnMountRef = useRef<Record<string, boolean>>({});
+  const preferFocusOnMount = (key: string, defaultValue: boolean) => {
+    const reactKey = keyFor(key);
+    const memo = preferredOnMountRef.current;
+    if (!(reactKey in memo)) memo[reactKey] = shouldPreferFocus(key, defaultValue);
+    return memo[reactKey];
+  };
 
   // Up/Down between rows is wired explicitly instead of left to Android's
   // geometric focus search (which races the list's scrolling while a key is
@@ -551,30 +570,52 @@ export default function Extensions({
     setFirstRowHandle(handles[0] ?? null);
   }, [visibleProviders, isRefreshing, refreshBtnHandle]);
 
-  const handleRowLayout = useCallback((key: string, y: number, height: number) => {
-    rowLayoutsRef.current[key] = { y, h: height };
-  }, []);
-
-  // Keeps the focused row at a steady spot in the viewport. Presses that come
-  // in quick succession (a held key) jump straight to the absolute target --
-  // restarting an animation on every repeat is what made it stutter and fight
-  // Android's own scroll-to-focus. A single, isolated press still glides.
-  const handleRowFocus = useCallback((key: string) => {
-    lastFocusedAddonsKey = key;
-    const now = Date.now();
-    const rapid = now - lastRowFocusAtRef.current < 250;
-    lastRowFocusAtRef.current = now;
-
+  // The list is scrolled only from here. Android's own scrolling is switched
+  // off on the ScrollView (see its props below): its arrow-key handling and its
+  // scroll-to-focused-child both fight a held key, and when the focused row
+  // ends up off-screen the ScrollView takes focus itself, after which the next
+  // key press lands somewhere unrelated (the header buttons, in this screen).
+  //
+  // The scroll is instant, never animated: an animated scroll still running
+  // when the next key repeat arrives gets overridden by it, which reads as
+  // stutter. One instant step per row, with the focused row held at the same
+  // spot on screen, looks like the list gliding under a fixed cursor.
+  const scrollToRow = useCallback((key: string): boolean => {
     const layout = rowLayoutsRef.current[key];
     const viewportH = viewportHeightRef.current;
-    if (!layout || !viewportH) return;
-    const maxY = Math.max(0, contentHeightRef.current - viewportH);
+    const contentH = contentHeightRef.current;
+    if (!layout || !viewportH || !contentH) return false;
+    const maxY = Math.max(0, contentH - viewportH);
     const target = Math.min(
       maxY,
       Math.max(0, layout.y + layout.h / 2 - viewportH * FOCUS_ANCHOR),
     );
-    scrollRef.current?.scrollTo({ y: target, animated: !rapid });
+    scrollRef.current?.scrollTo({ y: target, animated: false });
+    return true;
   }, []);
+
+  // A row can take focus (restored position, first mount) before its layout has
+  // been reported; scroll to it as soon as the numbers are there.
+  const flushPendingScroll = useCallback(() => {
+    const key = pendingScrollKeyRef.current;
+    if (key && scrollToRow(key)) pendingScrollKeyRef.current = null;
+  }, [scrollToRow]);
+
+  const handleRowLayout = useCallback(
+    (key: string, y: number, height: number) => {
+      rowLayoutsRef.current[key] = { y, h: height };
+      if (pendingScrollKeyRef.current === key) flushPendingScroll();
+    },
+    [flushPendingScroll],
+  );
+
+  const handleRowFocus = useCallback(
+    (key: string) => {
+      lastFocusedAddonsKey = key;
+      pendingScrollKeyRef.current = scrollToRow(key) ? null : key;
+    },
+    [scrollToRow],
+  );
 
   return (
     <View style={styles.container}>
@@ -604,7 +645,7 @@ export default function Extensions({
               }
             }}
             {...(firstRowHandle != null ? { nextFocusDown: firstRowHandle } : {})}
-            hasTVPreferredFocus={shouldPreferFocus('refresh-btn', false)}
+            hasTVPreferredFocus={preferFocusOnMount('refresh-btn', false)}
             onFocus={() => (lastFocusedAddonsKey = 'refresh-btn')}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
@@ -632,7 +673,7 @@ export default function Extensions({
                 }
               }
             }}
-            hasTVPreferredFocus={shouldPreferFocus('add-source-btn', visibleProviders.length === 0)}
+            hasTVPreferredFocus={preferFocusOnMount('add-source-btn', visibleProviders.length === 0)}
             onFocus={() => (lastFocusedAddonsKey = 'add-source-btn')}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
@@ -682,11 +723,20 @@ export default function Extensions({
           // Off-screen rows must stay attached so focus can reach them.
           removeClippedSubviews={false}
           overScrollMode="never"
+          // Up/Down are handled by the explicit row-to-row focus links and the
+          // scrolling by `scrollToRow`; keep Android's ScrollView out of both.
+          // (scrollEnabled=false also makes the ScrollView itself unfocusable,
+          // so it can never grab focus from a row. Programmatic scrollTo still
+          // works.)
+          scrollEnabled={false}
+          scrollsChildToFocus={false}
           onLayout={(e) => {
             viewportHeightRef.current = e.nativeEvent.layout.height;
+            flushPendingScroll();
           }}
           onContentSizeChange={(_w, h) => {
             contentHeightRef.current = h;
+            flushPendingScroll();
           }}
         >
           {visibleProviders.map((item) => {
