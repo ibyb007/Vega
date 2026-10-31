@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   ToastAndroid,
   Modal,
+  findNodeHandle,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
@@ -139,6 +140,9 @@ const EpisodeRow = React.memo(function EpisodeRow({
   resumePosition,
   onPress,
   onLayout,
+  registerNode,
+  nextUp,
+  nextDown,
 }: {
   row: DetailRow;
   isFocusTarget: boolean;
@@ -146,15 +150,32 @@ const EpisodeRow = React.memo(function EpisodeRow({
   resumePosition?: number;
   onPress: (row: DetailRow) => void;
   onLayout: (key: string, y: number) => void;
+  registerNode: (key: string, node: View | null) => void;
+  // Native handles of the rows directly above/below (see `rowLinks`).
+  nextUp?: number;
+  nextDown?: number;
 }) {
+  // `hasTVPreferredFocus` makes the native view call requestFocus() each time
+  // the prop is applied as `true`. It is read once, when the row mounts (the
+  // nonce in the row's key makes it remount whenever a refocus is wanted), so
+  // a later re-render can never pull focus back to this row while a held Down
+  // key is moving through the list.
+  const preferFocusOnMount = React.useRef(isFocusTarget).current;
+  const handleRef = React.useCallback(
+    (el: View | null) => registerNode(row.key, el),
+    [registerNode, row.key],
+  );
   return (
     <TVFocusablePressable
+      ref={handleRef}
+      {...(nextUp != null ? { nextFocusUp: nextUp } : {})}
+      {...(nextDown != null ? { nextFocusDown: nextDown } : {})}
       // Nonce suffix only on the target row -- forces just that one to
       // remount (and re-fire `hasTVPreferredFocus`) when a season/quality
       // switch or a return from the player needs a forced refocus,
       // without touching every other row's identity.
       key={`row-${row.key}-${row.index}${isFocusTarget ? `-f${focusNonce}` : ''}`}
-      hasTVPreferredFocus={isFocusTarget}
+      hasTVPreferredFocus={preferFocusOnMount}
       onLayout={(e) => onLayout(row.key, e.nativeEvent.layout.y)}
       scaleFocused={1.02}
       focusedBorderColor="#8A5CF6"
@@ -1182,6 +1203,47 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     setRangeStart(null);
   }, [activeIndex]);
 
+  // Up/Down between rows is linked explicitly instead of left to Android's
+  // geometric focus search. On a long list that search runs against a page that
+  // is still scrolling under a held key and can pick a row that is not the
+  // neighbour, so focus bounced back up. The handles go to each row as plain
+  // props. The first row keeps the default Up (resume card / block chips /
+  // season picker above the list); the last row's Down points at itself.
+  const episodeNodesRef = useRef<Record<string, View | null>>({});
+  const registerEpisodeNode = useCallback((key: string, node: View | null) => {
+    if (node) episodeNodesRef.current[key] = node;
+    else delete episodeNodesRef.current[key];
+  }, []);
+  const [rowLinks, setRowLinks] = useState<Record<string, { up?: number; down?: number }>>({});
+  useEffect(() => {
+    const keys = visibleRows.map((r) => r.key);
+    const handles = keys.map((k) => {
+      const node = episodeNodesRef.current[k];
+      return node ? findNodeHandle(node) : null;
+    });
+    const next: Record<string, { up?: number; down?: number }> = {};
+    keys.forEach((k, i) => {
+      const self = handles[i];
+      if (self == null) return;
+      const below = i < keys.length - 1 ? handles[i + 1] : self;
+      const above = i > 0 ? handles[i - 1] : null;
+      next[k] = { down: below ?? undefined, up: above ?? undefined };
+    });
+    setRowLinks((prev) => {
+      const pk = Object.keys(prev);
+      const nk = Object.keys(next);
+      if (
+        pk.length === nk.length &&
+        nk.every((k) => prev[k]?.up === next[k].up && prev[k]?.down === next[k].down)
+      ) {
+        return prev;
+      }
+      return next;
+    });
+    // The focus-target row remounts when `episodeFocusNonce` changes, which
+    // gives it (and so its neighbours' links) a new native handle.
+  }, [visibleRows, stillResolving, episodeFocusNonce]);
+
   // ---- Resume / Up next / Start card ------------------------------------------
   const resumeTarget = useMemo(() => {
     if (rows.length === 0 || !rows[0].isEpisode) return null;
@@ -1340,6 +1402,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       resumePosition={row.isResumeTarget ? resumeHint?.position : undefined}
       onPress={handleRowPress}
       onLayout={handleRowLayout}
+      registerNode={registerEpisodeNode}
+      nextUp={rowLinks[row.key]?.up}
+      nextDown={rowLinks[row.key]?.down}
     />
   );
   const renderRow = (row: DetailRow) => {
@@ -1417,6 +1482,15 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         // the row the person left off on (usually below the fold) has no
         // attached view to take focus -- see the restore pass above.
         removeClippedSubviews={false}
+        // Android's own arrow-key scrolling is switched off: when the focused
+        // row falls outside the viewport during a held key it makes the
+        // ScrollView itself take focus, and the next press then lands on
+        // whichever row happens to be at the top (the bounce on long lists).
+        // Focus moves through the explicit links and the native
+        // scroll-to-focused-child still keeps the focused row in view.
+        // scrollEnabled=false also makes the ScrollView unfocusable;
+        // programmatic scrollTo (used by the restore passes) is unaffected.
+        scrollEnabled={false}
       >
         <TVFocusablePressable
           scaleFocused={1.08}
