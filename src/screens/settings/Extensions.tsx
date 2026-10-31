@@ -284,6 +284,7 @@ export default function Extensions({
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isAddingSource, setIsAddingSource] = useState(false);
   const refreshBtnRef = useRef<View | null>(null);
+  const addSourceBtnRef = useRef<View | null>(null);
   const [refreshBtnHandle, setRefreshBtnHandle] = useState<number | null>(null);
 
   // Hardware Back: only handle this screen's own back-stack (the add-source
@@ -519,43 +520,50 @@ export default function Extensions({
     return memo[reactKey];
   };
 
-  // Up/Down between rows is wired explicitly instead of left to Android's
-  // geometric focus search (which races the list's scrolling while a key is
-  // held and could fall out to the header buttons). Handles are resolved once
-  // the rows are mounted and then passed to each row as plain props.
+  // Up/Down between rows is wired explicitly both via synchronous native
+  // `setNativeProps` AND via React state props so Android's geometric focus
+  // search can never race the ScrollView during a held Down key and jump back
+  // to the header Refresh button.
   const [focusLinks, setFocusLinks] = useState<Record<string, { up?: number; down?: number }>>({});
   const [firstRowHandle, setFirstRowHandle] = useState<number | null>(null);
 
-  const registerRow = useCallback(
-    (key: string, node: View | null) => {
-      setItemRef(key, node);
-      if (node) {
-        rowNodesRef.current[key] = node;
-      } else {
-        delete rowNodesRef.current[key];
-      }
-    },
-    [setItemRef],
-  );
-
-  useEffect(() => {
-    if (isRefreshing) return;
+  const wireNativeFocusLinks = useCallback(() => {
     const keys = orderedKeysRef.current;
+    if (keys.length === 0) return;
+
+    const rHandle = refreshBtnRef.current ? findNodeHandle(refreshBtnRef.current) : refreshBtnHandle;
     const handles = keys.map((k) => {
       const node = rowNodesRef.current[k];
       return node ? findNodeHandle(node) : null;
     });
+
     const next: Record<string, { up?: number; down?: number }> = {};
     keys.forEach((k, i) => {
+      const node = rowNodesRef.current[k];
       const self = handles[i];
       if (self == null) return;
-      const below = i < keys.length - 1 ? handles[i + 1] : self; // last row: Down is a no-op
-      const above = i > 0 ? handles[i - 1] : refreshBtnHandle; // first row: Up -> Refresh
+      const below = i < keys.length - 1 ? handles[i + 1] : self; // last row: Down is locked to self
+      const above = i > 0 ? handles[i - 1] : rHandle; // first row: Up -> Refresh
       next[k] = {
         down: below ?? undefined,
         up: above ?? undefined,
       };
+      // Apply directly to the native view immediately so held-key repeats
+      // never hit a frame before React state commits.
+      if (node) {
+        const nativePayload: Record<string, number> = {};
+        if (below != null) nativePayload.nextFocusDown = below;
+        if (above != null) nativePayload.nextFocusUp = above;
+        (node as any).setNativeProps?.(nativePayload);
+      }
     });
+
+    const firstHandle = handles[0] ?? null;
+    if (firstHandle != null) {
+      (refreshBtnRef.current as any)?.setNativeProps?.({ nextFocusDown: firstHandle });
+      (addSourceBtnRef.current as any)?.setNativeProps?.({ nextFocusDown: firstHandle });
+    }
+
     setFocusLinks((prev) => {
       const pk = Object.keys(prev);
       const nk = Object.keys(next);
@@ -567,8 +575,32 @@ export default function Extensions({
       }
       return next;
     });
-    setFirstRowHandle(handles[0] ?? null);
-  }, [visibleProviders, isRefreshing, refreshBtnHandle]);
+    setFirstRowHandle((prev) => (prev === firstHandle ? prev : firstHandle));
+  }, [refreshBtnHandle]);
+
+  const registerRow = useCallback(
+    (key: string, node: View | null) => {
+      setItemRef(key, node);
+      if (node) {
+        rowNodesRef.current[key] = node;
+        // If all visible rows have mounted, wire native focus links immediately
+        const keys = orderedKeysRef.current;
+        if (keys.length > 0 && keys.every((k) => Boolean(rowNodesRef.current[k]))) {
+          wireNativeFocusLinks();
+        }
+      } else {
+        delete rowNodesRef.current[key];
+      }
+    },
+    [setItemRef, wireNativeFocusLinks],
+  );
+
+  useEffect(() => {
+    if (isRefreshing) return;
+    wireNativeFocusLinks();
+    const timer = setTimeout(wireNativeFocusLinks, 40);
+    return () => clearTimeout(timer);
+  }, [visibleProviders, isRefreshing, refreshBtnHandle, wireNativeFocusLinks]);
 
   // The list is scrolled only from here. Android's own scrolling is switched
   // off on the ScrollView (see its props below): its arrow-key handling and its
@@ -613,6 +645,25 @@ export default function Extensions({
     (key: string) => {
       lastFocusedAddonsKey = key;
       pendingScrollKeyRef.current = scrollToRow(key) ? null : key;
+      // Re-assert native directional links on the focused node so a held Down
+      // key always has a valid native target ID even if the row just re-rendered.
+      const idx = orderedKeysRef.current.indexOf(key);
+      if (idx !== -1) {
+        const node = rowNodesRef.current[key];
+        const belowKey =
+          idx < orderedKeysRef.current.length - 1 ? orderedKeysRef.current[idx + 1] : key;
+        const aboveKey = idx > 0 ? orderedKeysRef.current[idx - 1] : null;
+        const belowNode = rowNodesRef.current[belowKey];
+        const aboveNode = aboveKey ? rowNodesRef.current[aboveKey] : refreshBtnRef.current;
+        const belowHandle = belowNode ? findNodeHandle(belowNode) : null;
+        const aboveHandle = aboveNode ? findNodeHandle(aboveNode) : null;
+        if (node) {
+          const payload: Record<string, number> = {};
+          if (belowHandle != null) payload.nextFocusDown = belowHandle;
+          if (aboveHandle != null) payload.nextFocusUp = aboveHandle;
+          (node as any).setNativeProps?.(payload);
+        }
+      }
     },
     [scrollToRow],
   );
@@ -640,6 +691,7 @@ export default function Extensions({
                 // there on Up. Self-pointing nextFocusUp makes Up a no-op.
                 const selfHandle = findNodeHandle(el);
                 if (selfHandle != null) {
+                  setRefreshBtnHandle((prev) => (prev === selfHandle ? prev : selfHandle));
                   (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
                 }
               }
@@ -665,6 +717,7 @@ export default function Extensions({
           <TVFocusablePressable
             key={keyFor('add-source-btn')}
             ref={(el) => {
+              addSourceBtnRef.current = el;
               setItemRef('add-source-btn', el);
               if (el) {
                 const selfHandle = findNodeHandle(el);
@@ -737,6 +790,7 @@ export default function Extensions({
           onContentSizeChange={(_w, h) => {
             contentHeightRef.current = h;
             flushPendingScroll();
+            wireNativeFocusLinks();
           }}
         >
           {visibleProviders.map((item) => {
