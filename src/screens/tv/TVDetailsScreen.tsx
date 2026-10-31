@@ -88,6 +88,10 @@ const isQualityExcluded = (
 // before it stay visible instead of the target sitting flush at the top.
 const RESTORE_SCROLL_MARGIN = 140;
 
+// Where the focused episode row is held inside the viewport while navigating
+// up/down through the list (0 = top edge, 1 = bottom edge).
+const FOCUS_ANCHOR = 0.45;
+
 type DirectLink = NonNullable<Link['directLinks']>[number];
 
 // One line of the episode / source list, fully resolved for display. Both
@@ -139,6 +143,7 @@ const EpisodeRow = React.memo(function EpisodeRow({
   focusNonce,
   resumePosition,
   onPress,
+  onRowFocus,
   onLayout,
   registerNode,
   nextUp,
@@ -149,7 +154,8 @@ const EpisodeRow = React.memo(function EpisodeRow({
   focusNonce: number;
   resumePosition?: number;
   onPress: (row: DetailRow) => void;
-  onLayout: (key: string, y: number) => void;
+  onRowFocus: (key: string) => void;
+  onLayout: (key: string, y: number, height: number) => void;
   registerNode: (key: string, node: View | null) => void;
   // Native handles of the rows directly above/below (see `rowLinks`).
   nextUp?: number;
@@ -165,6 +171,13 @@ const EpisodeRow = React.memo(function EpisodeRow({
     (el: View | null) => registerNode(row.key, el),
     [registerNode, row.key],
   );
+  const handleFocus = React.useCallback(() => onRowFocus(row.key), [onRowFocus, row.key]);
+  const handlePress = React.useCallback(() => onPress(row), [onPress, row]);
+  const handleLayout = React.useCallback(
+    (e: any) => onLayout(row.key, e.nativeEvent.layout.y, e.nativeEvent.layout.height),
+    [onLayout, row.key],
+  );
+
   return (
     <TVFocusablePressable
       ref={handleRef}
@@ -176,11 +189,12 @@ const EpisodeRow = React.memo(function EpisodeRow({
       // without touching every other row's identity.
       key={`row-${row.key}-${row.index}${isFocusTarget ? `-f${focusNonce}` : ''}`}
       hasTVPreferredFocus={preferFocusOnMount}
-      onLayout={(e) => onLayout(row.key, e.nativeEvent.layout.y)}
+      onFocus={handleFocus}
+      onLayout={handleLayout}
       scaleFocused={1.02}
       focusedBorderColor="#8A5CF6"
       borderRadius={row.isEpisode ? 8 : 10}
-      onPress={() => onPress(row)}
+      onPress={handlePress}
       style={row.isEpisode ? styles.episodeCard : styles.sourceRow}
     >
       {({ focused }) => (
@@ -369,10 +383,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // Stable across the spinner <-> loaded-list swap since it only depends
   // on the (unchanged) siblings above it, not on the section's own height.
   const listSectionYRef = useRef(0);
-  // y-offset of each row within that section, by row key -- lets a return
-  // from the player scroll straight to the right row even though its
-  // position depends on how tall the rows above it turned out to be.
+  // y-offset and height of each row within that section, by row key -- lets
+  // both the return-from-player restore pass and held-key scrolling step
+  // straight to the right row.
   const rowLayoutsRef = useRef<Record<string, number>>({});
+  const rowHeightsRef = useRef<Record<string, number>>({});
+  const viewportHeightRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  const pendingScrollKeyRef = useRef<string | null>(null);
   // Armed by a season/quality pick in the modal; consumed the next time
   // loading finishes (see the effect below), so an ordinary initial page
   // load (nothing picked) never triggers an unwanted scroll/refocus.
@@ -1203,32 +1221,51 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     setRangeStart(null);
   }, [activeIndex]);
 
-  // Up/Down between rows is linked explicitly instead of left to Android's
-  // geometric focus search. On a long list that search runs against a page that
-  // is still scrolling under a held key and can pick a row that is not the
-  // neighbour, so focus bounced back up. The handles go to each row as plain
-  // props. The first row keeps the default Up (resume card / block chips /
-  // season picker above the list); the last row's Down points at itself.
+  // ---- Explicit native focus chaining + instant viewport scrolling ----------
+  // Up/Down between rows is linked explicitly both via synchronous native
+  // `setNativeProps` AND via React props (`nextUp` / `nextDown`), AND each row
+  // scrolls the ScrollView to keep the focused row anchored inside the viewport
+  // (`scrollToEpisodeRow`).
+  //
+  // Why both are required:
+  // With `scrollEnabled={false}` on the ScrollView, Android's native
+  // `requestChildRectangleOnScreen` does NOT scroll the page when focus moves
+  // to a row below the fold. Once focus reaches the bottom of the screen, the
+  // next row (`i + 1`) is completely off-screen; Android's FocusFinder rejects
+  // off-screen targets that cannot be scrolled into view and falls back to
+  // geometric search among currently visible rows -- causing focus to loop back
+  // up to an earlier visible episode. Scrolling programmatically on every row
+  // focus keeps `i + 1` inside the viewport at all times.
   const episodeNodesRef = useRef<Record<string, View | null>>({});
-  const registerEpisodeNode = useCallback((key: string, node: View | null) => {
-    if (node) episodeNodesRef.current[key] = node;
-    else delete episodeNodesRef.current[key];
-  }, []);
+  const orderedEpisodeKeysRef = useRef<string[]>([]);
+  orderedEpisodeKeysRef.current = visibleRows.map((r) => r.key);
   const [rowLinks, setRowLinks] = useState<Record<string, { up?: number; down?: number }>>({});
-  useEffect(() => {
-    const keys = visibleRows.map((r) => r.key);
+
+  const wireEpisodeFocusLinks = useCallback(() => {
+    const keys = orderedEpisodeKeysRef.current;
+    if (keys.length === 0) return;
+
     const handles = keys.map((k) => {
       const node = episodeNodesRef.current[k];
       return node ? findNodeHandle(node) : null;
     });
     const next: Record<string, { up?: number; down?: number }> = {};
     keys.forEach((k, i) => {
+      const node = episodeNodesRef.current[k];
       const self = handles[i];
       if (self == null) return;
-      const below = i < keys.length - 1 ? handles[i + 1] : self;
-      const above = i > 0 ? handles[i - 1] : null;
+      const below = i < keys.length - 1 ? handles[i + 1] : self; // Last row: Down stays on self
+      const above = i > 0 ? handles[i - 1] : null; // First row: Up goes to header controls above
       next[k] = { down: below ?? undefined, up: above ?? undefined };
+
+      if (node) {
+        const nativePayload: Record<string, number> = {};
+        if (below != null) nativePayload.nextFocusDown = below;
+        if (above != null) nativePayload.nextFocusUp = above;
+        (node as any).setNativeProps?.(nativePayload);
+      }
     });
+
     setRowLinks((prev) => {
       const pk = Object.keys(prev);
       const nk = Object.keys(next);
@@ -1240,9 +1277,55 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       }
       return next;
     });
+  }, []);
+
+  const registerEpisodeNode = useCallback(
+    (key: string, node: View | null) => {
+      if (node) {
+        episodeNodesRef.current[key] = node;
+        const keys = orderedEpisodeKeysRef.current;
+        if (keys.length > 0 && keys.every((k) => Boolean(episodeNodesRef.current[k]))) {
+          wireEpisodeFocusLinks();
+        }
+      } else {
+        delete episodeNodesRef.current[key];
+      }
+    },
+    [wireEpisodeFocusLinks],
+  );
+
+  useEffect(() => {
+    if (stillResolving) return;
+    wireEpisodeFocusLinks();
+    const timer = setTimeout(wireEpisodeFocusLinks, 40);
+    return () => clearTimeout(timer);
     // The focus-target row remounts when `episodeFocusNonce` changes, which
     // gives it (and so its neighbours' links) a new native handle.
-  }, [visibleRows, stillResolving, episodeFocusNonce]);
+  }, [visibleRows, stillResolving, episodeFocusNonce, wireEpisodeFocusLinks]);
+
+  const scrollToEpisodeRow = useCallback((key: string): boolean => {
+    const rowY = rowLayoutsRef.current[key];
+    const rowH = rowHeightsRef.current[key] ?? 88;
+    const viewportH = viewportHeightRef.current || windowHeight;
+    const contentH = contentHeightRef.current;
+    if (rowY === undefined || !viewportH) return false;
+
+    const absoluteRowY = listSectionYRef.current + rowY;
+    const maxY = contentH > viewportH ? contentH - viewportH : Infinity;
+    const target = Math.min(
+      maxY,
+      Math.max(0, absoluteRowY + rowH / 2 - viewportH * FOCUS_ANCHOR),
+    );
+    scrollRef.current?.scrollTo({ x: 0, y: target, animated: false });
+    return true;
+  }, [windowHeight]);
+
+  const flushPendingEpisodeScroll = useCallback(() => {
+    const key = pendingScrollKeyRef.current;
+    if (key && scrollToEpisodeRow(key)) {
+      pendingScrollKeyRef.current = null;
+    }
+  }, [scrollToEpisodeRow]);
 
   // ---- Resume / Up next / Start card ------------------------------------------
   const resumeTarget = useMemo(() => {
@@ -1390,9 +1473,44 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     pendingResumeKeyRef.current = null;
     if (row) handleRowPress(row);
   }, [rows, episodesLoading, handleRowPress]);
-  const handleRowLayout = useCallback((key: string, y: number) => {
-    rowLayoutsRef.current[key] = y;
-  }, []);
+
+  const handleRowLayout = useCallback(
+    (key: string, y: number, height: number) => {
+      rowLayoutsRef.current[key] = y;
+      rowHeightsRef.current[key] = height;
+      if (pendingScrollKeyRef.current === key) {
+        flushPendingEpisodeScroll();
+      }
+    },
+    [flushPendingEpisodeScroll],
+  );
+
+  const handleRowFocus = useCallback(
+    (key: string) => {
+      pendingScrollKeyRef.current = scrollToEpisodeRow(key) ? null : key;
+      // Re-assert native directional links on the focused row so a held Down
+      // key always has a valid native target ID even across re-renders.
+      const keys = orderedEpisodeKeysRef.current;
+      const idx = keys.indexOf(key);
+      if (idx !== -1) {
+        const node = episodeNodesRef.current[key];
+        const belowKey = idx < keys.length - 1 ? keys[idx + 1] : key;
+        const aboveKey = idx > 0 ? keys[idx - 1] : null;
+        const belowNode = episodeNodesRef.current[belowKey];
+        const aboveNode = aboveKey ? episodeNodesRef.current[aboveKey] : null;
+        const belowHandle = belowNode ? findNodeHandle(belowNode) : null;
+        const aboveHandle = aboveNode ? findNodeHandle(aboveNode) : null;
+        if (node) {
+          const payload: Record<string, number> = {};
+          if (belowHandle != null) payload.nextFocusDown = belowHandle;
+          if (aboveHandle != null) payload.nextFocusUp = aboveHandle;
+          (node as any).setNativeProps?.(payload);
+        }
+      }
+    },
+    [scrollToEpisodeRow],
+  );
+
   const renderRowElement = (row: DetailRow, isFocusTarget: boolean) => (
     <EpisodeRow
       key={`row-${row.key}-${row.index}${isFocusTarget ? `-f${episodeFocusNonce}` : ''}`}
@@ -1401,6 +1519,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       focusNonce={episodeFocusNonce}
       resumePosition={row.isResumeTarget ? resumeHint?.position : undefined}
       onPress={handleRowPress}
+      onRowFocus={handleRowFocus}
       onLayout={handleRowLayout}
       registerNode={registerEpisodeNode}
       nextUp={rowLinks[row.key]?.up}
@@ -1482,21 +1601,28 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         // the row the person left off on (usually below the fold) has no
         // attached view to take focus -- see the restore pass above.
         removeClippedSubviews={false}
-        // Android's own arrow-key scrolling is switched off: when the focused
-        // row falls outside the viewport during a held key it makes the
-        // ScrollView itself take focus, and the next press then lands on
-        // whichever row happens to be at the top (the bounce on long lists).
-        // Focus moves through the explicit links and the native
-        // scroll-to-focused-child still keeps the focused row in view.
-        // scrollEnabled=false also makes the ScrollView unfocusable;
-        // programmatic scrollTo (used by the restore passes) is unaffected.
+        overScrollMode="never"
+        // Up/Down between rows are handled by explicit row-to-row focus links
+        // and scrolling by `scrollToEpisodeRow`; keep Android's ScrollView out
+        // of both so it never steals focus or races a held Down key.
         scrollEnabled={false}
+        scrollsChildToFocus={false}
+        onLayout={(e) => {
+          viewportHeightRef.current = e.nativeEvent.layout.height;
+          flushPendingEpisodeScroll();
+        }}
+        onContentSizeChange={(_w, h) => {
+          contentHeightRef.current = h;
+          flushPendingEpisodeScroll();
+          wireEpisodeFocusLinks();
+        }}
       >
         <TVFocusablePressable
           scaleFocused={1.08}
           focusedBorderColor="#8A5CF6"
           borderRadius={8}
           onPress={onBack}
+          onFocus={() => scrollRef.current?.scrollTo({ x: 0, y: 0, animated: false })}
           style={styles.backBtn}
         >
           {() => (
@@ -1559,6 +1685,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             scaleFocused={1.03}
             focusedBorderColor="#8A5CF6"
             borderRadius={10}
+            onFocus={() => scrollRef.current?.scrollTo({ x: 0, y: 0, animated: false })}
             onPress={() => setSeasonPickerVisible(true)}
             style={styles.seasonPickerBtn}
           >
@@ -1586,6 +1713,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         <View
           onLayout={(e) => {
             listSectionYRef.current = e.nativeEvent.layout.y;
+            flushPendingEpisodeScroll();
           }}
         >
           {stillResolving ? (
@@ -1606,6 +1734,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                   scaleFocused={1.02}
                   focusedBorderColor="#FFFFFF"
                   borderRadius={14}
+                  onFocus={() =>
+                    scrollRef.current?.scrollTo({
+                      x: 0,
+                      y: Math.max(0, listSectionYRef.current - RESTORE_SCROLL_MARGIN),
+                      animated: false,
+                    })
+                  }
                   onPress={handleResumeCardPress}
                   style={styles.resumeCard}
                 >
@@ -1670,6 +1805,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                         scaleFocused={1.05}
                         focusedBorderColor="#8A5CF6"
                         borderRadius={16}
+                        onFocus={() =>
+                          scrollRef.current?.scrollTo({
+                            x: 0,
+                            y: Math.max(0, listSectionYRef.current - 60),
+                            animated: false,
+                          })
+                        }
                         onPress={() => {
                           restoreModeRef.current = false;
                           setRangeStart(range.start);
