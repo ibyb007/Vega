@@ -28,6 +28,7 @@ module.exports = () => {
     './plugins/with-apk-size.js',
     './plugins/with-android-signing.js',
     './plugins/with-android-okhttp.js',
+    './plugins/with-app-update.js',
     [
       'react-native-video',
       {
@@ -148,6 +149,11 @@ module.exports = () => {
       extra: {
         tmdbApiKey,
         proxyApiUrl,
+        // Release channel this build was made on (set by the workflow); the
+        // Settings > About update channel defaults to it.
+        updateChannel: process.env.APP_CHANNEL === 'canary' ? 'canary' : 'stable',
+        // 0 on stable builds; N for canary "5.2.0 (N)".
+        canaryNumber: parseInt(process.env.APP_CANARY_NUMBER || '0', 10) || 0,
       },
     },
   };
