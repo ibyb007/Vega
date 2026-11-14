@@ -416,6 +416,8 @@ interface BrowseGridProps {
   registerHost: (el: View | null) => void;
   // Native handle of the pill Up from the first row should land on.
   getUpTarget: () => number | null;
+  // Native handle of the host (null when it unmounts). The pills' Down link points at it.
+  onHostHandle: (handle: number | null) => void;
   onCursorItem: (item: CatalogMediaItem) => void;
   onPressItem: (item: CatalogMediaItem) => void;
   onLoadMore: () => void;
@@ -434,6 +436,7 @@ const BrowseGrid = React.memo(function BrowseGridView({
   scrollRef,
   registerHost,
   getUpTarget,
+  onHostHandle,
   onCursorItem,
   onPressItem,
   onLoadMore,
@@ -468,6 +471,8 @@ const BrowseGrid = React.memo(function BrowseGridView({
   // render, which would reset the focused state.
   const registerHostRef = useRef(registerHost);
   registerHostRef.current = registerHost;
+  const onHostHandleRef = useRef(onHostHandle);
+  onHostHandleRef.current = onHostHandle;
 
   const viewportHeightRef = useRef(0);
   const scrollYRef = useRef(lastDiscoverBrowseScrollY);
@@ -653,12 +658,14 @@ const BrowseGrid = React.memo(function BrowseGridView({
         const handle = findNodeHandle(el);
         hostHandleRef.current = handle;
         setHostHandle((prev) => (prev === handle ? prev : handle));
+        onHostHandleRef.current(handle);
         setUpTarget(getUpTargetRef.current());
         applyLinks(Math.floor(cursorRef.current / GRID_COLUMNS));
       } else {
         hostHandleRef.current = null;
         focusedRef.current = false;
         setFocused(false);
+        onHostHandleRef.current(null);
       }
     },
     [applyLinks],
@@ -1131,6 +1138,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const manageBtnRef = useRef<View | null>(null);
   // The pill for the active catalog: where Up from the poster grid's first row lands.
   const selectedPillNodeRef = useRef<View | null>(null);
+  // The poster grid's focus host. Down from the Catalogs button / any pill is
+  // linked to it explicitly: left to Android's geometric search, the single
+  // host sitting in the leftmost column loses to the side rail's rows.
+  const [gridHostHandle, setGridHostHandle] = useState<number | null>(null);
   const sourcesRowFirstRef = useRef<View | null>(null);
   const [catalogToHide, setCatalogToHide] = useState<DiscoverCatalog | null>(null);
 
@@ -2343,6 +2354,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                 }
               }}
               hasTVPreferredFocus={shouldPreferFocus('manage-btn', false)}
+              {...(gridHostHandle != null ? ({ nextFocusDown: gridHostHandle } as any) : {})}
               scaleFocused={1.04}
               focusedBorderColor="#8A5CF6"
               borderRadius={20}
@@ -2388,6 +2400,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                     }
                   }}
                   hasTVPreferredFocus={shouldPreferFocus(pillKey, false)}
+                  {...(gridHostHandle != null ? ({ nextFocusDown: gridHostHandle } as any) : {})}
                   scaleFocused={1.04}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={20}
@@ -2456,6 +2469,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             scrollRef={browseScrollRef}
             registerHost={registerGridHost}
             getUpTarget={getGridUpTarget}
+            onHostHandle={setGridHostHandle}
             onCursorItem={handleGridCursorItem}
             onPressItem={handleItemPress}
             onLoadMore={handleLoadMore}
