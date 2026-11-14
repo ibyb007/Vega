@@ -18,6 +18,13 @@ import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks, SkipInterval } from './lib/providers/types';
 import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH, TVRoute } from './lib/native/NavRail';
 import { updateDetailsReturnEpisode } from './lib/tv/detailsReturnState';
+import { settingsStorage } from './lib/storage';
+import { showAppDialog } from './lib/zustand/appDialogStore';
+import {
+  checkForUpdates,
+  downloadAndInstallUpdate,
+  getInstalledDisplayVersion,
+} from './lib/services/AppUpdater';
 
 // TV Components & Screens
 import { TVHomeScreen } from './screens/tv/TVHomeScreen';
@@ -154,6 +161,34 @@ export default function App() {
     },
     []
   );
+
+  // Startup update check (Settings > About controls it). Waits a few seconds
+  // so it never competes with the first screen, asks once per launch, and
+  // either installs straight away (auto-install on) or shows a prompt.
+  useEffect(() => {
+    if (!settingsStorage.isAutoCheckUpdateEnabled()) return;
+    const timer = setTimeout(async () => {
+      const release = await checkForUpdates();
+      if (!release) return;
+      if (settingsStorage.isAutoDownloadEnabled()) {
+        downloadAndInstallUpdate();
+        return;
+      }
+      showAppDialog({
+        title: 'Update available',
+        message:
+          `Vega TV ${release.displayVersion} is ready${release.prerelease ? ' (Canary)' : ''}. ` +
+          `You have ${getInstalledDisplayVersion()}.` +
+          (release.notes ? `\n\n${release.notes}` : ''),
+        variant: 'info',
+        actions: [
+          { label: 'Later' },
+          { label: 'Update now', variant: 'primary', onPress: () => downloadAndInstallUpdate() },
+        ],
+      });
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     // Back to a plain static splash: the native layer (see assets/
