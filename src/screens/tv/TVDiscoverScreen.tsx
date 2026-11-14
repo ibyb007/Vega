@@ -12,6 +12,8 @@ import {
   Dimensions,
   ToastAndroid,
   findNodeHandle,
+  Pressable,
+  DeviceEventEmitter,
 } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import KeyEvent from 'react-native-keyevent';
@@ -20,7 +22,7 @@ import { TVDiscoverResultsView } from './TVDiscoverResultsView';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
-import { NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
+import { NATIVE_RAIL_COLLAPSED_WIDTH, NavRail } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import { useReadingOrderFocus } from '../../lib/tv/useReadingOrderFocus';
@@ -183,6 +185,12 @@ let lastResultsScrollY = 0;
 // back inside the viewport before focus is re-requested, exactly like
 // lastResultsScrollY does for page 2.
 let lastDiscoverBrowseScrollY = 0;
+// The page-1 poster grid is ONE native focus target (see BrowseGrid): this is
+// its key in `lastFocusedDiscoverBrowseKey` / useTVEntryFocus, i.e. what the
+// rail's Right key and the Back-from-page-2 restore refocus. Which poster the
+// cursor sits on is kept separately, as a plain index.
+const GRID_HOST_KEY = 'grid-host';
+let lastDiscoverGridIndex = 0;
 
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
   `${c.manifestUrl}::${c.type}::${c.id}`;
@@ -282,6 +290,452 @@ export const openDiscoverResultFor = (
   pendingDiscoverOpenItem = item;
   pendingDiscoverResumeHint = resumeHint || null;
 };
+
+// ---------------------------------------------------------------------------
+// Page-1 poster grid.
+//
+// Posters used to be individually focusable. Under a held Down key Android's
+// focus search ran against rows that were mid-scroll (or, with
+// removeClippedSubviews, not attached yet) and kept ending with focus thrown
+// out to the category pills or the side rail, or looping back up the grid.
+// So the posters are no longer focusable at all: the whole grid is a single
+// focus target (`host`, a transparent Pressable laid over the cursor poster),
+// the arrow keys move a cursor in JS from the raw key stream (every repeat of
+// a held key arrives), and the page scrolls instantly under it. Android's
+// focus search has nothing to do inside the grid, so there is nothing to
+// misfire. Same approach as Extensions and the details episode list.
+//
+// Native focus links on the host: Left / Right / Down always point back at the
+// host (the cursor does the moving; Left from the first column hands focus to
+// the rail from JS), Up points at the category pill bar from the first row
+// and back at the host from every other row.
+// ---------------------------------------------------------------------------
+const KEYCODE_DPAD_UP = 19;
+const KEYCODE_DPAD_DOWN = 20;
+const KEYCODE_DPAD_LEFT = 21;
+const KEYCODE_DPAD_RIGHT = 22;
+const GRID_ROW_PITCH = CARD_HEIGHT + GRID_GAP;
+// Breathing room kept above/below the cursor row when scrolling it into view
+// (covers the focused card's 1.05x growth).
+const GRID_SCROLL_PAD = 10;
+// The hero (backdrop + synopsis + two network lookups) follows the cursor, but
+// only once it has paused -- not once per poster flown past by a held key.
+const GRID_HERO_DEBOUNCE_MS = 120;
+
+const gridCellStyles = StyleSheet.create({
+  // Same frame TVFocusablePressable gave a poster: 2px, transparent until focused.
+  base: { borderWidth: 2, borderColor: 'transparent', borderRadius: 8 },
+  selected: { borderColor: '#FFFFFF', transform: [{ scale: 1.05 }], zIndex: 99 },
+  selectedMore: { borderColor: '#FFFFFF', transform: [{ scale: 1.04 }], zIndex: 99 },
+  host: {
+    position: 'absolute',
+    backgroundColor: 'transparent',
+    // A (transparent) border keeps a background drawable on the view, which
+    // is what stops Android TV painting its default focus highlight on it.
+    borderWidth: 2,
+    borderColor: 'transparent',
+    borderRadius: 8,
+  },
+});
+
+// Purely presentational: not focusable. The focused look is driven by the
+// grid's JS cursor.
+const BrowseCell = React.memo(function BrowseCellView({
+  item,
+  selected,
+}: {
+  item: CatalogMediaItem;
+  selected: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.card,
+        { width: CARD_WIDTH, height: CARD_HEIGHT },
+        gridCellStyles.base,
+        selected && gridCellStyles.selected,
+      ]}
+    >
+      <View style={styles.cardInner}>
+        <Image
+          source={{
+            uri: item.poster || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
+          }}
+          style={styles.cardPoster}
+          resizeMode="cover"
+        />
+        {selected && <View style={styles.focusBorderGlow} />}
+      </View>
+    </View>
+  );
+});
+
+const BrowseMoreCell = React.memo(function BrowseMoreCellView({
+  selected,
+  loading,
+}: {
+  selected: boolean;
+  loading: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.card,
+        styles.loadMoreCard,
+        { width: CARD_WIDTH, height: CARD_HEIGHT },
+        gridCellStyles.base,
+        selected && gridCellStyles.selectedMore,
+      ]}
+    >
+      {loading ? (
+        <ActivityIndicator size="small" color="#8A5CF6" />
+      ) : (
+        <View style={styles.loadMoreInner}>
+          <MaterialCommunityIcons name="dots-horizontal" size={28} color="#9CA3AF" />
+          <Text style={styles.loadMoreText}>More</Text>
+        </View>
+      )}
+    </View>
+  );
+});
+
+interface BrowseGridProps {
+  items: CatalogMediaItem[];
+  hasMore: boolean;
+  loadingMore: boolean;
+  // React key of the host (useTVEntryFocus's keyFor): a new value remounts it,
+  // which is how the rail's Right key / the restore gets a real focus() call.
+  hostKey: string;
+  // Whether the host claims focus when it mounts (shouldPreferFocus). Decided
+  // once per hostKey, never flipped later.
+  preferFocus: boolean;
+  hidden: boolean;
+  // A modal is open: ignore keys.
+  paused: boolean;
+  scrollRef: React.MutableRefObject<ScrollView | null>;
+  registerHost: (el: View | null) => void;
+  // Native handle of the pill Up from the first row should land on.
+  getUpTarget: () => number | null;
+  onCursorItem: (item: CatalogMediaItem) => void;
+  onPressItem: (item: CatalogMediaItem) => void;
+  onLoadMore: () => void;
+  onScroll: (e: any) => void;
+  onContentSizeChange: () => void;
+}
+
+const BrowseGrid = React.memo(function BrowseGridView({
+  items,
+  hasMore,
+  loadingMore,
+  hostKey,
+  preferFocus,
+  hidden,
+  paused,
+  scrollRef,
+  registerHost,
+  getUpTarget,
+  onCursorItem,
+  onPressItem,
+  onLoadMore,
+  onScroll,
+  onContentSizeChange,
+}: BrowseGridProps) {
+  const total = items.length + (hasMore && items.length > 0 ? 1 : 0);
+  const clampIndex = (i: number) => Math.max(0, Math.min(i, Math.max(0, total - 1)));
+
+  const [cursor, setCursor] = useState(() => clampIndex(lastDiscoverGridIndex));
+  const cursorRef = useRef(cursor);
+  const [focused, setFocused] = useState(false);
+  const focusedRef = useRef(false);
+
+  // Latest props, read from key handlers / timers.
+  const totalRef = useRef(total);
+  totalRef.current = total;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+  const onCursorItemRef = useRef(onCursorItem);
+  onCursorItemRef.current = onCursorItem;
+  const onPressItemRef = useRef(onPressItem);
+  onPressItemRef.current = onPressItem;
+  const onLoadMoreRef = useRef(onLoadMore);
+  onLoadMoreRef.current = onLoadMore;
+  const getUpTargetRef = useRef(getUpTarget);
+  getUpTargetRef.current = getUpTarget;
+  // Read through a ref so the host's ref callback below stays stable: a ref
+  // callback whose identity changes is detached and re-attached on every
+  // render, which would reset the focused state.
+  const registerHostRef = useRef(registerHost);
+  registerHostRef.current = registerHost;
+
+  const viewportHeightRef = useRef(0);
+  const scrollYRef = useRef(lastDiscoverBrowseScrollY);
+  const hostNodeRef = useRef<View | null>(null);
+  const hostHandleRef = useRef<number | null>(null);
+  const [hostHandle, setHostHandle] = useState<number | null>(null);
+  const [upTarget, setUpTarget] = useState<number | null>(null);
+  const heroTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Same one-shot rule for `hasTVPreferredFocus` as elsewhere: decided when
+  // the host mounts, never flipped later (a late false -> true re-applies a
+  // requestFocus() that lands after the user has already moved on).
+  const preferredMemoRef = useRef<Record<string, boolean>>({});
+  if (!(hostKey in preferredMemoRef.current)) {
+    preferredMemoRef.current[hostKey] = preferFocus;
+  }
+
+  const safeCursor = clampIndex(cursor);
+  const cursorRow = Math.floor(safeCursor / GRID_COLUMNS);
+  const cursorCol = safeCursor % GRID_COLUMNS;
+
+  // Native focus links (see the block comment above). Applied imperatively
+  // too, so a key pressed before the next render still finds them.
+  const applyLinks = useCallback((row: number) => {
+    const node = hostNodeRef.current as any;
+    const self = hostHandleRef.current;
+    if (!node || self == null) return;
+    let up = self;
+    if (row === 0) {
+      const target = getUpTargetRef.current();
+      if (target != null) up = target;
+    }
+    node.setNativeProps?.({
+      nextFocusUp: up,
+      nextFocusDown: self,
+      nextFocusLeft: self,
+      nextFocusRight: self,
+    });
+  }, []);
+
+  // Scrolling is instant and done only from here (the ScrollView below has
+  // Android's own scrolling switched off). Moves the page just far enough to
+  // keep the cursor row on screen.
+  const scrollToRow = useCallback(
+    (row: number) => {
+      const viewportH = viewportHeightRef.current;
+      const scroller = scrollRef.current;
+      if (!viewportH || !scroller) return;
+      const top = row * GRID_ROW_PITCH;
+      const bottom = top + CARD_HEIGHT;
+      const y = scrollYRef.current;
+      let target = y;
+      if (top - GRID_SCROLL_PAD < y) target = Math.max(0, top - GRID_SCROLL_PAD);
+      else if (bottom + GRID_SCROLL_PAD > y + viewportH) target = bottom + GRID_SCROLL_PAD - viewportH;
+      if (target === y) return;
+      scrollYRef.current = target;
+      // Remembered for the Back-from-page-2 restore even if the scroll event
+      // for a programmatic scroll never arrives.
+      lastDiscoverBrowseScrollY = target;
+      scroller.scrollTo({ x: 0, y: target, animated: false });
+    },
+    [scrollRef],
+  );
+
+  const scheduleHero = useCallback((index: number, immediate: boolean) => {
+    const item = itemsRef.current[index];
+    if (!item) return;
+    if (heroTimerRef.current) clearTimeout(heroTimerRef.current);
+    if (immediate) {
+      heroTimerRef.current = null;
+      onCursorItemRef.current(item);
+      return;
+    }
+    heroTimerRef.current = setTimeout(() => {
+      heroTimerRef.current = null;
+      onCursorItemRef.current(item);
+    }, GRID_HERO_DEBOUNCE_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (heroTimerRef.current) clearTimeout(heroTimerRef.current);
+    },
+    [],
+  );
+
+  const placeCursor = useCallback(
+    (next: number) => {
+      const row = Math.floor(next / GRID_COLUMNS);
+      cursorRef.current = next;
+      lastDiscoverGridIndex = next;
+      lastFocusedDiscoverBrowseKey = GRID_HOST_KEY;
+      setCursor(next);
+      scrollToRow(row);
+      applyLinks(row);
+      scheduleHero(next, false);
+    },
+    [scrollToRow, applyLinks, scheduleHero],
+  );
+
+  // The list can shrink under the cursor (the "More" cell goes away).
+  useEffect(() => {
+    if (total > 0 && cursorRef.current > total - 1) placeCursor(total - 1);
+  }, [total, placeCursor]);
+
+  const moveCursor = useCallback(
+    (key: number) => {
+      const cur = cursorRef.current;
+      const tot = totalRef.current;
+      if (tot === 0) return;
+      const row = Math.floor(cur / GRID_COLUMNS);
+      const col = cur % GRID_COLUMNS;
+      let next = cur;
+      if (key === KEYCODE_DPAD_DOWN) {
+        // The last row can be short: Down from above it lands on the last poster.
+        if (row < Math.floor((tot - 1) / GRID_COLUMNS)) next = Math.min(tot - 1, cur + GRID_COLUMNS);
+      } else if (key === KEYCODE_DPAD_UP) {
+        // First row: nothing to do here -- the native Up link carries focus to the pills.
+        if (row > 0) next = cur - GRID_COLUMNS;
+      } else if (key === KEYCODE_DPAD_LEFT) {
+        if (col > 0) {
+          next = cur - 1;
+        } else {
+          // First column: hand focus to this tab's rail button.
+          NavRail.focusRoute('discover');
+          return;
+        }
+      } else if (key === KEYCODE_DPAD_RIGHT) {
+        if (col < GRID_COLUMNS - 1 && cur + 1 < tot) next = cur + 1;
+      }
+      if (next !== cur) placeCursor(next);
+    },
+    [placeCursor],
+  );
+
+  // Arrow keys while the grid has focus. Own subscription to the raw key
+  // stream (every repeat of a held key arrives), so it never replaces another
+  // listener (the pills' hold-to-hide uses KeyEvent.onKeyDownListener).
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('onKeyDown', (e: { keyCode?: number }) => {
+      if (!focusedRef.current || pausedRef.current) return;
+      const code = e?.keyCode;
+      if (
+        code === KEYCODE_DPAD_UP ||
+        code === KEYCODE_DPAD_DOWN ||
+        code === KEYCODE_DPAD_LEFT ||
+        code === KEYCODE_DPAD_RIGHT
+      ) {
+        moveCursor(code);
+      }
+    });
+    return () => sub.remove();
+  }, [moveCursor]);
+
+  const handleFocus = useCallback(() => {
+    lastFocusedDiscoverBrowseKey = GRID_HOST_KEY;
+    focusedRef.current = true;
+    setFocused(true);
+    const idx = Math.min(cursorRef.current, Math.max(0, totalRef.current - 1));
+    scrollToRow(Math.floor(idx / GRID_COLUMNS));
+    applyLinks(Math.floor(idx / GRID_COLUMNS));
+    scheduleHero(idx, true);
+  }, [scrollToRow, applyLinks, scheduleHero]);
+
+  const handleBlur = useCallback(() => {
+    focusedRef.current = false;
+    setFocused(false);
+  }, []);
+
+  // OK acts on the cursor poster (or the "More" cell).
+  const handlePress = useCallback(() => {
+    const idx = cursorRef.current;
+    const list = itemsRef.current;
+    if (idx < list.length) onPressItemRef.current(list[idx]);
+    else onLoadMoreRef.current();
+  }, []);
+
+  const hostRef = useCallback(
+    (el: View | null) => {
+      hostNodeRef.current = el;
+      registerHostRef.current(el);
+      if (el) {
+        const handle = findNodeHandle(el);
+        hostHandleRef.current = handle;
+        setHostHandle((prev) => (prev === handle ? prev : handle));
+        setUpTarget(getUpTargetRef.current());
+        applyLinks(Math.floor(cursorRef.current / GRID_COLUMNS));
+      } else {
+        hostHandleRef.current = null;
+        focusedRef.current = false;
+        setFocused(false);
+      }
+    },
+    [applyLinks],
+  );
+
+  const hostLinks: Record<string, number> = {};
+  if (hostHandle != null) {
+    hostLinks.nextFocusUp = cursorRow === 0 && upTarget != null ? upTarget : hostHandle;
+    hostLinks.nextFocusDown = hostHandle;
+    hostLinks.nextFocusLeft = hostHandle;
+    hostLinks.nextFocusRight = hostHandle;
+  }
+
+  return (
+    <ScrollView
+      ref={scrollRef}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={styles.gridContainer}
+      style={hidden ? { opacity: 0 } : undefined}
+      scrollEventThrottle={16}
+      // Every poster stays attached: with removeClippedSubviews the row below
+      // the cursor could be missing mid-scroll. Scrolling is driven only by
+      // `scrollToRow`; keep Android's own scrolling out of it.
+      // (scrollEnabled=false also makes the ScrollView itself unfocusable.
+      // Programmatic scrollTo still works.)
+      removeClippedSubviews={false}
+      overScrollMode="never"
+      scrollEnabled={false}
+      scrollsChildToFocus={false}
+      onLayout={(e) => {
+        const first = viewportHeightRef.current === 0;
+        viewportHeightRef.current = e.nativeEvent.layout.height;
+        // A remembered cursor below the fold (coming back to the tab): bring it in.
+        if (first && cursorRef.current >= GRID_COLUMNS) {
+          scrollToRow(Math.floor(cursorRef.current / GRID_COLUMNS));
+        }
+      }}
+      onScroll={(e) => {
+        scrollYRef.current = e.nativeEvent.contentOffset.y;
+        onScroll(e);
+      }}
+      onContentSizeChange={onContentSizeChange}
+    >
+      {items.map((item, index) => (
+        <BrowseCell
+          key={`grid-${item.id}-${index}`}
+          item={item}
+          selected={focused && safeCursor === index}
+        />
+      ))}
+
+      {hasMore && items.length > 0 && (
+        <BrowseMoreCell selected={focused && safeCursor === items.length} loading={loadingMore} />
+      )}
+
+      <Pressable
+        key={hostKey}
+        ref={hostRef}
+        focusable
+        hasTVPreferredFocus={preferredMemoRef.current[hostKey]}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        onPress={handlePress}
+        {...(hostLinks as any)}
+        style={[
+          gridCellStyles.host,
+          {
+            left: CONTAINER_PADDING_LEFT + cursorCol * (CARD_WIDTH + GRID_GAP),
+            top: cursorRow * GRID_ROW_PITCH,
+            width: CARD_WIDTH,
+            height: CARD_HEIGHT,
+          },
+        ]}
+      />
+    </ScrollView>
+  );
+});
 
 export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onSelectItem,
@@ -411,6 +865,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       lastFocusedDiscoverResultsKey = null;
       lastResultsScrollY = 0;
       lastDiscoverBrowseScrollY = 0;
+      lastDiscoverGridIndex = 0;
       pendingBrowseScrollRestoreRef.current = false;
     }
   );
@@ -674,7 +1129,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
   // Left-edge refs for the native nav rail's Left-key/entry-focus link
   const manageBtnRef = useRef<View | null>(null);
-  const gridItemRefs = useRef<Record<number, View | null>>({});
+  // The pill for the active catalog: where Up from the poster grid's first row lands.
+  const selectedPillNodeRef = useRef<View | null>(null);
   const sourcesRowFirstRef = useRef<View | null>(null);
   const [catalogToHide, setCatalogToHide] = useState<DiscoverCatalog | null>(null);
 
@@ -739,6 +1195,32 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     [heroFor],
   );
 
+  // ---- page-1 poster grid glue (see BrowseGrid) ----------------------------
+  const registerGridHost = useCallback(
+    (el: View | null) => {
+      setItemRef(GRID_HOST_KEY, el);
+      if (el) registerRailLeftEdge('discover', el);
+    },
+    [setItemRef],
+  );
+  const getGridUpTarget = useCallback((): number | null => {
+    try {
+      const node = selectedPillNodeRef.current ?? manageBtnRef.current;
+      return node ? findNodeHandle(node) : null;
+    } catch {
+      return null;
+    }
+  }, []);
+  const handleBrowseScroll = useCallback((e: any) => {
+    lastDiscoverBrowseScrollY = e.nativeEvent.contentOffset.y;
+  }, []);
+  const handleGridCursorItem = useCallback(
+    (item: CatalogMediaItem) => {
+      if (selectedCatalog) focusHero(item, selectedCatalog.baseEndpoint);
+    },
+    [selectedCatalog, focusHero],
+  );
+
   const reloadCatalogs = useCallback(async (keepSelection = true) => {
     setCatalogsLoading(true);
     setCatalogsError(null);
@@ -801,6 +1283,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       // one -- any remembered browse scroll offset belongs to the old
       // list and would be meaningless (or out of range) here.
       lastDiscoverBrowseScrollY = 0;
+      lastDiscoverGridIndex = 0;
       pendingBrowseScrollRestoreRef.current = false;
       const res = await fetchCatalogItems(
         selectedCatalog!.baseEndpoint,
@@ -1892,6 +2375,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   key={keyFor(pillKey)}
                   ref={(el) => {
                     setItemRef(pillKey, el);
+                    if (el && isSelected) selectedPillNodeRef.current = el;
                     // Same self-pointing nextFocusUp as the "Catalogs"
                     // button above -- every pill in this top row needs it,
                     // not just the first, since Up can be pressed from
@@ -1961,90 +2445,23 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             <ActivityIndicator size="large" color="#8A5CF6" />
           </View>
         ) : (
-          <ScrollView
-            ref={browseScrollRef}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.gridContainer}
-            style={browseHidden ? { opacity: 0 } : undefined}
-            scrollEventThrottle={16}
-            removeClippedSubviews={true}
-            onScroll={(e) => {
-              lastDiscoverBrowseScrollY = e.nativeEvent.contentOffset.y;
-            }}
+          <BrowseGrid
+            items={items}
+            hasMore={hasMore}
+            loadingMore={loadingMore}
+            hostKey={keyFor(GRID_HOST_KEY)}
+            preferFocus={shouldPreferFocus(GRID_HOST_KEY, true)}
+            hidden={browseHidden}
+            paused={manageVisible || Boolean(catalogToHide)}
+            scrollRef={browseScrollRef}
+            registerHost={registerGridHost}
+            getUpTarget={getGridUpTarget}
+            onCursorItem={handleGridCursorItem}
+            onPressItem={handleItemPress}
+            onLoadMore={handleLoadMore}
+            onScroll={handleBrowseScroll}
             onContentSizeChange={handleBrowseContentSizeChange}
-          >
-            {items.map((item, index) => {
-              const isLeftEdge = index % GRID_COLUMNS === 0;
-              const gridKey = `grid-${item.id}-${index}`;
-              return (
-                <TVFocusablePressable
-                  key={keyFor(gridKey)}
-                  ref={(el) => {
-                    setItemRef(gridKey, el);
-                    if (isLeftEdge) {
-                      gridItemRefs.current[index] = el;
-                    }
-                  }}
-                  hasTVPreferredFocus={shouldPreferFocus(gridKey, index === 0)}
-                  scaleFocused={1.05}
-                  focusedBorderColor="#FFFFFF"
-                  borderRadius={8}
-                  onFocus={() => {
-                    // Mid-restore, a hop onto anything but the remembered
-                    // poster is transient: don't overwrite the target or
-                    // swap the hero for it.
-                    if (
-                      browseRestoringRef.current &&
-                      gridKey !== lastFocusedDiscoverBrowseKey
-                    ) {
-                      return;
-                    }
-                    lastFocusedDiscoverBrowseKey = gridKey;
-                    selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint);
-                    if (isLeftEdge) {
-                      registerRailLeftEdge('discover', gridItemRefs.current[index]);
-                    }
-                  }}
-                  onPress={() => handleItemPress(item)}
-                  style={[styles.card, { width: CARD_WIDTH, height: CARD_HEIGHT }]}
-                >
-                  {({ focused }) => (
-                    <View style={styles.cardInner}>
-                      <Image
-                        source={{
-                          uri: item.poster || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                        }}
-                        style={styles.cardPoster}
-                        resizeMode="cover"
-                      />
-                      {focused && <View style={styles.focusBorderGlow} />}
-                    </View>
-                  )}
-                </TVFocusablePressable>
-              );
-            })}
-
-            {hasMore && items.length > 0 && (
-              <TVFocusablePressable
-                scaleFocused={1.04}
-                focusedBorderColor="#FFFFFF"
-                borderRadius={8}
-                onPress={handleLoadMore}
-                style={[styles.card, styles.loadMoreCard, { width: CARD_WIDTH, height: CARD_HEIGHT }]}
-              >
-                {() =>
-                  loadingMore ? (
-                    <ActivityIndicator size="small" color="#8A5CF6" />
-                  ) : (
-                    <View style={styles.loadMoreInner}>
-                      <MaterialCommunityIcons name="dots-horizontal" size={28} color="#9CA3AF" />
-                      <Text style={styles.loadMoreText}>More</Text>
-                    </View>
-                  )
-                }
-              </TVFocusablePressable>
-            )}
-          </ScrollView>
+          />
         )}
       </View>
 
