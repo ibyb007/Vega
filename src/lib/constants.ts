@@ -49,3 +49,7 @@ export const socialLinks = {
   discord: 'https://discord.gg/cr42m6maWy',
   sponsor: 'https://github.com/sponsors/Zenda-Cross',
 };
+
+// In-app updater: releases are published by .github/workflows/tv.yml
+export const UPDATE_REPO = { owner: 'ibyb007', repo: 'Vega' } as const;
+export const APP_DEVELOPER = 'Bony Biswas';
