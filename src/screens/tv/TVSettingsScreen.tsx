@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from 'react';
 import {
   DevSettings,
   View,
   Text,
   StyleSheet,
   ScrollView,
+  Pressable,
+  DeviceEventEmitter,
   Switch,
   ToastAndroid,
   Modal,
@@ -17,6 +19,7 @@ import * as Updates from 'expo-updates';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import { NavRail } from '../../lib/native/NavRail';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import { settingsStorage, clearAllMMKVStorage } from '../../lib/storage';
 import { syncDohSettings, DOH_PROVIDERS } from '../../lib/services/dohService';
@@ -36,6 +39,7 @@ import {
 import { clearAppCache } from '../../lib/clearAppCache';
 import { showAppDialog } from '../../lib/zustand/appDialogStore';
 import useThemeStore from '../../lib/zustand/themeStore';
+import useAppDialogStore from '../../lib/zustand/appDialogStore';
 import useSettingsStore, { AudioBoostProfile } from '../../lib/zustand/settingsStore';
 
 const DOH_OPTIONS = [
@@ -70,6 +74,129 @@ const AUDIO_PROFILES: { id: AudioBoostProfile; title: string; desc: string; icon
     icon: 'account-voice',
   },
 ];
+
+const PLAYER_OPTIONS: { id: 'exo' | 'vlc' | 'system'; title: string; subtitle: string }[] = [
+  { id: 'exo', title: 'Inbuilt ExoPlayer', subtitle: 'Native Android TV player with frame-rate matching' },
+  { id: 'vlc', title: 'VLC Player', subtitle: 'Launch external VLC Android app via Intent' },
+  { id: 'system', title: 'System Chooser / Just Player', subtitle: 'Prompt Android app picker on playback' },
+];
+
+const QUALITY_OPTIONS = ['360p', '480p', '720p'];
+
+const KEYCODE_DPAD_UP = 19;
+const KEYCODE_DPAD_DOWN = 20;
+const KEYCODE_DPAD_LEFT = 21;
+const KEYCODE_DPAD_RIGHT = 22;
+
+// The whole screen is ONE native focus target (see TVSettingsScreen). This is
+// its key in useTVEntryFocus, i.e. what the rail's Right key returns to.
+const SETTINGS_HOST_KEY = 'list';
+
+// Where the cursor row is held inside the viewport while moving (0 = top edge,
+// 1 = bottom edge) -- the page glides under it. Same value Extensions uses.
+const FOCUS_ANCHOR = 0.4;
+
+// Tiny external store for "which row has the cursor, and does the screen hold
+// native focus". Rows subscribe individually, so a cursor move re-renders only
+// the row it left and the row it landed on -- not the whole (large) screen.
+interface CursorStore {
+  readonly key: string | null;
+  readonly focused: boolean;
+  setKey(key: string): void;
+  setFocused(focused: boolean): void;
+  isSelected(key: string): boolean;
+  subscribe(listener: () => void): () => void;
+}
+
+const createCursorStore = (initialKey: string | null): CursorStore => {
+  let key = initialKey;
+  let focused = false;
+  const listeners = new Set<() => void>();
+  const emit = () => listeners.forEach((l) => l());
+  return {
+    get key() {
+      return key;
+    },
+    get focused() {
+      return focused;
+    },
+    setKey(next) {
+      if (next === key) return;
+      key = next;
+      emit();
+    },
+    setFocused(next) {
+      if (next === focused) return;
+      focused = next;
+      emit();
+    },
+    isSelected: (k) => focused && key === k,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+};
+
+// Purely presentational: NOT focusable. Draws exactly what TVFocusablePressable
+// drew when it had focus (2px frame, scale, raised z-order), driven by the
+// screen's JS cursor instead of by native focus.
+const CursorRow = React.memo(function CursorRowView({
+  store,
+  nodes,
+  rowKey,
+  scaleFocused = 1.02,
+  focusedBorderColor = '#8A5CF6',
+  borderRadius = 8,
+  style,
+  children,
+}: {
+  store: CursorStore;
+  nodes: React.MutableRefObject<Record<string, View | null>>;
+  rowKey: string;
+  scaleFocused?: number;
+  focusedBorderColor?: string;
+  borderRadius?: number;
+  style?: any;
+  children: ((state: { focused: boolean }) => React.ReactNode) | React.ReactNode;
+}) {
+  const selected = useSyncExternalStore(store.subscribe, () => store.isSelected(rowKey));
+  const setRef = useCallback(
+    (el: View | null) => {
+      if (el) nodes.current[rowKey] = el;
+      else delete nodes.current[rowKey];
+    },
+    [nodes, rowKey],
+  );
+  return (
+    <View
+      ref={setRef}
+      // Needed so measureLayout can find this view (no layout-only flattening).
+      collapsable={false}
+      style={[
+        style,
+        rowStyles.base,
+        { borderRadius },
+        selected && {
+          borderColor: focusedBorderColor,
+          transform: [{ scale: scaleFocused }],
+          zIndex: 99,
+        },
+      ]}
+    >
+      {typeof children === 'function' ? children({ focused: selected }) : children}
+    </View>
+  );
+});
+
+const rowStyles = StyleSheet.create({
+  base: {
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+});
 
 // TMDB "API Key (v3)" -- exactly 32 hex characters. (The long "Read Access
 // Token" TMDB also issues is a different credential and isn't what the app's
@@ -110,6 +237,8 @@ interface TVSettingsScreenProps {
 // the Settings tab and comes back -- same pattern as TVHomeScreen's
 // `lastFocusedKey`.
 let lastFocusedSettingsKey: string | null = null;
+// Which row the cursor was on, so coming back to the tab restores it.
+let lastSettingsCursorKey: string | null = null;
 
 export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   onRegisterEntryHandleGetter,
@@ -123,6 +252,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     resetFocusOnMount,
     () => {
       lastFocusedSettingsKey = null;
+      lastSettingsCursorKey = null;
     }
   );
   const primaryColor = useThemeStore((state) => state.primaryColor) || '#8A5CF6';
@@ -154,32 +284,6 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   const [tmdbKeyVisible, setTmdbKeyVisible] = useState(false);
   const [tmdbKeyError, setTmdbKeyError] = useState<string | null>(null);
   const [tmdbKeyChecking, setTmdbKeyChecking] = useState(false);
-
-  // Every row on this screen is a full-width, single-column item, so every
-  // one of them sits at the screen's left edge -- unlike Home/Discover's
-  // horizontal rows, there's no single "first card" here. Registering on
-  // mount (rather than only on focus) is enough since this screen's rows
-  // are static, not virtualized, so there's no reordering/remounting to
-  // race against.
-  // Combines the rail's Left-edge registration with this hook's per-item
-  // ref bookkeeping, so every row on this screen can also serve as the
-  // rail's Right-key/re-select return-focus target.
-  const registerItem = (key: string, blockUp = false) => (el: View | null) => {
-    setItemRef(key, el);
-    if (el) {
-      registerRailLeftEdge('settings', el);
-      // The topmost row has nothing above it, but the side nav rail spans
-      // the full screen height, so Android's default geometric search
-      // would jump Up to the rail's "Search" button. A self-pointing
-      // nextFocusUp makes Up a no-op without touching other directions.
-      if (blockUp) {
-        const selfHandle = findNodeHandle(el);
-        if (selfHandle != null) {
-          (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
-        }
-      }
-    }
-  };
 
   useEffect(() => {
     try {
@@ -475,6 +579,218 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     );
   };
 
+  // ---- ONE focus target, cursor kept in JS ----------------------------------
+  // Native focus used to travel row to row. Under a held Down key that kept
+  // ending with focus thrown out to the side rail (or looping back up the
+  // list), because Android's focus search ran against rows mid-scroll. So the
+  // rows are no longer focusable at all: the whole screen is a single focus
+  // target (the host Pressable below), Up/Down/Left/Right move a cursor in JS
+  // from the raw key stream, and the cursor row is drawn as focused. Android's
+  // focus search has nothing to do inside the page, so there is nothing to
+  // misfire. Same approach as Extensions and the details episode list.
+  const cursor = useMemo(
+    () => createCursorStore(lastSettingsCursorKey ?? `audio-${AUDIO_PROFILES[0].id}`),
+    [],
+  );
+  const rowNodesRef = useRef<Record<string, View | null>>({});
+  const scrollRef = useRef<ScrollView | null>(null);
+  const contentRef = useRef<View | null>(null);
+  const viewportHeightRef = useRef(0);
+  const hostFocusedRef = useRef(false);
+  const [hostHandle, setHostHandle] = useState<number | null>(null);
+
+  const tmdbModalVisibleRef = useRef(false);
+  tmdbModalVisibleRef.current = tmdbModalVisible;
+
+  // Cursor stops, as lines: Up/Down move between lines, Left/Right between the
+  // stops of one line (only the quality chips share a line). Rebuilt every
+  // render because sub-groups appear/disappear with their toggles.
+  const lines: string[][] = [
+    ...AUDIO_PROFILES.map((p) => [`audio-${p.id}`]),
+    ['doh-toggle'],
+    ...(dohEnabled ? DOH_OPTIONS.map((o) => [`doh-provider-${o.id}`]) : []),
+    ['warp-toggle'],
+    ['byedpi-toggle'],
+    ...(byeDpiEnabled ? BYEDPI_PRESETS.map((pr) => [`byedpi-preset-${pr.id}`]) : []),
+    ...PLAYER_OPTIONS.map((p) => [`player-${p.id}`]),
+    QUALITY_OPTIONS.map((q) => `quality-${q}`),
+    ['tmdb-key'],
+    ['clear-cache'],
+    ['erase-data'],
+  ];
+  const linesRef = useRef(lines);
+  linesRef.current = lines;
+
+  // What OK does on each stop. Rebuilt every render so it always sees the
+  // latest state; read through a ref by the host's onPress.
+  const actionsRef = useRef<Record<string, () => void>>({});
+  const actions: Record<string, () => void> = {
+    'doh-toggle': toggleDoH,
+    'warp-toggle': toggleWarpMode,
+    'byedpi-toggle': toggleByeDpiMode,
+    'tmdb-key': openTmdbModal,
+    'clear-cache': handleClearCache,
+    'erase-data': confirmEraseAllLocalData,
+  };
+  AUDIO_PROFILES.forEach((p) => {
+    actions[`audio-${p.id}`] = () => handleSelectAudioProfile(p.id);
+  });
+  DOH_OPTIONS.forEach((o) => {
+    actions[`doh-provider-${o.id}`] = () => handleSelectDohProvider(o.id);
+  });
+  BYEDPI_PRESETS.forEach((pr) => {
+    actions[`byedpi-preset-${pr.id}`] = () => handleSelectByeDpiPreset(pr.args);
+  });
+  PLAYER_OPTIONS.forEach((p) => {
+    actions[`player-${p.id}`] = () => handleSelectPlayer(p.id);
+  });
+  QUALITY_OPTIONS.forEach((q) => {
+    actions[`quality-${q}`] = () => toggleExcludedQuality(q);
+  });
+  actionsRef.current = actions;
+
+  // Keep the cursor on a stop that exists (e.g. a sub-group collapsed).
+  const firstKey = lines[0][0];
+  useEffect(() => {
+    const flat = linesRef.current.flat();
+    if (!cursor.key || !flat.includes(cursor.key)) {
+      cursor.setKey(firstKey);
+      lastSettingsCursorKey = firstKey;
+    }
+  }, [cursor, firstKey, dohEnabled, byeDpiEnabled]);
+
+  // Scrolling is instant and done only from here (the ScrollView below has
+  // Android's own scrolling switched off). Holds the cursor row at a fixed
+  // spot so the page glides under it.
+  const scrollToKey = useCallback((key: string) => {
+    const node = rowNodesRef.current[key];
+    const content = contentRef.current;
+    const scroller = scrollRef.current;
+    const viewportH = viewportHeightRef.current;
+    if (!node || !content || !scroller || !viewportH) return;
+    node.measureLayout(
+      content as any,
+      (_x, y, _w, h) => {
+        // ScrollView clamps to its own range, so no max is needed here.
+        scroller.scrollTo({ y: Math.max(0, y + h / 2 - viewportH * FOCUS_ANCHOR), animated: false });
+      },
+      () => {},
+    );
+  }, []);
+
+  const moveCursor = useCallback(
+    (dRow: number, dCol: number) => {
+      const all = linesRef.current;
+      const current = cursor.key ?? all[0][0];
+      let lineIdx = Math.max(0, all.findIndex((l) => l.includes(current)));
+      let colIdx = Math.max(0, all[lineIdx].indexOf(current));
+      if (dCol !== 0) {
+        const nextCol = colIdx + dCol;
+        if (nextCol < 0) {
+          // Left of the leftmost stop: hand focus to this tab's rail button.
+          NavRail.focusRoute('settings');
+          return;
+        }
+        if (nextCol >= all[lineIdx].length) return;
+        colIdx = nextCol;
+      } else {
+        const nextLine = lineIdx + dRow;
+        if (nextLine < 0 || nextLine >= all.length) return;
+        lineIdx = nextLine;
+        colIdx = Math.min(colIdx, all[lineIdx].length - 1);
+      }
+      const nextKey = all[lineIdx][colIdx];
+      if (nextKey === current) return;
+      lastSettingsCursorKey = nextKey;
+      cursor.setKey(nextKey);
+      scrollToKey(nextKey);
+    },
+    [cursor, scrollToKey],
+  );
+
+  // Arrow keys while the page has focus. Listens to the raw key stream (every
+  // repeat of a held key arrives), on its own subscription so it never
+  // replaces another screen's key listener.
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('onKeyDown', (e: { keyCode?: number }) => {
+      if (!hostFocusedRef.current || tmdbModalVisibleRef.current) return;
+      if (useAppDialogStore.getState().dialog) return;
+      switch (e?.keyCode) {
+        case KEYCODE_DPAD_DOWN:
+          moveCursor(1, 0);
+          break;
+        case KEYCODE_DPAD_UP:
+          moveCursor(-1, 0);
+          break;
+        case KEYCODE_DPAD_LEFT:
+          moveCursor(0, -1);
+          break;
+        case KEYCODE_DPAD_RIGHT:
+          moveCursor(0, 1);
+          break;
+      }
+    });
+    return () => sub.remove();
+  }, [moveCursor]);
+
+  const handleHostFocus = useCallback(() => {
+    lastFocusedSettingsKey = SETTINGS_HOST_KEY;
+    hostFocusedRef.current = true;
+    cursor.setFocused(true);
+    if (cursor.key) scrollToKey(cursor.key);
+  }, [cursor, scrollToKey]);
+
+  const handleHostBlur = useCallback(() => {
+    hostFocusedRef.current = false;
+    cursor.setFocused(false);
+  }, [cursor]);
+
+  // OK acts on the cursor row.
+  const handleHostPress = useCallback(() => {
+    const key = cursor.key;
+    if (key) actionsRef.current[key]?.();
+  }, [cursor]);
+
+  const hostRef = useCallback(
+    (el: View | null) => {
+      setItemRef(SETTINGS_HOST_KEY, el);
+      if (el) {
+        // Left from the page goes to the Settings rail button (and the rail's
+        // Right/return lands back here).
+        registerRailLeftEdge('settings', el);
+        const handle = findNodeHandle(el);
+        if (handle != null) {
+          // Every direction points back at the host itself, so native focus
+          // search can never carry focus out of the page (to the rail, or
+          // anywhere else) -- the cursor does all the moving. Set right away
+          // as well as through props below, so a key pressed before the
+          // re-render still finds them.
+          (el as any).setNativeProps?.({
+            nextFocusUp: handle,
+            nextFocusDown: handle,
+            nextFocusLeft: handle,
+            nextFocusRight: handle,
+          });
+          setHostHandle((prev) => (prev === handle ? prev : handle));
+        }
+      } else {
+        hostFocusedRef.current = false;
+        cursor.setFocused(false);
+      }
+    },
+    [setItemRef, cursor],
+  );
+
+  // Same one-shot rule for `hasTVPreferredFocus` as elsewhere: decided when
+  // the host mounts, never flipped later (a late false -> true re-applies a
+  // requestFocus() that lands after the user has already moved on). The rail's
+  // Right/return remounts the host (via keyFor) to get a real focus() call.
+  const preferredOnMountRef = useRef<Record<string, boolean>>({});
+  const hostReactKey = keyFor(SETTINGS_HOST_KEY);
+  if (!(hostReactKey in preferredOnMountRef.current)) {
+    preferredOnMountRef.current[hostReactKey] = shouldPreferFocus(SETTINGS_HOST_KEY, true);
+  }
+
   const tmdbStatusLine = savedTmdbKey
     ? `Custom key active (ending ${savedTmdbKey.slice(-4)})`
     : hasBundledTmdbKey
@@ -482,37 +798,59 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     : 'No key configured -- some metadata and skip-intro lookups are limited';
 
   return (
-    <ScrollView
+    <Pressable
+      key={hostReactKey}
+      ref={hostRef}
+      focusable
+      hasTVPreferredFocus={preferredOnMountRef.current[hostReactKey]}
+      onFocus={handleHostFocus}
+      onBlur={handleHostBlur}
+      onPress={handleHostPress}
+      {...(hostHandle != null
+        ? ({
+            nextFocusUp: hostHandle,
+            nextFocusDown: hostHandle,
+            nextFocusLeft: hostHandle,
+            nextFocusRight: hostHandle,
+          } as any)
+        : {})}
       style={styles.container}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
     >
+    <ScrollView
+      ref={scrollRef}
+      style={styles.scroller}
+      showsVerticalScrollIndicator={false}
+      removeClippedSubviews={false}
+      overScrollMode="never"
+      // Scrolling is driven only by `scrollToKey`; keep Android's own
+      // ScrollView scrolling out of it. (scrollEnabled=false also makes the
+      // ScrollView itself unfocusable. Programmatic scrollTo still works.)
+      scrollEnabled={false}
+      scrollsChildToFocus={false}
+      onLayout={(e) => {
+        const first = viewportHeightRef.current === 0;
+        viewportHeightRef.current = e.nativeEvent.layout.height;
+        // Restored cursor (coming back to the tab): bring it into place.
+        if (first && cursor.key) scrollToKey(cursor.key);
+      }}
+    >
+      <View ref={contentRef} collapsable={false} style={styles.content}>
       <Text style={styles.header}>Settings</Text>
 
       {/* Audio Enhancement & Preamp Section */}
       <Text style={styles.sectionHeader}>Audio Preamp & Speech Clarity</Text>
-      {AUDIO_PROFILES.map((p, index) => {
+      {AUDIO_PROFILES.map((p) => {
         const isSelected = audioBoostProfile === p.id;
         const rowKey = `audio-${p.id}`;
         return (
-          <TVFocusablePressable
-            key={keyFor(rowKey)}
-            ref={registerItem(rowKey, index === 0)}
-            // Wired the same way Discover's grid picks a default landing
-            // spot (`shouldPreferFocus(gridKey, index === 0)`): every row
-            // on this screen was passing a hardcoded `false` default, so
-            // on a fresh mount (nothing in `lastFocusedSettingsKey` yet)
-            // *no* row ever claimed preferred focus and Android had
-            // nothing to land on when the rail switched to Settings. The
-            // very first row -- this screen's natural top-left entry
-            // point -- now defaults to focused the same way page 1 of
-            // every other tab does.
-            hasTVPreferredFocus={shouldPreferFocus(rowKey, index === 0)}
-            onFocus={() => (lastFocusedSettingsKey = rowKey)}
+          <CursorRow
+            key={rowKey}
+            store={cursor}
+            nodes={rowNodesRef}
+            rowKey={rowKey}
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
-            onPress={() => handleSelectAudioProfile(p.id)}
             style={[
               styles.optionCard,
               isSelected && { borderColor: primaryColor, backgroundColor: 'rgba(138, 92, 246, 0.12)' },
@@ -538,22 +876,21 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
                 </View>
               </View>
             )}
-          </TVFocusablePressable>
+          </CursorRow>
         );
       })}
 
       {/* Network & DoH Section */}
       <Text style={styles.sectionHeader}>Network & DNS over HTTPS (DoH)</Text>
       
-      <TVFocusablePressable
-        key={keyFor('doh-toggle')}
-        ref={registerItem('doh-toggle')}
-        hasTVPreferredFocus={shouldPreferFocus('doh-toggle', false)}
-        onFocus={() => (lastFocusedSettingsKey = 'doh-toggle')}
+      <CursorRow
+        key="doh-toggle"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="doh-toggle"
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
-        onPress={toggleDoH}
         style={styles.settingCard}
       >
         {({ focused }) => (
@@ -575,7 +912,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             />
           </View>
         )}
-      </TVFocusablePressable>
+      </CursorRow>
 
       {dohEnabled && (
         <View style={styles.subGroup}>
@@ -584,15 +921,14 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             const isSelected = activeDohProvider === item.id;
             const rowKey = `doh-provider-${item.id}`;
             return (
-              <TVFocusablePressable
-                key={keyFor(rowKey)}
-                ref={registerItem(rowKey)}
-                hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
-                onFocus={() => (lastFocusedSettingsKey = rowKey)}
+              <CursorRow
+                key={rowKey}
+                store={cursor}
+                nodes={rowNodesRef}
+                rowKey={rowKey}
                 scaleFocused={1.02}
                 focusedBorderColor={primaryColor}
                 borderRadius={10}
-                onPress={() => handleSelectDohProvider(item.id)}
                 style={[
                   styles.optionCard,
                   isSelected && { borderColor: primaryColor, backgroundColor: 'rgba(138, 92, 246, 0.12)' },
@@ -611,21 +947,20 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
                     </View>
                   </View>
                 )}
-              </TVFocusablePressable>
+              </CursorRow>
             );
           })}
         </View>
       )}
 
-      <TVFocusablePressable
-        key={keyFor('warp-toggle')}
-        ref={registerItem('warp-toggle')}
-        hasTVPreferredFocus={shouldPreferFocus('warp-toggle', false)}
-        onFocus={() => (lastFocusedSettingsKey = 'warp-toggle')}
+      <CursorRow
+        key="warp-toggle"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="warp-toggle"
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
-        onPress={toggleWarpMode}
         style={[styles.settingCard, { marginTop: 12 }]}
       >
         {() => (
@@ -670,17 +1005,16 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             )}
           </View>
         )}
-      </TVFocusablePressable>
+      </CursorRow>
 
-      <TVFocusablePressable
-        key={keyFor('byedpi-toggle')}
-        ref={registerItem('byedpi-toggle')}
-        hasTVPreferredFocus={shouldPreferFocus('byedpi-toggle', false)}
-        onFocus={() => (lastFocusedSettingsKey = 'byedpi-toggle')}
+      <CursorRow
+        key="byedpi-toggle"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="byedpi-toggle"
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
-        onPress={toggleByeDpiMode}
         style={[styles.settingCard, { marginTop: 12 }]}
       >
         {() => (
@@ -726,7 +1060,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             )}
           </View>
         )}
-      </TVFocusablePressable>
+      </CursorRow>
 
       {byeDpiEnabled && (
         <View style={styles.subGroup}>
@@ -735,15 +1069,14 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             const isSelected = byeDpiArgs.trim() === preset.args;
             const rowKey = `byedpi-preset-${preset.id}`;
             return (
-              <TVFocusablePressable
-                key={keyFor(rowKey)}
-                ref={registerItem(rowKey)}
-                hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
-                onFocus={() => (lastFocusedSettingsKey = rowKey)}
+              <CursorRow
+                key={rowKey}
+                store={cursor}
+                nodes={rowNodesRef}
+                rowKey={rowKey}
                 scaleFocused={1.02}
                 focusedBorderColor={primaryColor}
                 borderRadius={10}
-                onPress={() => handleSelectByeDpiPreset(preset.args)}
                 style={[
                   styles.optionCard,
                   isSelected && { borderColor: primaryColor, backgroundColor: 'rgba(138, 92, 246, 0.12)' },
@@ -762,7 +1095,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
                     </View>
                   </View>
                 )}
-              </TVFocusablePressable>
+              </CursorRow>
             );
           })}
         </View>
@@ -770,23 +1103,18 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
 
       {/* Video Player Selection Section */}
       <Text style={styles.sectionHeader}>Default Video Player</Text>
-      {[
-        { id: 'exo', title: 'Inbuilt ExoPlayer', subtitle: 'Native Android TV player with frame-rate matching' },
-        { id: 'vlc', title: 'VLC Player', subtitle: 'Launch external VLC Android app via Intent' },
-        { id: 'system', title: 'System Chooser / Just Player', subtitle: 'Prompt Android app picker on playback' },
-      ].map((p) => {
+      {PLAYER_OPTIONS.map((p) => {
         const isSelected = selectedPlayer === p.id;
         const rowKey = `player-${p.id}`;
         return (
-          <TVFocusablePressable
-            key={keyFor(rowKey)}
-            ref={registerItem(rowKey)}
-            hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
-            onFocus={() => (lastFocusedSettingsKey = rowKey)}
+          <CursorRow
+            key={rowKey}
+            store={cursor}
+            nodes={rowNodesRef}
+            rowKey={rowKey}
             scaleFocused={1.02}
             focusedBorderColor={primaryColor}
             borderRadius={10}
-            onPress={() => handleSelectPlayer(p.id as any)}
             style={[
               styles.optionCard,
               isSelected && { borderColor: primaryColor, backgroundColor: 'rgba(138, 92, 246, 0.12)' },
@@ -805,7 +1133,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
                 </View>
               </View>
             )}
-          </TVFocusablePressable>
+          </CursorRow>
         );
       })}
 
@@ -817,22 +1145,18 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
           Hide lower resolutions from stream results
         </Text>
         <View style={styles.chipRow}>
-          {['360p', '480p', '720p'].map((quality, qIndex) => {
+          {QUALITY_OPTIONS.map((quality) => {
             const selected = excludedQualities.includes(quality);
             const rowKey = `quality-${quality}`;
             return (
-              <TVFocusablePressable
-                key={keyFor(rowKey)}
-                ref={(el) => {
-                  setItemRef(rowKey, el);
-                  if (qIndex === 0 && el) registerRailLeftEdge('settings', el);
-                }}
-                hasTVPreferredFocus={shouldPreferFocus(rowKey, false)}
-                onFocus={() => (lastFocusedSettingsKey = rowKey)}
+              <CursorRow
+                key={rowKey}
+                store={cursor}
+                nodes={rowNodesRef}
+                rowKey={rowKey}
                 scaleFocused={1.05}
                 focusedBorderColor={primaryColor}
                 borderRadius={16}
-                onPress={() => toggleExcludedQuality(quality)}
                 style={[
                   styles.qualityChip,
                   selected && {
@@ -851,7 +1175,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
                     {quality}
                   </Text>
                 )}
-              </TVFocusablePressable>
+              </CursorRow>
             );
           })}
         </View>
@@ -859,15 +1183,14 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
 
       {/* Metadata (TMDB) Section */}
       <Text style={styles.sectionHeader}>Metadata (TMDB)</Text>
-      <TVFocusablePressable
-        key={keyFor('tmdb-key')}
-        ref={registerItem('tmdb-key')}
-        hasTVPreferredFocus={shouldPreferFocus('tmdb-key', false)}
-        onFocus={() => (lastFocusedSettingsKey = 'tmdb-key')}
+      <CursorRow
+        key="tmdb-key"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="tmdb-key"
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
-        onPress={openTmdbModal}
         style={styles.settingCard}
       >
         {() => (
@@ -892,7 +1215,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             <MaterialCommunityIcons name="pencil-outline" size={22} color="#9CA3AF" />
           </View>
         )}
-      </TVFocusablePressable>
+      </CursorRow>
 
       <Modal
         visible={tmdbModalVisible}
@@ -988,15 +1311,14 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
       {/* Data Management Section */}
       <Text style={styles.sectionHeader}>Data Management</Text>
 
-      <TVFocusablePressable
-        key={keyFor('clear-cache')}
-        ref={registerItem('clear-cache')}
-        hasTVPreferredFocus={shouldPreferFocus('clear-cache', false)}
-        onFocus={() => (lastFocusedSettingsKey = 'clear-cache')}
+      <CursorRow
+        key="clear-cache"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="clear-cache"
         scaleFocused={1.02}
         focusedBorderColor={primaryColor}
         borderRadius={12}
-        onPress={handleClearCache}
         style={styles.settingCard}
       >
         {() => (
@@ -1018,17 +1340,16 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             )}
           </View>
         )}
-      </TVFocusablePressable>
+      </CursorRow>
 
-      <TVFocusablePressable
-        key={keyFor('erase-data')}
-        ref={registerItem('erase-data')}
-        hasTVPreferredFocus={shouldPreferFocus('erase-data', false)}
-        onFocus={() => (lastFocusedSettingsKey = 'erase-data')}
+      <CursorRow
+        key="erase-data"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="erase-data"
         scaleFocused={1.02}
         focusedBorderColor="#EF4444"
         borderRadius={12}
-        onPress={confirmEraseAllLocalData}
         style={[styles.settingCard, { marginTop: 12 }]}
       >
         {() => (
@@ -1046,8 +1367,10 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
             <MaterialCommunityIcons name="chevron-right" size={22} color="#F87171" />
           </View>
         )}
-      </TVFocusablePressable>
+      </CursorRow>
+      </View>
     </ScrollView>
+    </Pressable>
   );
 };
 
@@ -1055,6 +1378,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0A0A0E',
+  },
+  scroller: {
+    flex: 1,
   },
   content: {
     // Trimmed from 88 -- see TVDiscoverScreen.tsx's CONTAINER_PADDING_LEFT
