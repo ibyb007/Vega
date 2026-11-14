@@ -55,7 +55,8 @@ import {
 import { AppUpdate } from '../../lib/native/AppUpdate';
 import { APP_DEVELOPER } from '../../lib/constants';
 
-const ABOUT_BANNER = require('../../../assets/about/vega-about-banner.png');
+// "VEGA TV" wordmark cut from the TV banner (white on transparent).
+const ABOUT_LOGO = require('../../../assets/about/vega-tv-text.png');
 
 const DOH_OPTIONS = [
   { id: 'cloudflare', name: 'Cloudflare (1.1.1.1)', desc: 'Fastest global resolution & bypass ISP throttling' },
@@ -1495,13 +1496,12 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
       {/* About & Updates Section */}
       <Text style={styles.sectionHeader}>About</Text>
       <View style={styles.aboutCard}>
-        <Image source={ABOUT_BANNER} style={styles.aboutBanner} resizeMode="contain" />
+        <Image source={ABOUT_LOGO} style={styles.aboutLogo} resizeMode="contain" />
         <Text style={styles.aboutDeveloper}>Developed by {APP_DEVELOPER}</Text>
         <Text style={styles.aboutVersion}>Version {getInstalledDisplayVersion()}</Text>
         <Text style={styles.aboutMeta}>
           {getBuildChannel() === 'canary' ? 'Canary build' : 'Stable build'}
         </Text>
-        <Text style={styles.aboutMeta}>Based on Vega App by himanshu8443.</Text>
       </View>
 
       <CursorRow
@@ -1802,10 +1802,11 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     alignItems: 'center',
   },
-  aboutBanner: {
-    width: 330,
-    height: 138,
-    marginBottom: 8,
+  aboutLogo: {
+    width: 190,
+    height: 36,
+    marginTop: 4,
+    marginBottom: 10,
   },
   aboutDeveloper: {
     color: '#FFFFFF',
