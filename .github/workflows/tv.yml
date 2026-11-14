@@ -240,6 +240,10 @@ jobs:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6144m -XX:MaxMetaspaceSize=1024m -XX:+UseG1GC"
           APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
           APP_VERSION_NAME: ${{ steps.release_meta.outputs.version_name }}
+          # Gradle re-reads app.config.js when it bundles the app, so the
+          # channel has to be set here too (not only at prebuild).
+          APP_CHANNEL: ${{ steps.release_meta.outputs.channel }}
+          APP_CANARY_NUMBER: ${{ steps.release_meta.outputs.canary_number }}
           MYAPP_UPLOAD_STORE_FILE: "release.keystore"
           MYAPP_UPLOAD_STORE_PASSWORD: "${{ secrets.KEYSTORE_PASSWORD }}"
           MYAPP_UPLOAD_KEY_ALIAS: "${{ secrets.KEY_ALIAS }}"
