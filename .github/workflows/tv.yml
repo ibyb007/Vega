@@ -16,7 +16,7 @@ on:
           - canary
         default: stable
       version:
-        description: 'App version, e.g. 5.0.2 (leave empty to use the version in package.json)'
+        description: 'Stable: version to release, e.g. 5.2.0 (empty = package.json). Canary: optional base version (empty = latest stable, numbered 5.2.0 (1), (2), ...)'
         type: string
         required: false
         default: ''
@@ -62,89 +62,86 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          # Version typed into the "Run workflow" dialog wins; when it is
-          # left empty, fall back to the version in package.json. A leading
-          # "v" is accepted and stripped (v5.0.2 -> 5.0.2).
-          VERSION_NAME="$(echo "$INPUT_VERSION" | tr -d '[:space:]')"
-          VERSION_NAME="${VERSION_NAME#v}"
-          if [ -n "$VERSION_NAME" ]; then
-            if ! echo "$VERSION_NAME" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}([-+][0-9A-Za-z.-]+)?$'; then
-              echo "::error::Invalid version '$VERSION_NAME'. Use something like 5.0.2"
-              exit 1
-            fi
-          else
-            VERSION_NAME=$(node -p "require('./package.json').version || '5.0.1'")
-          fi
-
-          # Automatically increment versionCode above 192 (e.g., Run 103 -> 203)
-          VERSION_CODE=$((100 + ${{ github.run_number }}))
-          RUN_ATTEMPT=${{ github.run_attempt }}
+          set -e
+          git fetch --tags origin 2>/dev/null || true
 
           # Only trigger left is workflow_dispatch, so the channel input is
-          # always present -- "stable" unless explicitly switched to
-          # "canary" in the run dialog.
+          # always present -- "stable" unless switched to "canary".
           CHANNEL="${{ inputs.channel }}"
 
-          # Display version = app version + versionCode, e.g. "v4.0.6-191".
-          # It is shared by the release title, the tag and every APK filename,
-          # so a build can be matched across all three at a glance.
-          VERSION_LABEL="v${VERSION_NAME}-${VERSION_CODE}"
-
-          # Release title:  "Vega TV Stable v4.0.6-191" / "Vega TV Canary v4.0.6-192"
-          # APK filename:   "Vega-TV-v4.0.6-191-<abi>.apk" /
-          #                 "Vega-TV-Canary-v4.0.6-192-<abi>.apk"
-          if [ "$CHANNEL" = "canary" ]; then
-            RELEASE_LABEL="Vega TV Canary"
-            APK_PREFIX="Vega-TV-Canary"
-            TAG_NAME="${VERSION_LABEL}-canary"
-          else
-            RELEASE_LABEL="Vega TV Stable"
-            APK_PREFIX="Vega-TV"
-            TAG_NAME="${VERSION_LABEL}"
+          # Version typed into the "Run workflow" dialog. A leading "v" is
+          # accepted and stripped (v5.2.0 -> 5.2.0).
+          TYPED="$(echo "$INPUT_VERSION" | tr -d '[:space:]')"
+          TYPED="${TYPED#v}"
+          if [ -n "$TYPED" ] && ! echo "$TYPED" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}$'; then
+            echo "::error::Invalid version '$TYPED'. Use something like 5.2.0"
+            exit 1
           fi
-          RELEASE_NAME="${RELEASE_LABEL} ${VERSION_LABEL}"
 
-          # Tags must be unique: a re-run of the same run number (same
-          # versionCode) gets an attempt suffix so it can't collide.
-          if [ "$RUN_ATTEMPT" -gt 1 ]; then
-            TAG_NAME="${TAG_NAME}.${RUN_ATTEMPT}"
-            RELEASE_NAME="${RELEASE_NAME} (attempt ${RUN_ATTEMPT})"
+          # Android versionCode: always grows, whatever the channel.
+          VERSION_CODE=$((100 + ${{ github.run_number }}))
+          CANARY_NUMBER=0
+
+          if [ "$CHANNEL" = "canary" ]; then
+            # Canary builds hang off a stable version: after stable 5.2.0 the
+            # next canaries are 5.2.0 (1), 5.2.0 (2), ... until the next
+            # stable version restarts the count.
+            if [ -n "$TYPED" ]; then
+              VERSION_NAME="$TYPED"
+            else
+              VERSION_NAME="$(git tag --list 'v[0-9]*' | grep -Ev -- '-canary' | sed 's/^v//' | sort -V | tail -n 1)"
+              if [ -z "$VERSION_NAME" ]; then
+                VERSION_NAME=$(node -p "require('./package.json').version || '5.0.1'")
+              fi
+            fi
+            LAST_N="$(git tag --list "v${VERSION_NAME}-canary.*" | sed "s/^v${VERSION_NAME}-canary\.//" | grep -E '^[0-9]+$' | sort -n | tail -n 1)"
+            CANARY_NUMBER=$(( ${LAST_N:-0} + 1 ))
+
+            DISPLAY_VERSION="${VERSION_NAME} (${CANARY_NUMBER})"
+            TAG_NAME="v${VERSION_NAME}-canary.${CANARY_NUMBER}"
+            RELEASE_NAME="Vega TV Canary v${DISPLAY_VERSION}"
+            APK_BASE="Vega-TV-Canary-v${VERSION_NAME}-${CANARY_NUMBER}"
+            PRERELEASE=true
+            MAKE_LATEST=false
+          else
+            if [ -n "$TYPED" ]; then
+              VERSION_NAME="$TYPED"
+            else
+              VERSION_NAME=$(node -p "require('./package.json').version || '5.0.1'")
+            fi
+            TAG_NAME="v${VERSION_NAME}"
+            if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
+              echo "::error::Release ${TAG_NAME} already exists. Enter a new version number."
+              exit 1
+            fi
+            DISPLAY_VERSION="${VERSION_NAME}"
+            RELEASE_NAME="Vega TV Stable v${VERSION_NAME}"
+            APK_BASE="Vega-TV-v${VERSION_NAME}"
+            PRERELEASE=false
+            MAKE_LATEST=true
+          fi
+
+          # The 4 newest changes since the previous release.
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"* %s (%h)" -n 4)
+          else
+            CHANGELOG=$(git log --pretty=format:"* %s (%h)" -n 4)
+          fi
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="* TV optimizations and bug fixes."
           fi
 
           echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
           echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "canary_number=$CANARY_NUMBER" >> $GITHUB_OUTPUT
+          echo "display_version=$DISPLAY_VERSION" >> $GITHUB_OUTPUT
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
-          echo "version_label=$VERSION_LABEL" >> $GITHUB_OUTPUT
-          echo "apk_prefix=$APK_PREFIX" >> $GITHUB_OUTPUT
+          echo "apk_base=$APK_BASE" >> $GITHUB_OUTPUT
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
-
-          # Canary is a prerelease and must never take over the repo's
-          # "Latest release" badge (that stays on the newest stable build) --
-          # both flags are required: prerelease alone still lets
-          # `make_latest: true`/auto-detection promote it, and
-          # make_latest:false alone would still show it without the
-          # Pre-release badge. This only affects the badge: the full Releases
-          # page lists stable and canary together, newest build first.
-          if [ "$CHANNEL" = "canary" ]; then
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-            echo "make_latest=false" >> $GITHUB_OUTPUT
-          else
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-            echo "make_latest=true" >> $GITHUB_OUTPUT
-          fi
-
-          git fetch --tags origin 2>/dev/null || true
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"* %s (%h)")
-          else
-            CHANGELOG=$(git log --pretty=format:"* %s (%h)" -n 10)
-          fi
-
-          if [ -z "$CHANGELOG" ]; then
-            CHANGELOG="* TV optimizations and bug fixes."
-          fi
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+          echo "make_latest=$MAKE_LATEST" >> $GITHUB_OUTPUT
 
           echo "changelog<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
@@ -224,6 +221,8 @@ jobs:
       - name: Generate Android Native Project
         env:
           APP_VARIANT: standalone
+          APP_CHANNEL: ${{ steps.release_meta.outputs.channel }}
+          APP_CANARY_NUMBER: ${{ steps.release_meta.outputs.canary_number }}
           APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
           APP_VERSION_NAME: ${{ steps.release_meta.outputs.version_name }}
         run: npx expo prebuild --platform android --clean --no-install
@@ -251,8 +250,8 @@ jobs:
       - name: Prepare APK Artifacts
         run: |
           mkdir -p output_apks
-          # e.g. Vega-TV-v4.0.6-191 or Vega-TV-Canary-v4.0.6-192
-          BASE="${{ steps.release_meta.outputs.apk_prefix }}-${{ steps.release_meta.outputs.version_label }}"
+          # e.g. Vega-TV-v5.2.0 or Vega-TV-Canary-v5.2.0-1
+          BASE="${{ steps.release_meta.outputs.apk_base }}"
 
           find android/app/build/outputs/apk/release -name "*.apk" -not -name "*unsigned*" | while read -r file; do
             filename=$(basename "$file")
@@ -288,7 +287,7 @@ jobs:
 
             ---
             * **Channel**: `${{ steps.release_meta.outputs.channel }}`
-            * **App Version**: `${{ steps.release_meta.outputs.version_name }}`
+            * **App Version**: `${{ steps.release_meta.outputs.display_version }}`
             * **Build Code (versionCode)**: `${{ steps.release_meta.outputs.version_code }}`
             * **Target Architecture**: Android TV (`armeabi-v7a`, `arm64-v8a`)
           files: output_apks/*.apk
