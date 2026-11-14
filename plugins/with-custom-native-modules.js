@@ -90,6 +90,7 @@ function withCustomNativeModules(config) {
       'LauncherIconPackage()',
       'VideoThumbnailPackage()',
       'PlaybackSessionPackage()',
+      'AppUpdatePackage()',
     ];
 
     for (const pkg of packagesToAdd) {
