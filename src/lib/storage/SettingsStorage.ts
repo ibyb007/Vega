@@ -19,6 +19,7 @@ const SETTINGS_KEYS = {
   TMDB_API_KEY_REVISION: 'tmdbApiKeyRevision',
   AUTO_CHECK_UPDATE: 'autoCheckUpdate',
   AUTO_DOWNLOAD_UPDATE: 'autoDownloadUpdate',
+  UPDATE_CHANNEL: 'updateChannel',
   SHOW_MEDIA_CONTROLS: 'showMediaControls',
   HIDE_SEEK_BUTTONS: 'hideSeekButtons',
   PLAYER_EPISODE_SIDEBAR: 'showPlayerEpisodeSidebar',
@@ -173,6 +174,17 @@ export class SettingsStorage {
 
   setAutoDownloadEnabled(enabled: boolean): void {
     MMKV.setBool(SETTINGS_KEYS.AUTO_DOWNLOAD_UPDATE, enabled);
+  }
+
+  // Update channel for the in-app updater (Settings > About). Empty until the
+  // user picks one; the caller falls back to the channel this build shipped on.
+  getUpdateChannel(): 'stable' | 'canary' | null {
+    const v = MMKV.getString(SETTINGS_KEYS.UPDATE_CHANNEL);
+    return v === 'stable' || v === 'canary' ? v : null;
+  }
+
+  setUpdateChannel(channel: 'stable' | 'canary'): void {
+    MMKV.setString(SETTINGS_KEYS.UPDATE_CHANNEL, channel);
   }
 
   getExcludedQualities(): string[] {
