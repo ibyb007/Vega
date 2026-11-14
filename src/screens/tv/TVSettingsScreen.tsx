@@ -13,6 +13,7 @@ import {
   TextInput,
   ActivityIndicator,
   findNodeHandle,
+  Image,
 } from 'react-native';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
@@ -41,6 +42,20 @@ import { showAppDialog } from '../../lib/zustand/appDialogStore';
 import useThemeStore from '../../lib/zustand/themeStore';
 import useAppDialogStore from '../../lib/zustand/appDialogStore';
 import useSettingsStore, { AudioBoostProfile } from '../../lib/zustand/settingsStore';
+import {
+  useUpdateStore,
+  checkForUpdates,
+  downloadAndInstallUpdate,
+  installDownloadedUpdate,
+  getInstalledDisplayVersion,
+  getUpdateChannel,
+  getBuildChannel,
+  type UpdateChannel,
+} from '../../lib/services/AppUpdater';
+import { AppUpdate } from '../../lib/native/AppUpdate';
+import { APP_DEVELOPER } from '../../lib/constants';
+
+const ABOUT_BANNER = require('../../../assets/about/vega-about-banner.png');
 
 const DOH_OPTIONS = [
   { id: 'cloudflare', name: 'Cloudflare (1.1.1.1)', desc: 'Fastest global resolution & bypass ISP throttling' },
@@ -268,6 +283,19 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   const [isWarpBusy, setIsWarpBusy] = useState(false);
   const [warpPort, setWarpPort] = useState<number | null>(null);
   const [isClearingCache, setIsClearingCache] = useState(false);
+
+  // About / updates
+  const updateStatus = useUpdateStore((st) => st.status);
+  const updateRelease = useUpdateStore((st) => st.release);
+  const updateProgress = useUpdateStore((st) => st.progress);
+  const updateError = useUpdateStore((st) => st.error);
+  const [updateChannel, setUpdateChannelState] = useState<UpdateChannel>(() => getUpdateChannel());
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState(() =>
+    settingsStorage.isAutoCheckUpdateEnabled(),
+  );
+  const [autoInstallUpdates, setAutoInstallUpdates] = useState(() =>
+    settingsStorage.isAutoDownloadEnabled(),
+  );
 
   const [byeDpiEnabled, setByeDpiEnabled] = useState(false);
   const [isByeDpiBusy, setIsByeDpiBusy] = useState(false);
@@ -579,6 +607,61 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     );
   };
 
+  const handleUpdateRow = () => {
+    if (!AppUpdate.available) {
+      ToastAndroid.show('Updates are not available in this build', ToastAndroid.SHORT);
+      return;
+    }
+    switch (updateStatus) {
+      case 'checking':
+      case 'downloading':
+        return;
+      case 'available':
+        downloadAndInstallUpdate();
+        return;
+      case 'ready':
+        installDownloadedUpdate();
+        return;
+      default:
+        checkForUpdates().then((release) => {
+          const { status, error } = useUpdateStore.getState();
+          if (release) {
+            ToastAndroid.show(`Update found: ${release.displayVersion}`, ToastAndroid.LONG);
+          } else if (status === 'uptodate') {
+            ToastAndroid.show('You are on the latest version', ToastAndroid.SHORT);
+          } else if (error) {
+            ToastAndroid.show(error, ToastAndroid.LONG);
+          }
+        });
+    }
+  };
+
+  const toggleUpdateChannel = () => {
+    const next: UpdateChannel = updateChannel === 'stable' ? 'canary' : 'stable';
+    setUpdateChannelState(next);
+    settingsStorage.setUpdateChannel(next);
+    // The old result belongs to the other channel.
+    useUpdateStore.getState().set({ status: 'idle', release: null, error: null });
+    ToastAndroid.show(
+      next === 'canary' ? 'Update channel: Canary (test builds)' : 'Update channel: Stable',
+      ToastAndroid.SHORT,
+    );
+  };
+
+  const toggleAutoCheckUpdates = () => {
+    const next = !autoCheckUpdates;
+    setAutoCheckUpdates(next);
+    settingsStorage.setAutoCheckUpdateEnabled(next);
+    ToastAndroid.show(`Automatic update check ${next ? 'on' : 'off'}`, ToastAndroid.SHORT);
+  };
+
+  const toggleAutoInstallUpdates = () => {
+    const next = !autoInstallUpdates;
+    setAutoInstallUpdates(next);
+    settingsStorage.setAutoDownloadEnabled(next);
+    ToastAndroid.show(`Install updates automatically ${next ? 'on' : 'off'}`, ToastAndroid.SHORT);
+  };
+
   // ---- ONE focus target, cursor kept in JS ----------------------------------
   // Native focus used to travel row to row. Under a held Down key that kept
   // ending with focus thrown out to the side rail (or looping back up the
@@ -617,6 +700,10 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     ['tmdb-key'],
     ['clear-cache'],
     ['erase-data'],
+    ['update-check'],
+    ['update-channel'],
+    ['update-auto-check'],
+    ['update-auto-install'],
   ];
   const linesRef = useRef(lines);
   linesRef.current = lines;
@@ -631,6 +718,10 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
     'tmdb-key': openTmdbModal,
     'clear-cache': handleClearCache,
     'erase-data': confirmEraseAllLocalData,
+    'update-check': handleUpdateRow,
+    'update-channel': toggleUpdateChannel,
+    'update-auto-check': toggleAutoCheckUpdates,
+    'update-auto-install': toggleAutoInstallUpdates,
   };
   AUDIO_PROFILES.forEach((p) => {
     actions[`audio-${p.id}`] = () => handleSelectAudioProfile(p.id);
@@ -790,6 +881,38 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
   if (!(hostReactKey in preferredOnMountRef.current)) {
     preferredOnMountRef.current[hostReactKey] = shouldPreferFocus(SETTINGS_HOST_KEY, true);
   }
+
+  const pct = Math.round(updateProgress * 100);
+  const updateTitle =
+    updateStatus === 'checking'
+      ? 'Checking for updates...'
+      : updateStatus === 'available' && updateRelease
+      ? `Update available: ${updateRelease.displayVersion}`
+      : updateStatus === 'downloading'
+      ? `Downloading update... ${pct}%`
+      : updateStatus === 'ready'
+      ? 'Update downloaded'
+      : updateStatus === 'uptodate'
+      ? 'You are up to date'
+      : 'Check for updates';
+  const updateSubtitle =
+    updateStatus === 'available' && updateRelease
+      ? `Press OK to download and install.${updateRelease.notes ? `\n${updateRelease.notes}` : ''}`
+      : updateStatus === 'ready'
+      ? 'Press OK to open the installer.'
+      : updateStatus === 'error' && updateError
+      ? updateError
+      : updateStatus === 'downloading'
+      ? 'The installer opens when the download finishes.'
+      : `Looks for a newer build on the ${updateChannel === 'canary' ? 'Canary' : 'Stable'} channel.`;
+  const updateIcon =
+    updateStatus === 'available' || updateStatus === 'ready'
+      ? 'download'
+      : updateStatus === 'error'
+      ? 'alert-circle-outline'
+      : updateStatus === 'uptodate'
+      ? 'check-circle-outline'
+      : 'update';
 
   const tmdbStatusLine = savedTmdbKey
     ? `Custom key active (ending ${savedTmdbKey.slice(-4)})`
@@ -1368,6 +1491,155 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
           </View>
         )}
       </CursorRow>
+
+      {/* About & Updates Section */}
+      <Text style={styles.sectionHeader}>About</Text>
+      <View style={styles.aboutCard}>
+        <Image source={ABOUT_BANNER} style={styles.aboutBanner} resizeMode="contain" />
+        <Text style={styles.aboutDeveloper}>Developed by {APP_DEVELOPER}</Text>
+        <Text style={styles.aboutVersion}>Version {getInstalledDisplayVersion()}</Text>
+        <Text style={styles.aboutMeta}>
+          {getBuildChannel() === 'canary' ? 'Canary build' : 'Stable build'}
+        </Text>
+        <Text style={styles.aboutMeta}>Based on Vega App by himanshu8443.</Text>
+      </View>
+
+      <CursorRow
+        key="update-check"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="update-check"
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        style={[
+          styles.settingCard,
+          (updateStatus === 'available' || updateStatus === 'ready') && { borderColor: primaryColor },
+        ]}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View
+              style={[
+                styles.iconContainer,
+                {
+                  backgroundColor:
+                    updateStatus === 'available' || updateStatus === 'ready' ? primaryColor : '#252530',
+                },
+              ]}
+            >
+              <MaterialCommunityIcons name={updateIcon as any} size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <Text style={styles.settingTitle}>{updateTitle}</Text>
+              <Text style={styles.settingSubtitle}>{updateSubtitle}</Text>
+              {updateStatus === 'downloading' && (
+                <View style={styles.progressTrack}>
+                  <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: primaryColor }]} />
+                </View>
+              )}
+            </View>
+            {updateStatus === 'checking' || updateStatus === 'downloading' ? (
+              <ActivityIndicator size="small" color={primaryColor} />
+            ) : (
+              <MaterialCommunityIcons name="chevron-right" size={22} color="#9CA3AF" />
+            )}
+          </View>
+        )}
+      </CursorRow>
+
+      <CursorRow
+        key="update-channel"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="update-channel"
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        style={styles.settingCard}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View style={[styles.iconContainer, { backgroundColor: '#252530' }]}>
+              <MaterialCommunityIcons name="source-branch" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <Text style={styles.settingTitle}>Update Channel</Text>
+              <Text style={styles.settingSubtitle}>
+                Stable: regular releases only. Canary: also test builds, which may be unstable.
+              </Text>
+            </View>
+            <Text style={[styles.channelValue, { color: primaryColor }]}>
+              {updateChannel === 'canary' ? 'Canary' : 'Stable'}
+            </Text>
+          </View>
+        )}
+      </CursorRow>
+
+      <CursorRow
+        key="update-auto-check"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="update-auto-check"
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        style={styles.settingCard}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View style={[styles.iconContainer, { backgroundColor: autoCheckUpdates ? primaryColor : '#252530' }]}>
+              <MaterialCommunityIcons name="bell-ring-outline" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <Text style={styles.settingTitle}>Automatic Update Prompt</Text>
+              <Text style={styles.settingSubtitle}>
+                Check for a new version when the app starts and show a prompt if one is available.
+              </Text>
+            </View>
+            <Switch
+              value={autoCheckUpdates}
+              focusable={false}
+              pointerEvents="none"
+              thumbColor={autoCheckUpdates ? primaryColor : '#9CA3AF'}
+              trackColor={{ false: '#374151', true: 'rgba(138, 92, 246, 0.4)' }}
+            />
+          </View>
+        )}
+      </CursorRow>
+
+      <CursorRow
+        key="update-auto-install"
+        store={cursor}
+        nodes={rowNodesRef}
+        rowKey="update-auto-install"
+        scaleFocused={1.02}
+        focusedBorderColor={primaryColor}
+        borderRadius={12}
+        style={styles.settingCard}
+      >
+        {() => (
+          <View style={styles.cardRow}>
+            <View style={[styles.iconContainer, { backgroundColor: autoInstallUpdates ? primaryColor : '#252530' }]}>
+              <MaterialCommunityIcons name="download-circle-outline" size={24} color="#FFFFFF" />
+            </View>
+            <View style={styles.textContainer}>
+              <Text style={styles.settingTitle}>Install Updates Automatically</Text>
+              <Text style={styles.settingSubtitle}>
+                Download new versions without asking and open the installer. Android still asks you
+                to confirm the install.
+              </Text>
+            </View>
+            <Switch
+              value={autoInstallUpdates}
+              focusable={false}
+              pointerEvents="none"
+              thumbColor={autoInstallUpdates ? primaryColor : '#9CA3AF'}
+              trackColor={{ false: '#374151', true: 'rgba(138, 92, 246, 0.4)' }}
+            />
+          </View>
+        )}
+      </CursorRow>
       </View>
     </ScrollView>
     </Pressable>
@@ -1520,6 +1792,53 @@ const styles = StyleSheet.create({
     color: '#E5E7EB',
     fontSize: 14,
     fontWeight: '600',
+  },
+  aboutCard: {
+    backgroundColor: '#111116',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  aboutBanner: {
+    width: 330,
+    height: 138,
+    marginBottom: 8,
+  },
+  aboutDeveloper: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  aboutVersion: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  aboutMeta: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
+  channelValue: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: 6,
+    borderRadius: 3,
   },
   // ---- TMDB key dialog (mirrors the Discover screen's catalog dialogs) ----
   modalOverlay: {
