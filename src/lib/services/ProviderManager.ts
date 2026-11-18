@@ -111,6 +111,30 @@ export class ProviderManager {
     }
     return value as T[];
   }
+
+  /**
+   * Reads `catalog` / `genres` from a catalog module. Most providers export
+   * plain arrays, but dynamic providers (e.g. LiveTG TV, whose groups come from
+   * a remote playlist) export `async (params) => Catalog[]`. Functions cannot
+   * cross the sandbox bridge, so a tiny export is appended to the module that
+   * resolves either shape inside the sandbox and returns serializable data.
+   */
+  private async loadCatalogExport(
+    catalogModule: string,
+    providerValue: string,
+    which: 'catalog' | 'genres',
+  ): Promise<unknown> {
+    const wrapped =
+      `${catalogModule}\n;module.exports.__vegaCatalogExport = async function (args) {` +
+      ` var value = module.exports[args.__which];` +
+      ` return typeof value === 'function' ? await value(args) : value; };`;
+    return this.executeModule<unknown>(
+      wrapped,
+      providerValue,
+      '__vegaCatalogExport',
+      {__which: which, providerValue},
+    );
+  }
   getCatalog = async ({
     providerValue,
   }: {
@@ -121,15 +145,12 @@ export class ProviderManager {
       return [];
     }
     try {
-      const moduleExports = await this.executeModule<{catalog?: Catalog[]}>(
+      const catalog = await this.loadCatalogExport(
         catalogModule,
-        providerValue,
-      );
-      return this.requireArray<Catalog>(
-        moduleExports?.catalog ?? [],
         providerValue,
         'catalog',
       );
+      return this.requireArray<Catalog>(catalog ?? [], providerValue, 'catalog');
     } catch (error) {
       console.error('Error loading catalog:', error);
       throw new Error(
@@ -150,15 +171,12 @@ export class ProviderManager {
       return [];
     }
     try {
-      const moduleExports = await this.executeModule<{genres?: Catalog[]}>(
+      const genres = await this.loadCatalogExport(
         catalogModule,
-        providerValue,
-      );
-      return this.requireArray<Catalog>(
-        moduleExports?.genres ?? [],
         providerValue,
         'genres',
       );
+      return this.requireArray<Catalog>(genres ?? [], providerValue, 'genres');
     } catch (error) {
       console.error('Error loading genres:', error);
       throw new Error(
