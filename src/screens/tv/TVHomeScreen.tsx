@@ -44,6 +44,13 @@ import {
 } from '../../lib/services/cinemetaService';
 import { TVRoute } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
+import {
+  LiveGlassCard,
+  LIVE_CARD_WIDTH,
+  LIVE_CARD_HEIGHT,
+  LIVE_CARD_RADIUS,
+} from '../../components/tv/LiveGlassCard';
+import { isLiveProvider } from '../../lib/player/drm';
 
 const ROW_HEIGHT = 235;
 
@@ -270,6 +277,8 @@ const HomeCard = React.memo(function HomeCard({
   const shouldFocus = lastFocusedKey ? lastFocusedKey === itemKey : isTopRow && isFirstInRow;
 
   const posterImage = item.poster || item.background || item.image;
+  // Live TV channels: wide glass card with an uncropped logo.
+  const isLive = !isHistoryRow && isLiveProvider(item.provider);
   const progressPercent =
     item.duration && item.position
       ? Math.min(100, Math.round((item.position / item.duration) * 100))
@@ -361,14 +370,25 @@ const HomeCard = React.memo(function HomeCard({
       hasTVPreferredFocus={shouldFocus}
       scaleFocused={1.05}
       focusedBorderColor="#FFFFFF"
-      borderRadius={8}
+      borderRadius={isLive ? LIVE_CARD_RADIUS : 8}
       delayLongPress={350}
       onFocus={handleFocus}
       onPress={handlePress}
       onLongPress={handleLongPress}
-      style={[styles.card, isHistoryRow && styles.cardCompact]}
+      style={[
+        styles.card,
+        isHistoryRow && styles.cardCompact,
+        isLive && styles.cardLive,
+      ]}
     >
-      {({ focused }) => (
+      {({ focused }) => isLive ? (
+        <LiveGlassCard
+          title={item.title}
+          image={item.image || item.poster}
+          badge={item.tag}
+          focused={focused}
+        />
+      ) : (
         <View style={styles.cardInner}>
           <Image
             source={{
@@ -772,8 +792,11 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         const id = String(ds?.imdb_id || ds?.id || '').trim();
         return /^tt\d+$/i.test(id) ? id.toLowerCase() : null;
       })();
+      const isLiveItem = isLiveProvider(targetProvider);
       const enrichKey =
-        isHistory && ds && dsImdb
+        isLiveItem
+          ? null
+          : isHistory && ds && dsImdb
           ? `discover::${dsImdb}`
           : !hasSourceBackdrop && targetUrl && targetProvider
             ? `${targetProvider}::${targetUrl}`
@@ -1405,6 +1428,12 @@ const styles = StyleSheet.create({
   cardCompact: {
     width: 125,
     height: 180,
+  },
+  cardLive: {
+    width: LIVE_CARD_WIDTH,
+    height: LIVE_CARD_HEIGHT,
+    backgroundColor: 'transparent',
+    borderRadius: LIVE_CARD_RADIUS,
   },
   cardInner: {
     flex: 1,
