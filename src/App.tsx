@@ -15,7 +15,7 @@ import { syncWarpSettings } from './lib/services/warpService';
 import { syncByeDpiSettings } from './lib/services/byeDpiService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
 import useContentStore from './lib/zustand/contentStore';
-import type { TextTracks, SkipInterval } from './lib/providers/types';
+import type { TextTracks, SkipInterval, StreamDrm } from './lib/providers/types';
 import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH, TVRoute } from './lib/native/NavRail';
 import { updateDetailsReturnEpisode } from './lib/tv/detailsReturnState';
 import { settingsStorage } from './lib/storage';
@@ -50,8 +50,8 @@ export interface ActiveStreamPayload {
   linkTitle?: string;
   episodes?: any[];
   currentEpisodeIndex?: number;
-  servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
-  qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
+  servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; drm?: StreamDrm; server?: string; quality?: string; tags?: string[] }[];
+  qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; drm?: StreamDrm; server?: string; quality?: string; tags?: string[] }[];
   skip?: SkipInterval[];
   // Passed straight through to TVPlayerScreen's TheIntroDB lookup.
   tmdbId?: number | string;
@@ -62,6 +62,7 @@ export interface ActiveStreamPayload {
   mediaYear?: string | number;
   headers?: Record<string, string>;
   sourceType?: string;
+  drm?: StreamDrm;
   subtitles?: TextTracks;
   startPosition?: number;
   // Present only when this stream was launched from the Discover screen's
@@ -376,6 +377,7 @@ export default function App() {
                     linkTitle={activeStream.linkTitle}
                     headers={activeStream.headers}
                     sourceType={activeStream.sourceType}
+                    drm={activeStream.drm}
                     subtitles={activeStream.subtitles}
                     episodes={activeStream.episodes}
                     currentEpisodeIndex={activeStream.currentEpisodeIndex}
@@ -422,6 +424,7 @@ export default function App() {
                               episodeId: nextEpisodeId,
                               headers: nextEp.headers,
                               sourceType: nextEp.sourceType,
+                              drm: nextEp.drm,
                               subtitles: nextEp.subtitles,
                               qualities: nextEp.qualities,
                               skip: nextEp.skip,
