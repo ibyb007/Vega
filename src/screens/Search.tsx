@@ -12,6 +12,13 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import LinearGradient from 'react-native-linear-gradient';
 import { TVFocusablePressable } from '../components/tv/TVFocusablePressable';
 import { registerRailLeftEdge } from '../lib/tv/registerRailLeftEdge';
+import {
+  LiveGlassCard,
+  LIVE_CARD_WIDTH,
+  LIVE_CARD_HEIGHT,
+  LIVE_CARD_RADIUS,
+} from '../components/tv/LiveGlassCard';
+import { isLiveProvider } from '../lib/player/drm';
 import { useTVEntryFocus } from '../lib/tv/useTVEntryFocus';
 import useContentStore from '../lib/zustand/contentStore';
 import { providerManager } from '../lib/services/ProviderManager';
@@ -684,7 +691,7 @@ export default function TVSearch({
                             hasTVPreferredFocus={preferFocus(posterKey)}
                             scaleFocused={1.08}
                             focusedBorderColor="#8A5CF6"
-                            borderRadius={10}
+                            borderRadius={isLiveProvider(group.provider.value) ? LIVE_CARD_RADIUS : 10}
                             onFocus={() => {
                               lastFocusedSearchKey = posterKey;
                               setActiveHero({
@@ -695,9 +702,19 @@ export default function TVSearch({
                               });
                             }}
                             onPress={() => onSelectItem(item)}
-                            style={styles.card}
+                            style={[
+                              styles.card,
+                              isLiveProvider(group.provider.value) && styles.cardLive,
+                            ]}
                           >
-                            {({ focused }) => (
+                            {({ focused }) => isLiveProvider(group.provider.value) ? (
+                              <LiveGlassCard
+                                title={item.title}
+                                image={item.image}
+                                badge={item.tag}
+                                focused={focused}
+                              />
+                            ) : (
                               <View style={styles.cardInner}>
                                 <Image
                                   source={{
@@ -963,6 +980,12 @@ const styles = StyleSheet.create({
     height: 218,
     backgroundColor: '#16161E',
     borderRadius: 10,
+  },
+  cardLive: {
+    width: LIVE_CARD_WIDTH,
+    height: LIVE_CARD_HEIGHT,
+    backgroundColor: 'transparent',
+    borderRadius: LIVE_CARD_RADIUS,
   },
   cardInner: {
     flex: 1,
