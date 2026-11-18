@@ -23,6 +23,24 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
   }
 };
 
+
+// LiveTG TV: the sports group should be the first row on the home screen.
+// "Live Sports" wins over any other group with "sport" in its name; the rest
+// keep their original order (Array.prototype.sort is stable on Hermes/V8).
+const sportsRank = (item: Catalog): number => {
+  const title = item.title || '';
+  if (/live\s*sports?/i.test(title)) {
+    return 0;
+  }
+  return /sports?/i.test(title) ? 1 : 2;
+};
+
+const prioritizeSportsRow = (catalogs: Catalog[]): Catalog[] =>
+  catalogs
+    .map((item, index) => ({item, index}))
+    .sort((a, b) => sportsRank(a.item) - sportsRank(b.item) || a.index - b.index)
+    .map(({item}) => item);
+
 export class ProviderManager {
   private readonly providerState = new Map<string, Record<string, unknown>>();
   private readonly settingsSchemaCache = new Map<string, SettingsField[]>();
@@ -150,7 +168,12 @@ export class ProviderManager {
         providerValue,
         'catalog',
       );
-      return this.requireArray<Catalog>(catalog ?? [], providerValue, 'catalog');
+      const list = this.requireArray<Catalog>(
+        catalog ?? [],
+        providerValue,
+        'catalog',
+      );
+      return providerValue === 'liveTgTv' ? prioritizeSportsRow(list) : list;
     } catch (error) {
       console.error('Error loading catalog:', error);
       throw new Error(
