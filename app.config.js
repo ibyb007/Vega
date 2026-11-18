@@ -28,6 +28,7 @@ module.exports = () => {
     './plugins/with-apk-size.js',
     './plugins/with-android-signing.js',
     './plugins/with-android-okhttp.js',
+    './plugins/with-clearkey-drm.js',
     './plugins/with-app-update.js',
     [
       'react-native-video',
