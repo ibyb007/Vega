@@ -1468,6 +1468,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           url: s.link,
           headers: s.headers,
           sourceType: s.type,
+          drm: s.drm,
           server: s.server,
           quality: s.quality,
           tags: (() => {
@@ -1586,6 +1587,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           skip: best.skip,
           headers: best.headers,
           sourceType: best.type,
+          drm: best.drm,
           subtitles: best.subtitles,
           // Marks any Continue Watching entry this session produces as
           // having come from this Discover results view, so Home's card
