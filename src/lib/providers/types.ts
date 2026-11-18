@@ -15,6 +15,11 @@ export interface Post {
   link: string;
   image: string;
   provider?: string;
+  // Optional card hints (used by Live TV style providers).
+  aspectRatio?: number | string;
+  borderRadius?: number;
+  tag?: string;
+  cornerTag?: string;
 }
 
 export declare enum TextTrackType {
@@ -37,13 +42,30 @@ export interface SkipInterval {
 }
 
 // getStream
+/** JSON-serializable DRM configuration returned by a provider. */
+export interface StreamDrm {
+  type: 'widevine' | 'playready' | 'clearkey' | 'fairplay';
+  licenseServer?: string;
+  /** License request headers, separate from stream/manifest headers. */
+  headers?: Record<string, string>;
+  /** ClearKey key IDs mapped to keys, both 32-character hexadecimal strings. */
+  clearKeys?: Record<string, string>;
+  multiDrm?: boolean;
+  contentId?: string;
+  certificateUrl?: string;
+  base64Certificate?: boolean;
+}
+
 export interface Stream {
   server: string;
   link: string;
   type: string;
-  quality?: '360' | '480' | '720' | '1080' | '2160';
+  quality?: '360' | '480' | '720' | '1080' | '2160' | string;
+  tag?: string;
+  tags?: string[];
   subtitles?: TextTracks;
   headers?: any;
+  drm?: StreamDrm;
   skip?: SkipInterval[];
 }
 
