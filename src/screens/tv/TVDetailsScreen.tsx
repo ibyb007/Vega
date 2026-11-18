@@ -41,7 +41,7 @@ import {
   saveDetailsReturnState,
   sourceRowKey,
 } from '../../lib/tv/detailsReturnState';
-import type { Info, Link, EpisodeLink, TextTracks } from '../../lib/providers/types';
+import type { Info, Link, EpisodeLink, TextTracks, StreamDrm } from '../../lib/providers/types';
 
 // The TV settings screen's 'exo' | 'vlc' | 'system' options map onto
 // `PlayerLauncher`'s choices ('exoplayer' being the internal player).
@@ -433,10 +433,11 @@ interface TVDetailsScreenProps {
       // provider has none (see lib/services/tmdbIdResolver.ts).
       mediaTitle?: string;
       mediaYear?: string | number;
-      servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
-      qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; server?: string; quality?: string; tags?: string[] }[];
+      servers?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; drm?: StreamDrm; server?: string; quality?: string; tags?: string[] }[];
+      qualities?: { name: string; url: string; headers?: Record<string, string>; sourceType?: string; drm?: StreamDrm; server?: string; quality?: string; tags?: string[] }[];
       headers?: Record<string, string>;
       sourceType?: string;
+      drm?: StreamDrm;
       subtitles?: TextTracks;
       startPosition?: number;
       // Exact dropdown label active when this stream was launched -- see
@@ -1197,7 +1198,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           : resumeHint?.position;
 
         const playerPref = settingsStorage.getDefaultPlayer();
-        if (playerPref !== 'exo') {
+        // DRM-protected streams (ClearKey/Widevine) can only be played by the
+        // built-in player, so external players are skipped for them.
+        if (playerPref !== 'exo' && !streams.every((s) => s.drm)) {
           // Mirrors the mobile app's SeasonList server-picker modal: show
           // every resolved server/quality and let the person choose which
           // one actually gets handed off to the external player, instead
@@ -1206,7 +1209,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           setServerPicker({
             title: streamTitle,
             player: toPlayerChoice(playerPref),
-            options: streams.map((s, idx) => ({
+            options: streams.filter((s) => !s.drm).map((s, idx) => ({
               name: s.quality ? `${s.quality}p${s.server ? ` — ${s.server}` : ''}` : s.server || `Source ${idx + 1}`,
               url: s.link,
               headers: s.headers,
@@ -1222,6 +1225,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           url: s.link,
           headers: s.headers,
           sourceType: s.type,
+          drm: s.drm,
           // Shown in the player's quality picker (server name, quality and
           // provider tags), like the mobile app's server list.
           server: s.server,
@@ -1274,6 +1278,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           skip: best.skip,
           headers: best.headers,
           sourceType: best.type,
+          drm: best.drm,
           subtitles: best.subtitles,
           startPosition,
         });
