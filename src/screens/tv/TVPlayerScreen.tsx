@@ -44,7 +44,8 @@ import { mixHex } from '../../theme/seeds';
 import { resolveTmdbId } from '../../lib/services/tmdbIdResolver';
 import { useTorrentPlayback } from '../../lib/hooks/useTorrentPlayback';
 import type { IntroDbSegment } from '../../lib/services/theIntroDbService';
-import type { EpisodeLink, TextTracks, SkipInterval } from '../../lib/providers/types';
+import type { EpisodeLink, TextTracks, SkipInterval, StreamDrm } from '../../lib/providers/types';
+import { toVideoDrm, isLiveProvider } from '../../lib/player/drm';
 
 // Credits that start before this fraction of the runtime are treated as bad
 // community data for the "Up Next" trigger -- firing the popup mid-episode
@@ -262,7 +263,7 @@ const remapOptions = (options: StreamOption[], fresh: any[]): StreamOption[] =>
   options.map((o) => {
     const match = matchSameServer(fresh, o);
     return match?.link
-      ? { ...o, url: match.link, headers: match.headers, sourceType: match.type }
+      ? { ...o, url: match.link, headers: match.headers, sourceType: match.type, drm: match.drm }
       : o;
   });
 
@@ -419,6 +420,7 @@ interface StreamOption {
   url: string;
   headers?: Record<string, string>;
   sourceType?: string;
+  drm?: StreamDrm;
   // Extra info shown in the picker (same fields the mobile server list shows).
   server?: string;
   quality?: string;
@@ -428,6 +430,7 @@ interface StreamOption {
 interface ResolvedNextEpisode extends EpisodeItem {
   headers?: Record<string, string>;
   sourceType?: string;
+  drm?: StreamDrm;
   subtitles?: TextTracks;
   qualities?: StreamOption[];
   // Absolute index into `episodes` this resolves to. Omitted for a plain
@@ -450,6 +453,7 @@ interface TVPlayerScreenProps {
   linkTitle?: string;
   headers?: Record<string, string>;
   sourceType?: string;
+  drm?: StreamDrm;
   subtitles?: TextTracks;
   episodes?: EpisodeItem[];
   currentEpisodeIndex?: number;
@@ -497,6 +501,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   linkTitle,
   headers,
   sourceType,
+  drm,
   subtitles,
   episodes = [],
   currentEpisodeIndex = 0,
@@ -580,6 +585,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
   const [activeMediaUrl, setActiveMediaUrl] = useState<string>(streamUrl);
   const [activeHeaders, setActiveHeaders] = useState<Record<string, string> | undefined>(headers);
   const [activeSourceType, setActiveSourceType] = useState<string | undefined>(sourceType);
+  const [activeDrm, setActiveDrm] = useState<StreamDrm | undefined>(drm);
   const [resolvingNextEpisode, setResolvingNextEpisode] = useState(false);
   const [activeSkip, setActiveSkip] = useState<SkipInterval[] | undefined>(skip);
   const [showEpisodesList, setShowEpisodesList] = useState(false);
@@ -760,6 +766,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       setActiveMediaUrl(streamUrl);
       setActiveHeaders(headers);
       setActiveSourceType(sourceType);
+      setActiveDrm(drm);
       setActiveSkip(skip);
       setBuffering(true);
       setCurrentTime(0);
@@ -772,7 +779,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       if (skipPopupHideTimer.current) clearTimeout(skipPopupHideTimer.current);
       setActiveSkipPopup(null);
     }
-  }, [streamUrl, headers, sourceType, skip]);
+  }, [streamUrl, headers, sourceType, drm, skip]);
 
   // Looks up TheIntroDB for whatever intro/recap/outro markers the provider's
   // own `skip` array didn't already supply. Runs whenever the stream or
@@ -948,9 +955,13 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
     setActiveMediaUrl(next.url);
     setActiveHeaders(next.headers);
     setActiveSourceType(next.sourceType);
+    setActiveDrm(next.drm);
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeMediaUrl, qualities, servers]);
+
+  // Provider DRM (ClearKey / Widevine) -> react-native-video's `source.drm`.
+  const videoDrm = useMemo(() => toVideoDrm(activeDrm), [activeDrm]);
 
   const videoSource = useMemo(
     () => ({
@@ -958,8 +969,9 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
       headers: torrent.isTorrent ? undefined : activeHeaders,
       ...(activeSourceType === 'm3u8' ? { type: 'm3u8' as const } : {}),
       ...(activeSourceType === 'mpd' ? { type: 'mpd' as const } : {}),
+      ...(videoDrm ? { drm: videoDrm } : {}),
     }),
-    [playableUrl, torrent.isTorrent, activeHeaders, activeSourceType]
+    [playableUrl, torrent.isTorrent, activeHeaders, activeSourceType, videoDrm]
   );
 
   const autoSelectEnglishSubtitle = useCallback((tracks: any[]) => {
@@ -1013,6 +1025,8 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   const syncProgressToStore = useCallback(
     (timeSec: number, totalDur: number) => {
+      // Live TV channels have no meaningful position/duration to resume.
+      if (isLiveProvider(providerValue)) return;
       if (totalDur <= 0 || timeSec <= 0 || !continueWatchingId) return;
 
       const isSeries = episodes.length > 0;
@@ -1538,6 +1552,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         url: s.link,
         headers: s.headers,
         sourceType: s.type,
+        drm: s.drm,
         server: s.server,
         quality: s.quality,
         tags: extractStreamTags(s),
@@ -1549,6 +1564,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
         url: best.link,
         headers: best.headers,
         sourceType: best.type,
+        drm: best.drm,
         subtitles: best.subtitles,
         qualities: qualList,
         skip: best.skip,
@@ -2049,6 +2065,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
               setActiveMediaUrl(fresh.link);
               setActiveHeaders(fresh.headers);
               setActiveSourceType(fresh.type);
+              setActiveDrm(fresh.drm);
               return;
             }
           }
@@ -2728,6 +2745,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                         setActiveMediaUrl(srv.url);
                         setActiveHeaders(srv.headers);
                         setActiveSourceType(srv.sourceType);
+                        setActiveDrm(srv.drm);
                         onSelectServer?.(srv.url);
                         usePlaybackPrefsStore.getState().setSource(continueWatchingId, srv);
                         setActiveDialog(null);
@@ -2766,6 +2784,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                           setActiveMediaUrl(q.url);
                           setActiveHeaders(q.headers);
                           setActiveSourceType(q.sourceType);
+                          setActiveDrm(q.drm);
                           onSelectQuality?.(q.url);
                           usePlaybackPrefsStore.getState().setSource(continueWatchingId, q);
                           setActiveDialog(null);
