@@ -313,6 +313,9 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   ratingBadge: {
     backgroundColor: '#F59E0B',
@@ -329,6 +332,9 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '500',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   overview: {
     color: '#FFFFFF',
