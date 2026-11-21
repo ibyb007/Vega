@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -48,6 +48,11 @@ const EPISODE_ROW_PAD_H = 8;
 // in TVDiscoverScreen); the episode row runs off the right edge from there.
 const RESULTS_LEFT_INSET = 48;
 const BACK_SIZE = 44;
+// Credits strip: photo size and the strip's explicit height.
+const CREDIT_PHOTO = 104;
+const CREDIT_ROW_H = 190;
+// Right gutter of the results page (CONTAINER_PADDING_RIGHT in TVDiscoverScreen).
+const RESULTS_RIGHT_INSET = 56;
 
 // "125" -> "2h 5m", "59" -> "59m".
 const formatMinutes = (min: number | undefined): string | undefined => {
@@ -168,7 +173,13 @@ const EpisodeCardBody = React.memo(function EpisodeCardBody({
 
 // One director / cast member: round photo (initials when there is none), name
 // and role. Focusable so D-pad Down from the episode row can reach the section.
-const CreditItem = React.memo(function CreditItem({ person }: { person: CreditPerson }) {
+const CreditItem = React.memo(function CreditItem({
+  person,
+  onFocus,
+}: {
+  person: CreditPerson;
+  onFocus: () => void;
+}) {
   const [photoFailed, setPhotoFailed] = useState(false);
   const initials = person.name
     .split(/\s+/)
@@ -181,6 +192,7 @@ const CreditItem = React.memo(function CreditItem({ person }: { person: CreditPe
       scaleFocused={1.06}
       focusedBorderColor="#8A5CF6"
       borderRadius={14}
+      onFocus={onFocus}
       style={local.creditItem}
     >
       {() => (
@@ -424,7 +436,9 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
             photo: typeof p.photo === 'string' && p.photo ? p.photo : undefined,
           }
         : null;
-    const directorRole = isSeries ? 'Creator' : 'Director';
+    // Cinemeta's `director` field lists directors, never series creators, so
+    // they stay "Director" even for a series. (Real creators come from TMDB.)
+    const directorRole = 'Director';
     let cast = (Array.isArray(extras?.cast) ? extras.cast : [])
       .map((p: any) => toPerson(p))
       .filter(Boolean) as CreditPerson[];
@@ -445,32 +459,62 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
       const names: string[] = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
       directors = names.filter(Boolean).map((name) => ({ name, role: directorRole }));
     }
-    return { directors: directors.slice(0, 2), cast: cast.slice(0, 7) };
-  }, [sourceCinemetaMeta, resultsTarget?.cast, sourceInfo?.cast, isSeries]);
-  const cinemetaHasPhotos = cinemetaCredits.cast.some((p) => Boolean(p.photo));
+    return { directors: directors.slice(0, 2), writers: [], cast: cast.slice(0, 15) };
+  }, [sourceCinemetaMeta, resultsTarget?.cast, sourceInfo?.cast]);
 
   useEffect(() => {
     let alive = true;
     setTmdbCredits(null);
-    if (!tmdbIdentity || cinemetaHasPhotos) {
+    if (!tmdbIdentity) {
       return () => {
         alive = false;
       };
     }
-    fetchTmdbCredits(tmdbIdentity, 7).then((result) => {
+    fetchTmdbCredits(tmdbIdentity, 15).then((result) => {
       if (alive) setTmdbCredits(result);
     });
     return () => {
       alive = false;
     };
-  }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType, cinemetaHasPhotos]);
+  }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType]);
 
   const credits: TmdbCredits = useMemo(
     () => ({
       directors: (tmdbCredits?.directors.length ? tmdbCredits.directors : cinemetaCredits.directors).slice(0, 2),
-      cast: (tmdbCredits?.cast.length ? tmdbCredits.cast : cinemetaCredits.cast).slice(0, 7),
+      writers: [],
+      cast: (tmdbCredits?.cast.length ? tmdbCredits.cast : cinemetaCredits.cast).slice(0, 15),
     }),
     [tmdbCredits, cinemetaCredits],
+  );
+
+  // Credits strip: one horizontal row (directors / creators, then cast). Its
+  // own scrolling is off; focusing a person scrolls it, and the page scrolls
+  // vertically so the strip is in view.
+  const creditsScrollRef = useRef<ScrollView | null>(null);
+  const creditsOffsetRef = useRef(0);
+  const creditsYRef = useRef(0);
+  const creditLayoutsRef = useRef<Record<string, { x: number; w: number }>>({});
+  const focusCredit = useCallback(
+    (key: string) => {
+      resultsScrollRef.current?.scrollTo({
+        x: 0,
+        y: Math.max(creditsYRef.current - 24, 0),
+        animated: false,
+      });
+      const l = creditLayoutsRef.current[key];
+      if (!l) return;
+      const viewport = SCREEN_WIDTH - RESULTS_LEFT_INSET - RESULTS_RIGHT_INSET;
+      const margin = 24;
+      const offset = creditsOffsetRef.current;
+      let next = offset;
+      if (l.x - margin < offset) next = Math.max(0, l.x - margin);
+      else if (l.x + l.w + margin > offset + viewport) next = l.x + l.w + margin - viewport;
+      if (next !== offset) {
+        creditsOffsetRef.current = next;
+        creditsScrollRef.current?.scrollTo({ x: next, y: 0, animated: true });
+      }
+    },
+    [resultsScrollRef],
   );
 
   // Season numbers present in the current list (usually exactly one).
@@ -1007,29 +1051,72 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
           </View>
         )}
 
-        {/* Director / creator + top cast, with photos -- same section as
-            TVDetailsScreen. Items are focusable so Down from the episode row
-            can reach them; they are not part of the Left/Right chain. */}
+        {/* Director / creator + top cast, with photos -- same strip as
+            TVDetailsScreen: one horizontal row that scrolls as focus moves. */}
         {credits.directors.length + credits.cast.length > 0 && (
-          <View style={local.creditsSection}>
+          <View
+            style={local.creditsSection}
+            onLayout={(e) => {
+              creditsYRef.current = e.nativeEvent.layout.y;
+            }}
+          >
             <Text style={styles.sectionHeader}>
-              {credits.directors.length > 0
-                ? `${isSeries ? 'Creator' : 'Director'}${credits.directors.length > 1 ? 's' : ''}${
-                    credits.cast.length > 0 ? ' and Cast' : ''
-                  }`
-                : 'Cast'}
+              {(() => {
+                const parts: string[] = [];
+                if (credits.directors.length > 0) {
+                  // Heading follows the people's actual roles (TMDB creators
+                  // vs. Cinemeta directors), never the title type.
+                  const isCreators = credits.directors.every((p) => p.role === 'Creator');
+                  parts.push(`${isCreators ? 'Creator' : 'Director'}${credits.directors.length > 1 ? 's' : ''}`);
+                }
+                if (credits.cast.length > 0) parts.push('Cast');
+                return parts.length > 1
+                  ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+                  : parts[0];
+              })()}
             </Text>
-            <View style={local.creditsRow}>
-              {credits.directors.map((person) => (
-                <CreditItem key={`dir-${person.id ?? person.name}`} person={person} />
-              ))}
+            <ScrollView
+              ref={creditsScrollRef}
+              horizontal
+              scrollEnabled={false}
+              showsHorizontalScrollIndicator={false}
+              removeClippedSubviews={false}
+              style={{
+                width: SCREEN_WIDTH - RESULTS_LEFT_INSET - RESULTS_RIGHT_INSET,
+                height: CREDIT_ROW_H,
+              }}
+              contentContainerStyle={local.creditsRow}
+            >
+              {credits.directors.map((p) => {
+                const key = `dir-${p.id ?? p.name}`;
+                return (
+                  <View
+                    key={key}
+                    onLayout={(e) => {
+                      creditLayoutsRef.current[key] = { x: e.nativeEvent.layout.x, w: e.nativeEvent.layout.width };
+                    }}
+                  >
+                    <CreditItem person={p} onFocus={() => focusCredit(key)} />
+                  </View>
+                );
+              })}
               {credits.directors.length > 0 && credits.cast.length > 0 ? (
                 <View style={local.creditsDivider} />
               ) : null}
-              {credits.cast.map((person) => (
-                <CreditItem key={`cast-${person.id ?? person.name}`} person={person} />
-              ))}
-            </View>
+              {credits.cast.map((p) => {
+                const key = `cast-${p.id ?? p.name}`;
+                return (
+                  <View
+                    key={key}
+                    onLayout={(e) => {
+                      creditLayoutsRef.current[key] = { x: e.nativeEvent.layout.x, w: e.nativeEvent.layout.width };
+                    }}
+                  >
+                    <CreditItem person={p} onFocus={() => focusCredit(key)} />
+                  </View>
+                );
+              })}
+            </ScrollView>
           </View>
         )}
       </ScrollView>
@@ -1317,31 +1404,32 @@ const local = StyleSheet.create({
 
   // Director / cast.
   creditsSection: {
-    marginTop: 8,
-    paddingBottom: 8,
+    marginTop: 4,
   },
   creditsRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
   },
   creditsDivider: {
     width: 1,
-    height: 72,
-    marginHorizontal: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    height: CREDIT_PHOTO,
+    marginHorizontal: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
   },
   creditItem: {
-    width: 88,
-    padding: 2,
+    width: CREDIT_PHOTO + 24,
+    padding: 4,
+    marginRight: 4,
   },
   creditInner: {
     alignItems: 'center',
   },
   creditPhoto: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: CREDIT_PHOTO,
+    height: CREDIT_PHOTO,
+    borderRadius: CREDIT_PHOTO / 2,
     backgroundColor: '#1A1A22',
   },
   creditPhotoFallback: {
@@ -1350,21 +1438,37 @@ const local = StyleSheet.create({
   },
   creditInitials: {
     color: '#9CA3AF',
-    fontSize: 20,
+    fontSize: 26,
     fontWeight: '700',
   },
+  // Dark hue behind names / roles so they stay readable over the backdrop.
   creditName: {
     color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '700',
     textAlign: 'center',
-    marginTop: 5,
+    marginTop: 6,
+    maxWidth: CREDIT_PHOTO + 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.62)',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    overflow: 'hidden',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   creditRole: {
-    color: '#9CA3AF',
+    color: '#E5E7EB',
     fontSize: 10,
     textAlign: 'center',
-    marginTop: 1,
+    marginTop: 3,
+    maxWidth: CREDIT_PHOTO + 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    overflow: 'hidden',
   },
 });
 
