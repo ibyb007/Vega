@@ -463,9 +463,19 @@ const HomeRow = React.memo(function HomeRow({
   // open). So every card scrolls itself into view explicitly on focus
   // instead of hoping the OS does it.
   const scrollViewRef = useRef<ScrollView>(null);
+  // The card most recently scrolled to, and whether the row is still in its
+  // "settling" window right after mounting. Coming back from Discover /
+  // Details remounts Home: the focused card (say the 9th) asks to be scrolled
+  // to while the row's content is still only partly laid out, so the single
+  // scrollTo is clamped back to 0 and the row sits on its first posters. While
+  // settling, the scroll is re-applied each time the content grows or a retry
+  // timer fires, until the card's real position is reachable.
+  const lastScrolledNodeRef = useRef<View | null>(null);
+  const settlingRef = useRef(true);
   const scrollItemIntoView = useCallback((node: View | null) => {
     const scrollView = scrollViewRef.current;
     if (!node || !scrollView) return;
+    lastScrolledNodeRef.current = node;
     const scrollHandle = findNodeHandle(scrollView);
     if (!scrollHandle) return;
     // measureLayout gives the card's position relative to the ScrollView's
@@ -482,6 +492,25 @@ const HomeRow = React.memo(function HomeRow({
       () => {}
     );
   }, []);
+
+  useEffect(() => {
+    // Re-assert the position a few times while the row finishes laying out,
+    // then stop so normal browsing is never fought.
+    const timers = [60, 200, 450, 900].map((ms) =>
+      setTimeout(() => {
+        if (settlingRef.current && lastScrolledNodeRef.current) {
+          scrollItemIntoView(lastScrolledNodeRef.current);
+        }
+      }, ms),
+    );
+    const stop = setTimeout(() => {
+      settlingRef.current = false;
+    }, 1200);
+    return () => {
+      timers.forEach(clearTimeout);
+      clearTimeout(stop);
+    };
+  }, [scrollItemIntoView]);
 
   // Whatever card holds (or last held) focus in this row must always be
   // mounted -- e.g. coming back from Details to a poster that is well past
@@ -528,6 +557,11 @@ const HomeRow = React.memo(function HomeRow({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.horizontalRowScroll}
         removeClippedSubviews={false}
+        onContentSizeChange={() => {
+          if (settlingRef.current && lastScrolledNodeRef.current) {
+            scrollItemIntoView(lastScrolledNodeRef.current);
+          }
+        }}
       >
         {rowPosts.slice(0, renderCount).map((item: any, pIndex: number) => {
           const itemKey = buildItemKey(row, item, pIndex);
