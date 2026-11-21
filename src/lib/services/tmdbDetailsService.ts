@@ -12,6 +12,7 @@ import { resolveTmdbId, TmdbKind } from './tmdbIdResolver';
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const PROFILE_BASE = 'https://image.tmdb.org/t/p/w185';
+const STILL_BASE = 'https://image.tmdb.org/t/p/w500';
 const TIMEOUT_MS = 10000;
 const CACHE_LIMIT = 40;
 
@@ -29,6 +30,10 @@ export interface TmdbCredits {
 }
 
 export interface TmdbEpisodeInfo {
+  name?: string;
+  overview?: string;
+  // Full still image URL.
+  still?: string;
   // Minutes.
   runtime?: number;
   // TMDB vote average (0-10).
@@ -156,6 +161,9 @@ export const fetchTmdbSeasonEpisodes = (
       for (const ep of res.data?.episodes || []) {
         if (typeof ep?.episode_number !== 'number') continue;
         out[ep.episode_number] = {
+          name: typeof ep.name === 'string' && ep.name.trim() ? ep.name.trim() : undefined,
+          overview: typeof ep.overview === 'string' && ep.overview.trim() ? ep.overview.trim() : undefined,
+          still: ep.still_path ? `${STILL_BASE}${ep.still_path}` : undefined,
           runtime: typeof ep.runtime === 'number' && ep.runtime > 0 ? ep.runtime : undefined,
           rating: typeof ep.vote_average === 'number' && ep.vote_average > 0 ? ep.vote_average : undefined,
         };
@@ -168,5 +176,34 @@ export const fetchTmdbSeasonEpisodes = (
     });
 
   remember(seasonCache, key, request);
+  return request;
+};
+
+const ratingCache = new Map<string, Promise<string | undefined>>();
+
+/** TMDB's community rating for a title as "7.8" (undefined when unrated / no key). */
+export const fetchTmdbRating = (identity: TmdbIdentityLite): Promise<string | undefined> => {
+  const apiKey = getTmdbApiKey();
+  if (!apiKey) return Promise.resolve(undefined);
+  const key = `${identity.mediaType}:${identity.tmdbId}`;
+  const cached = ratingCache.get(key);
+  if (cached) return cached;
+
+  const request = axios
+    .get(`${TMDB_API_URL}/${identity.mediaType}/${identity.tmdbId}`, {
+      params: { api_key: apiKey, language: 'en-US' },
+      timeout: TIMEOUT_MS,
+    })
+    .then((res): string | undefined => {
+      const avg = Number(res.data?.vote_average);
+      const votes = Number(res.data?.vote_count);
+      return Number.isFinite(avg) && avg > 0 && votes > 0 ? avg.toFixed(1) : undefined;
+    })
+    .catch(() => {
+      ratingCache.delete(key);
+      return undefined;
+    });
+
+  remember(ratingCache, key, request);
   return request;
 };
