@@ -25,7 +25,9 @@ export interface CreditPerson {
 }
 
 export interface TmdbCredits {
+  // Creators (series) or directors (movies).
   directors: CreditPerson[];
+  writers: CreditPerson[];
   cast: CreditPerson[];
 }
 
@@ -75,13 +77,15 @@ export const resolveTmdbIdentityLite = async (input: {
 
 const creditsCache = new Map<string, Promise<TmdbCredits | null>>();
 
+const WRITER_JOBS = new Set(['Writer', 'Screenplay', 'Story', 'Novel', 'Teleplay', 'Author']);
+
 export const fetchTmdbCredits = (
   identity: TmdbIdentityLite,
-  limit: number = 5,
+  castLimit: number = 15,
 ): Promise<TmdbCredits | null> => {
   const apiKey = getTmdbApiKey();
   if (!apiKey) return Promise.resolve(null);
-  const key = `${identity.mediaType}:${identity.tmdbId}:${limit}`;
+  const key = `${identity.mediaType}:${identity.tmdbId}:${castLimit}`;
   const cached = creditsCache.get(key);
   if (cached) return cached;
 
@@ -98,27 +102,40 @@ export const fetchTmdbCredits = (
     .then((res): TmdbCredits => {
       const data = res.data || {};
       const creditData = isTv ? data.aggregate_credits : data.credits;
+      const crew: any[] = creditData?.crew || [];
+      const jobsOf = (p: any): string[] =>
+        isTv ? (p.jobs || []).map((j: any) => j.job) : [p.job];
 
+      const seen = new Set<string>();
+      const take = (source: any[], role: string, max: number): CreditPerson[] => {
+        const out: CreditPerson[] = [];
+        for (const p of source) {
+          const id = String(p.id);
+          if (seen.has(id) || !p.name) continue;
+          seen.add(id);
+          out.push({ id: p.id, name: p.name, role, photo: photoUrl(p.profile_path) });
+          if (out.length >= max) break;
+        }
+        return out;
+      };
+
+      // Series: the show's creators. Movies: the director(s).
       const directorSource: any[] = isTv
         ? data.created_by || []
-        : (creditData?.crew || []).filter((p: any) => p.job === 'Director');
-      const seen = new Set<string>();
-      const directors: CreditPerson[] = [];
-      for (const p of directorSource) {
-        const id = String(p.id);
-        if (seen.has(id) || !p.name) continue;
-        seen.add(id);
-        directors.push({
-          id: p.id,
-          name: p.name,
-          role: isTv ? 'Creator' : 'Director',
-          photo: photoUrl(p.profile_path),
-        });
-        if (directors.length >= limit) break;
-      }
+        : crew.filter((p: any) => p.job === 'Director');
+      const directors = take(directorSource, isTv ? 'Creator' : 'Director', 2);
+
+      // Writers (most credited first), skipping anyone already listed.
+      const writerSource = crew
+        .filter((p: any) => jobsOf(p).some((j) => WRITER_JOBS.has(j)))
+        .sort(
+          (a: any, b: any) =>
+            (b.total_episode_count || 0) - (a.total_episode_count || 0),
+        );
+      const writers = take(writerSource, 'Writer', 2);
 
       const cast: CreditPerson[] = (creditData?.cast || [])
-        .slice(0, limit)
+        .slice(0, castLimit)
         .map((p: any) => ({
           id: p.id,
           name: p.name,
@@ -127,7 +144,7 @@ export const fetchTmdbCredits = (
         }))
         .filter((p: CreditPerson) => Boolean(p.name));
 
-      return { directors, cast };
+      return { directors, writers, cast };
     })
     .catch(() => {
       creditsCache.delete(key);
