@@ -29,8 +29,18 @@ import {
   CinemetaMeta,
 } from '../../lib/services/cinemetaService';
 import { settingsStorage } from '../../lib/storage';
+import { getTmdbApiKey } from '../../lib/hooks/useTmdbStory';
+import {
+  CreditPerson,
+  TmdbCredits,
+  TmdbEpisodeInfo,
+  TmdbIdentityLite,
+  fetchTmdbCredits,
+  fetchTmdbSeasonEpisodes,
+  resolveTmdbIdentityLite,
+} from '../../lib/services/tmdbDetailsService';
 import { launchVideo, PlayerChoice } from '../../lib/services/PlayerLauncher';
-import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel } from '../../lib/utils/episodeParsing';
+import { parseSeasonNumber, parseEpisodeNumber, sortEpisodesChronologically, formatEpisodeLabel, isBareEpisodeLabel } from '../../lib/utils/episodeParsing';
 import { buildEpisodeRanges, rangeForIndex } from '../../lib/utils/episodeRanges';
 import { getFileSizeLabel, stripFileSize } from '../../lib/utils/fileSize';
 import {
@@ -109,6 +119,13 @@ interface DetailRow {
   overview?: string;
   releaseDate?: string;
   sizeLabel?: string;
+  // Horizontal episode card extras.
+  episodeNumber?: number;
+  // Clean episode name (no "S01E01-" prefix).
+  cardTitle?: string;
+  runtimeLabel?: string;
+  ratingLabel?: string;
+  ratingSource?: 'IMDb' | 'TMDB';
   isResumeTarget: boolean;
   // What the pre-existing rules would focus on a normal (non-restore) entry.
   isDefaultFocus: boolean;
@@ -137,11 +154,46 @@ const formatRemainingLabel = (seconds: number): string => {
 
 const KEYCODE_DPAD_UP = 19;
 const KEYCODE_DPAD_DOWN = 20;
-// Row the cursor sits on is held this far down the viewport while paging.
+const KEYCODE_DPAD_LEFT = 21;
+const KEYCODE_DPAD_RIGHT = 22;
+// Row the cursor sits on is held this far down the viewport while paging
+// (vertical source lists only).
 const LIST_FOCUS_ANCHOR = 0.4;
 
-// Purely presentational: rows are NOT focusable. The whole list is one native
-// focus target (see `EpisodeList`), and the highlighted row is JS state.
+// Horizontal episode card geometry. Explicit pixel sizes on purpose: Fabric
+// collapses percentage / absoluteFill-sized containers on this device.
+const EPISODE_CARD_W = 300;
+const EPISODE_CARD_H = 176;
+const EPISODE_CARD_GAP = 14;
+// Space kept around the focused (scaled) card so it is never clipped.
+const EPISODE_ROW_PAD_V = 12;
+const EPISODE_ROW_PAD_H = 8;
+
+// "125" -> "2h 5m", "59" -> "59m".
+const formatMinutes = (min: number | undefined): string | undefined => {
+  if (!min || min <= 0) return undefined;
+  const total = Math.round(min);
+  if (total < 60) return `${total}m`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+};
+
+// Cinemeta runtimes come as "60 min", "1h 2min" or a bare number.
+const parseRuntimeMinutes = (value: string | number | undefined | null): number | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const s = String(value);
+  const h = /(\d+)\s*h/i.exec(s);
+  const m = /(\d+)\s*m/i.exec(s);
+  if (h || m) return (h ? parseInt(h[1], 10) * 60 : 0) + (m ? parseInt(m[1], 10) : 0);
+  const n = parseInt(s, 10);
+  return n > 0 ? n : undefined;
+};
+
+// Episodes are horizontal cards (thumbnail, synopsis, runtime, rating); a
+// plain server/quality row is used for non-episode lists. Purely
+// presentational: rows are NOT focusable. The whole list is one native focus
+// target (see `EpisodeList`), and the highlighted row is JS state.
 const EpisodeRow = React.memo(function EpisodeRow({
   row,
   selected,
@@ -151,80 +203,120 @@ const EpisodeRow = React.memo(function EpisodeRow({
   row: DetailRow;
   selected: boolean;
   resumePosition?: number;
-  onLayout: (key: string, y: number, h: number) => void;
+  onLayout: (key: string, x: number, y: number, w: number, h: number) => void;
 }) {
   const focused = selected;
+  const handleLayout = (e: any) => {
+    const l = e.nativeEvent.layout;
+    onLayout(row.key, l.x, l.y, l.width, l.height);
+  };
+
+  if (row.isEpisode) {
+    return (
+      <View onLayout={handleLayout} style={[styles.hCard, selected && styles.hCardSelected]}>
+        {row.thumb ? (
+          <Image
+            source={{ uri: row.thumb }}
+            style={styles.hCardImage}
+            resizeMode="cover"
+            // Skips the fade-in transition on Android -- adds up across a
+            // long row of thumbs mounting in quick succession.
+            fadeDuration={0}
+          />
+        ) : null}
+        <LinearGradient
+          colors={['rgba(10, 10, 14, 0.10)', 'rgba(10, 10, 14, 0.72)', 'rgba(10, 10, 14, 0.96)']}
+          locations={[0, 0.42, 1]}
+          style={styles.hCardScrim}
+        />
+        {row.isResumeTarget && resumePosition ? (
+          <Text style={styles.hResumeBadge}>
+            Resume {Math.floor(resumePosition / 60)}:
+            {String(Math.floor(resumePosition % 60)).padStart(2, '0')}
+          </Text>
+        ) : null}
+        <View style={styles.hCardBody}>
+          {row.episodeNumber != null ? (
+            <View style={styles.hBadge}>
+              <Text style={styles.hBadgeText}>EPISODE {row.episodeNumber}</Text>
+            </View>
+          ) : null}
+          <Text numberOfLines={1} style={styles.hTitle}>
+            {row.cardTitle || row.title}
+          </Text>
+          {row.overview ? (
+            <Text numberOfLines={3} style={styles.hOverview}>
+              {row.overview}
+            </Text>
+          ) : null}
+          <View style={styles.hMetaRow}>
+            {row.runtimeLabel ? (
+              <View style={styles.hMetaItem}>
+                <MaterialCommunityIcons name="clock-outline" size={13} color="#D1D5DB" />
+                <Text style={styles.hMetaText}>{row.runtimeLabel}</Text>
+              </View>
+            ) : null}
+            {row.ratingLabel ? (
+              <View style={styles.hMetaItem}>
+                <View style={styles.hRatingTag}>
+                  <Text style={styles.hRatingTagText}>{row.ratingSource || 'IMDb'}</Text>
+                </View>
+                <Text style={styles.hRatingValue}>{row.ratingLabel}</Text>
+              </View>
+            ) : null}
+            <View style={styles.hMetaSpacer} />
+            {row.releaseDate ? (
+              <Text numberOfLines={1} style={styles.hMetaText}>
+                {row.releaseDate}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View
-      onLayout={(e) => onLayout(row.key, e.nativeEvent.layout.y, e.nativeEvent.layout.height)}
+      onLayout={handleLayout}
       style={[
-        row.isEpisode ? styles.episodeCard : styles.sourceRow,
+        styles.sourceRow,
         styles.rowFrame,
-        { borderRadius: row.isEpisode ? 8 : 10 },
+        { borderRadius: 10 },
         selected && styles.rowSelected,
       ]}
     >
-        <View style={styles.episodeInner}>
-          {row.isEpisode ? (
-            row.thumb ? (
-              <View style={styles.episodeThumbWrap}>
-                <Image
-                  source={{ uri: row.thumb }}
-                  style={styles.episodeThumb}
-                  resizeMode="cover"
-                  // Skips the fade-in transition on Android -- cheap enough
-                  // on its own, but adds up across a long list of thumbs
-                  // mounting in quick succession while scrolling.
-                  fadeDuration={0}
-                />
-                <View style={styles.episodeThumbPlayOverlay}>
-                  <MaterialCommunityIcons name="play" size={16} color="#FFFFFF" />
-                </View>
-              </View>
-            ) : (
-              <MaterialCommunityIcons name="play-circle-outline" size={22} color="#8A5CF6" />
-            )
-          ) : (
-            <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
-              <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
-            </View>
-          )}
-          <View style={styles.episodeTextWrap}>
-            <Text numberOfLines={1} style={row.isEpisode ? styles.episodeText : styles.sourceText}>
-              {row.title}
-            </Text>
-            {!!row.releaseDate && (
-              <Text numberOfLines={1} style={styles.episodeReleaseText}>
-                {row.releaseDate}
-              </Text>
-            )}
-            {!!row.overview && (
-              <Text numberOfLines={2} style={styles.episodeOverviewText}>
-                {row.overview}
-              </Text>
-            )}
-          </View>
-          {!!row.sizeLabel && (
-            <View style={styles.sizeBadge}>
-              <Text style={styles.sizeBadgeText}>{row.sizeLabel}</Text>
-            </View>
-          )}
-          {row.isResumeTarget && resumePosition ? (
-            <Text style={styles.resumeBadge}>
-              Resume {Math.floor(resumePosition / 60)}:
-              {String(Math.floor(resumePosition % 60)).padStart(2, '0')}
-            </Text>
-          ) : null}
+      <View style={styles.episodeInner}>
+        <View style={[styles.playCircle, focused && styles.playCircleFocused]}>
+          <MaterialCommunityIcons name="play" size={18} color="#FFFFFF" />
         </View>
+        <View style={styles.episodeTextWrap}>
+          <Text numberOfLines={1} style={styles.sourceText}>
+            {row.title}
+          </Text>
+        </View>
+        {!!row.sizeLabel && (
+          <View style={styles.sizeBadge}>
+            <Text style={styles.sizeBadgeText}>{row.sizeLabel}</Text>
+          </View>
+        )}
+        {row.isResumeTarget && resumePosition ? (
+          <Text style={styles.resumeBadge}>
+            Resume {Math.floor(resumePosition / 60)}:
+            {String(Math.floor(resumePosition % 60)).padStart(2, '0')}
+          </Text>
+        ) : null}
+      </View>
     </View>
   );
 });
 
-// The episode / source list as ONE native focus target. Up/Down never move
-// native focus between rows: the cursor is JS state advanced from the raw key
-// stream (every repeat of a held key arrives), and the page scrolls
-// instantly under it. A transparent Pressable sits over the cursor row and is
-// what actually holds focus (and receives OK).
+// The episode / source list as ONE native focus target. Episodes are a
+// horizontal row: Left/Right never move native focus between cards, the
+// cursor is JS state advanced from the raw key stream (every repeat of a held
+// key arrives) and the row scrolls under it. Server/quality lists keep the
+// original vertical behaviour (Up/Down, page scroll). A transparent Pressable
+// sits over the cursor row and is what actually holds focus (and receives OK).
 const EpisodeList = React.memo(function EpisodeList({
   rows,
   targetKey,
@@ -235,6 +327,7 @@ const EpisodeList = React.memo(function EpisodeList({
   onRowLayout,
   onWrapperLayout,
   scrollToRow,
+  onFocusList,
 }: {
   rows: DetailRow[];
   // Row that should take focus when the list mounts / is refocused (or null).
@@ -246,8 +339,14 @@ const EpisodeList = React.memo(function EpisodeList({
   onPressRow: (row: DetailRow) => void;
   onRowLayout: (key: string, y: number, h: number) => void;
   onWrapperLayout: (y: number) => void;
+  // Vertical (source list) page scroll.
   scrollToRow: (key: string) => boolean;
+  // The horizontal episode row took focus: bring the page back to the top so
+  // the whole row is on screen.
+  onFocusList?: () => void;
 }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const horizontal = rows[0]?.isEpisode === true;
   const firstKey = rows[0]?.key ?? null;
   const [selectedKey, setSelectedKey] = useState<string | null>(targetKey ?? firstKey);
   const selectedKeyRef = useRef<string | null>(targetKey ?? firstKey);
@@ -258,9 +357,17 @@ const EpisodeList = React.memo(function EpisodeList({
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const pendingScrollKeyRef = useRef<string | null>(null);
-  const layoutsRef = useRef<Record<string, { y: number; h: number }>>({});
+  const layoutsRef = useRef<Record<string, { x: number; y: number; w: number; h: number }>>({});
   const [, setLayoutTick] = useState(0);
   const [hostHandle, setHostHandle] = useState<number | null>(null);
+  const onFocusListRef = useRef(onFocusList);
+  onFocusListRef.current = onFocusList;
+
+  // Horizontal row scroll state. The ScrollView's own scrolling is off, so
+  // `hOffsetRef` is the single source of truth for its offset.
+  const hScrollRef = useRef<ScrollView | null>(null);
+  const hOffsetRef = useRef(0);
+  const hViewportRef = useRef(0);
 
   // Focus preference is decided when the host mounts and never flipped later
   // (re-applying hasTVPreferredFocus calls requestFocus() again, which is what
@@ -283,27 +390,50 @@ const EpisodeList = React.memo(function EpisodeList({
     }
   }, [effectiveKey]);
 
+  // Brings the cursor row into view. Horizontal: scrolls the row only when
+  // the card is not fully visible. Vertical: the page-level scroll. Returns
+  // false when layouts are not known yet (caller retries once they are).
+  const scrollToKey = useCallback(
+    (key: string): boolean => {
+      if (!horizontal) return scrollToRow(key);
+      const l = layoutsRef.current[key];
+      const viewport = hViewportRef.current;
+      if (!l || !viewport) return false;
+      const margin = 24;
+      const offset = hOffsetRef.current;
+      let next = offset;
+      if (l.x - margin < offset) next = Math.max(0, l.x - margin);
+      else if (l.x + l.w + margin > offset + viewport) next = l.x + l.w + margin - viewport;
+      if (next !== offset) {
+        hOffsetRef.current = next;
+        hScrollRef.current?.scrollTo({ x: next, y: 0, animated: true });
+      }
+      return true;
+    },
+    [horizontal, scrollToRow],
+  );
+
   // A new focus target (restore, season/quality pick) moves the cursor to it.
   useEffect(() => {
     if (!targetKey) return;
     selectedKeyRef.current = targetKey;
     setSelectedKey(targetKey);
-    pendingScrollKeyRef.current = scrollToRow(targetKey) ? null : targetKey;
-  }, [targetKey, focusNonce, scrollToRow]);
+    pendingScrollKeyRef.current = scrollToKey(targetKey) ? null : targetKey;
+  }, [targetKey, focusNonce, scrollToKey]);
 
   const handleLayout = useCallback(
-    (key: string, y: number, h: number) => {
+    (key: string, x: number, y: number, w: number, h: number) => {
       const prev = layoutsRef.current[key];
-      if (!prev || prev.y !== y || prev.h !== h) {
-        layoutsRef.current[key] = { y, h };
+      if (!prev || prev.x !== x || prev.y !== y || prev.w !== w || prev.h !== h) {
+        layoutsRef.current[key] = { x, y, w, h };
         if (key === selectedKeyRef.current) setLayoutTick((t) => t + 1);
       }
       onRowLayout(key, y, h);
-      if (pendingScrollKeyRef.current === key && scrollToRow(key)) {
+      if (pendingScrollKeyRef.current === key && scrollToKey(key)) {
         pendingScrollKeyRef.current = null;
       }
     },
-    [onRowLayout, scrollToRow],
+    [onRowLayout, scrollToKey],
   );
 
   const moveSelection = useCallback(
@@ -315,31 +445,34 @@ const EpisodeList = React.memo(function EpisodeList({
       const nextKey = list[next].key;
       if (nextKey === selectedKeyRef.current) return;
       selectedKeyRef.current = nextKey;
-      pendingScrollKeyRef.current = scrollToRow(nextKey) ? null : nextKey;
+      pendingScrollKeyRef.current = scrollToKey(nextKey) ? null : nextKey;
       setSelectedKey(nextKey);
     },
-    [scrollToRow],
+    [scrollToKey],
   );
 
   useEffect(() => {
+    const nextCode = horizontal ? KEYCODE_DPAD_RIGHT : KEYCODE_DPAD_DOWN;
+    const prevCode = horizontal ? KEYCODE_DPAD_LEFT : KEYCODE_DPAD_UP;
     const sub = DeviceEventEmitter.addListener('onKeyDown', (e: { keyCode?: number }) => {
       if (!listFocusedRef.current || pausedRef.current) return;
-      if (e?.keyCode === KEYCODE_DPAD_DOWN) moveSelection(1);
-      else if (e?.keyCode === KEYCODE_DPAD_UP) moveSelection(-1);
+      if (e?.keyCode === nextCode) moveSelection(1);
+      else if (e?.keyCode === prevCode) moveSelection(-1);
     });
     return () => sub.remove();
-  }, [moveSelection]);
+  }, [moveSelection, horizontal]);
 
   const handleFocus = useCallback(() => {
     listFocusedRef.current = true;
     setListFocused(true);
+    if (horizontal) onFocusListRef.current?.();
     const key = selectedKeyRef.current ?? rowsRef.current[0]?.key ?? null;
     if (key) {
       selectedKeyRef.current = key;
       setSelectedKey(key);
-      pendingScrollKeyRef.current = scrollToRow(key) ? null : key;
+      pendingScrollKeyRef.current = scrollToKey(key) ? null : key;
     }
-  }, [scrollToRow]);
+  }, [scrollToKey, horizontal]);
 
   const handleBlur = useCallback(() => {
     listFocusedRef.current = false;
@@ -361,25 +494,81 @@ const EpisodeList = React.memo(function EpisodeList({
     }
   }, []);
 
-  // Up from any row below the first is swallowed natively (the cursor moves
-  // instead); from the first row it keeps its default search (resume card,
-  // block chips, season picker). Down is never wired -- nothing is below.
-  const hostLinks: { nextFocusUp?: number } = {};
-  if (hostHandle != null && selectedIndex > 0) hostLinks.nextFocusUp = hostHandle;
+  // Moving along the list is swallowed natively (the cursor moves instead);
+  // at either end the key keeps its default search (left of the first card,
+  // up from the first source row -> whatever is there). Nothing is wired
+  // across the other axis: Up/Down from the episode row (and Down from a
+  // source list) fall through to the default search.
+  const hostLinks: { nextFocusUp?: number; nextFocusLeft?: number; nextFocusRight?: number } = {};
+  if (hostHandle != null) {
+    if (horizontal) {
+      if (selectedIndex > 0) hostLinks.nextFocusLeft = hostHandle;
+      if (selectedIndex >= 0 && selectedIndex < rows.length - 1) hostLinks.nextFocusRight = hostHandle;
+    } else if (selectedIndex > 0) {
+      hostLinks.nextFocusUp = hostHandle;
+    }
+  }
 
   const sel = effectiveKey ? layoutsRef.current[effectiveKey] : undefined;
 
+  const items = rows.map((row) => (
+    <EpisodeRow
+      key={`row-${row.key}-${row.index}`}
+      row={row}
+      selected={listFocused && row.key === effectiveKey}
+      resumePosition={row.isResumeTarget ? resumeHint?.position : undefined}
+      onLayout={handleLayout}
+    />
+  ));
+
+  if (horizontal) {
+    return (
+      <View onLayout={(e) => onWrapperLayout(e.nativeEvent.layout.y)}>
+        <ScrollView
+          ref={hScrollRef}
+          horizontal
+          // Off on purpose, like the page ScrollView: the cursor drives it.
+          scrollEnabled={false}
+          showsHorizontalScrollIndicator={false}
+          removeClippedSubviews={false}
+          // Cards run off the right edge of the screen (the page has 48 of
+          // horizontal padding), so the width is explicit.
+          style={{ width: windowWidth - 48, height: EPISODE_CARD_H + EPISODE_ROW_PAD_V * 2 }}
+          contentContainerStyle={styles.hRowContent}
+          onLayout={(e) => {
+            hViewportRef.current = e.nativeEvent.layout.width;
+            const pending = pendingScrollKeyRef.current;
+            if (pending && scrollToKey(pending)) pendingScrollKeyRef.current = null;
+          }}
+        >
+          {items}
+          <Pressable
+            key={hostKey}
+            ref={hostRef}
+            focusable
+            hasTVPreferredFocus={preferFocus}
+            onFocus={handleFocus}
+            onBlur={handleBlur}
+            onPress={handlePress}
+            {...(hostLinks as any)}
+            style={[
+              styles.listHost,
+              {
+                left: sel ? sel.x : EPISODE_ROW_PAD_H,
+                top: sel ? sel.y : EPISODE_ROW_PAD_V,
+                width: sel ? sel.w : EPISODE_CARD_W,
+                height: sel ? sel.h : EPISODE_CARD_H,
+              },
+            ]}
+          />
+        </ScrollView>
+      </View>
+    );
+  }
+
   return (
     <View onLayout={(e) => onWrapperLayout(e.nativeEvent.layout.y)}>
-      {rows.map((row) => (
-        <EpisodeRow
-          key={`row-${row.key}-${row.index}`}
-          row={row}
-          selected={listFocused && row.key === effectiveKey}
-          resumePosition={row.isResumeTarget ? resumeHint?.position : undefined}
-          onLayout={handleLayout}
-        />
-      ))}
+      {items}
       <Pressable
         key={hostKey}
         ref={hostRef}
@@ -389,9 +578,66 @@ const EpisodeList = React.memo(function EpisodeList({
         onBlur={handleBlur}
         onPress={handlePress}
         {...(hostLinks as any)}
-        style={[styles.listHost, { top: sel ? sel.y : 0, height: sel ? sel.h : 48 }]}
+        style={[
+          styles.listHost,
+          { left: 0, right: 0, top: sel ? sel.y : 0, height: sel ? sel.h : 48 },
+        ]}
       />
     </View>
+  );
+});
+
+// One director / cast member: round photo (initials when there is none),
+// name and role. Focusable only so D-pad Down from the episode row can reach
+// the section and scroll it into view.
+const CreditItem = React.memo(function CreditItem({
+  person,
+  onFocus,
+}: {
+  person: CreditPerson;
+  onFocus: () => void;
+}) {
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const initials = person.name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .join('');
+  return (
+    <TVFocusablePressable
+      scaleFocused={1.06}
+      focusedBorderColor="#8A5CF6"
+      borderRadius={14}
+      onFocus={onFocus}
+      style={styles.creditItem}
+    >
+      {() => (
+        <View style={styles.creditInner}>
+          {person.photo && !photoFailed ? (
+            <Image
+              source={{ uri: person.photo }}
+              style={styles.creditPhoto}
+              resizeMode="cover"
+              fadeDuration={0}
+              onError={() => setPhotoFailed(true)}
+            />
+          ) : (
+            <View style={[styles.creditPhoto, styles.creditPhotoFallback]}>
+              <Text style={styles.creditInitials}>{initials}</Text>
+            </View>
+          )}
+          <Text numberOfLines={2} style={styles.creditName}>
+            {person.name}
+          </Text>
+          {person.role ? (
+            <Text numberOfLines={1} style={styles.creditRole}>
+              {person.role}
+            </Text>
+          ) : null}
+        </View>
+      )}
+    </TVFocusablePressable>
   );
 });
 
@@ -537,6 +783,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // loading finishes (see the effect below), so an ordinary initial page
   // load (nothing picked) never triggers an unwanted scroll/refocus.
   const pendingEpisodeFocusRef = useRef(false);
+  // True when the list below is the horizontal episode row (as opposed to a
+  // vertical server/quality list). Kept in a ref so the mount-only restore
+  // pass and the focus effects can read the current value.
+  const horizontalListRef = useRef(false);
+  // y of the director / cast section inside the page ScrollView.
+  const creditsYRef = useRef(0);
   // Bumped to force exactly the target episode/source row (index 0, or
   // the resume target) to remount -- same "nonce in the key" trick used
   // for programmatic focus elsewhere in this app (TVNavigationRail,
@@ -949,7 +1201,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     if (stillResolving) return;
     if (!pendingEpisodeFocusRef.current) return;
     pendingEpisodeFocusRef.current = false;
-    scrollRef.current?.scrollTo({ x: 0, y: Math.max(listSectionYRef.current - 16, 0), animated: false });
+    // The horizontal episode row is always fully on screen at the top of the
+    // page; a vertical source list still scrolls to its section.
+    scrollRef.current?.scrollTo({
+      x: 0,
+      y: horizontalListRef.current ? 0 : Math.max(listSectionYRef.current - 16, 0),
+      animated: false,
+    });
     setTimeout(() => setEpisodeFocusNonce((n) => n + 1), 60);
   }, [stillResolving]);
 
@@ -997,6 +1255,142 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     });
   }, [episodes, cinemetaMeta, seasonNumber]);
 
+  // ---- Director / cast + per-episode runtime & rating ------------------------
+  // Photos: Cinemeta's own `app_extras` (no key needed) when it carries them,
+  // otherwise TMDB credits (needs a TMDB key -- the same one the rest of the
+  // app uses). Episode runtime / rating come from TMDB season data when
+  // available; Cinemeta's per-episode rating (IMDb) wins when it has one.
+  const isSeriesTitle = hasEpisodesLinkAnywhere || directItemsAreEpisodes;
+  const [tmdbIdentity, setTmdbIdentity] = useState<TmdbIdentityLite | null>(null);
+  const [tmdbCredits, setTmdbCredits] = useState<TmdbCredits | null>(null);
+  const [tmdbEpisodeInfo, setTmdbEpisodeInfo] = useState<Record<string, TmdbEpisodeInfo>>({});
+
+  useEffect(() => {
+    let alive = true;
+    if (!info || !cinemetaSettled || !getTmdbApiKey()) {
+      return () => {
+        alive = false;
+      };
+    }
+    resolveTmdbIdentityLite({
+      tmdbId: info.tmdbId || cinemetaMeta?.moviedb_id,
+      imdbId: info.imdbId || cinemetaMeta?.imdb_id,
+      title: cinemetaMeta?.name || info.title || item?.title,
+      year: providerYear,
+      kind: isSeriesTitle ? 'series' : 'movie',
+    }).then((identity) => {
+      if (alive && identity) setTmdbIdentity(identity);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [
+    info?.tmdbId,
+    info?.imdbId,
+    info?.title,
+    item?.title,
+    cinemetaMeta?.moviedb_id,
+    cinemetaMeta?.imdb_id,
+    cinemetaMeta?.name,
+    providerYear,
+    isSeriesTitle,
+    cinemetaSettled,
+  ]);
+
+  const cinemetaCredits: TmdbCredits = useMemo(() => {
+    const extras = (cinemetaMeta as any)?.app_extras;
+    const toPerson = (p: any, fallbackRole?: string): CreditPerson | null =>
+      p && typeof p.name === 'string' && p.name.trim()
+        ? {
+            id: p.id,
+            name: p.name.trim(),
+            role: (typeof p.character === 'string' && p.character.trim()) || fallbackRole,
+            photo: typeof p.photo === 'string' && p.photo ? p.photo : undefined,
+          }
+        : null;
+    const directorRole = isSeriesTitle ? 'Creator' : 'Director';
+    let cast = (Array.isArray(extras?.cast) ? extras.cast : [])
+      .map((p: any) => toPerson(p))
+      .filter(Boolean) as CreditPerson[];
+    let directors = (Array.isArray(extras?.directors) ? extras.directors : [])
+      .map((p: any) => toPerson(p, directorRole))
+      .filter(Boolean) as CreditPerson[];
+    // No structured credits: names only (initials stand in for photos).
+    if (cast.length === 0) {
+      const names: string[] = cinemetaMeta?.cast?.length ? cinemetaMeta.cast : info?.cast || [];
+      cast = names.filter(Boolean).map((name) => ({ name }));
+    }
+    if (directors.length === 0) {
+      const raw = (cinemetaMeta as any)?.director;
+      const names: string[] = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+      directors = names.filter(Boolean).map((name) => ({ name, role: directorRole }));
+    }
+    return { directors: directors.slice(0, 2), cast: cast.slice(0, 5) };
+  }, [cinemetaMeta, info?.cast, isSeriesTitle]);
+  const cinemetaHasPhotos = cinemetaCredits.cast.some((p) => Boolean(p.photo));
+
+  useEffect(() => {
+    let alive = true;
+    setTmdbCredits(null);
+    if (!tmdbIdentity || cinemetaHasPhotos) {
+      return () => {
+        alive = false;
+      };
+    }
+    fetchTmdbCredits(tmdbIdentity, 5).then((result) => {
+      if (alive) setTmdbCredits(result);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType, cinemetaHasPhotos]);
+
+  const credits: TmdbCredits = useMemo(
+    () => ({
+      directors: (tmdbCredits?.directors.length ? tmdbCredits.directors : cinemetaCredits.directors).slice(0, 2),
+      cast: (tmdbCredits?.cast.length ? tmdbCredits.cast : cinemetaCredits.cast).slice(0, 5),
+    }),
+    [tmdbCredits, cinemetaCredits],
+  );
+
+  // Season numbers present in the current list (usually exactly one).
+  const seasonsKey = useMemo(() => {
+    const set = new Set<number>();
+    if (episodes.length > 0) episodes.forEach((ep) => set.add(seasonNumberFor(ep.title)));
+    else if (directItemsAreEpisodes) usableDirectItems.forEach((d) => set.add(seasonNumberFor(d.title)));
+    return Array.from(set)
+      .filter((n) => Number.isFinite(n) && n >= 0)
+      .sort((a, b) => a - b)
+      .slice(0, 8)
+      .join(',');
+  }, [episodes, usableDirectItems, directItemsAreEpisodes, seasonNumber]);
+
+  useEffect(() => {
+    if (!tmdbIdentity || tmdbIdentity.mediaType !== 'tv' || !seasonsKey) return;
+    let alive = true;
+    const tmdbId = tmdbIdentity.tmdbId;
+    Promise.all(
+      seasonsKey
+        .split(',')
+        .map(Number)
+        .map((season) => fetchTmdbSeasonEpisodes(tmdbId, season).then((map) => ({ season, map }))),
+    ).then((list) => {
+      if (!alive) return;
+      setTmdbEpisodeInfo((prev) => {
+        const next = { ...prev };
+        list.forEach(({ season, map }) => {
+          Object.entries(map).forEach(([ep, value]) => {
+            next[`${tmdbId}:${season}:${ep}`] = value;
+          });
+        });
+        return next;
+      });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType, seasonsKey]);
+
   const rows: DetailRow[] = useMemo(() => {
     const hasResumeIdentity = Boolean(resumeHint?.episodeKey || resumeHint?.episodeLink);
     const seenKeys = new Set<string>();
@@ -1009,6 +1403,37 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     };
     const cleanLabel = (title: string | undefined, sizeLabel: string | undefined): string =>
       sizeLabel ? stripFileSize(title) || title || '' : title || '';
+    // Everything the horizontal episode card shows beyond the basics.
+    const episodeExtras = (
+      cinemetaEp: any,
+      epSeason: number,
+      epNum: number,
+      providerTitle: string | undefined,
+      sizeLabel: string | undefined,
+    ) => {
+      const cleaned = cleanLabel(providerTitle, sizeLabel);
+      const tmdbInfo = tmdbIdentity ? tmdbEpisodeInfo[`${tmdbIdentity.tmdbId}:${epSeason}:${epNum}`] : undefined;
+      const cinemetaRating = parseFloat(String(cinemetaEp?.rating ?? ''));
+      let ratingLabel: string | undefined;
+      let ratingSource: 'IMDb' | 'TMDB' | undefined;
+      if (Number.isFinite(cinemetaRating) && cinemetaRating > 0) {
+        ratingLabel = cinemetaRating.toFixed(1);
+        ratingSource = 'IMDb';
+      } else if (tmdbInfo?.rating) {
+        ratingLabel = tmdbInfo.rating.toFixed(1);
+        ratingSource = 'TMDB';
+      }
+      return {
+        episodeNumber: epNum,
+        cardTitle:
+          cinemetaEp?.name ||
+          cinemetaEp?.title ||
+          (cleaned && !isBareEpisodeLabel(cleaned) ? cleaned : `Episode ${epNum}`),
+        runtimeLabel: formatMinutes(tmdbInfo?.runtime ?? parseRuntimeMinutes(cinemetaMeta?.runtime)),
+        ratingLabel,
+        ratingSource,
+      };
+    };
 
     // Real per-season episode list.
     if (episodes.length > 0) {
@@ -1044,6 +1469,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           overview: ep.description || cinemetaEp?.overview,
           releaseDate: formatEpisodeReleaseDate(cinemetaEp?.released),
           sizeLabel,
+          ...episodeExtras(cinemetaEp, epSeasonNumber, episodeNum, ep.title, sizeLabel),
           isResumeTarget,
           isDefaultFocus: hasResumeIdentity ? isResumeTarget : index === 0,
           playTitle: info?.title || item?.title || ep.title || `Episode ${index + 1}`,
@@ -1110,6 +1536,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           overview: directItemsAreEpisodes ? d.description || cinemetaEp?.overview : undefined,
           releaseDate: directItemsAreEpisodes ? formatEpisodeReleaseDate(cinemetaEp?.released) : undefined,
           sizeLabel,
+          ...(directItemsAreEpisodes
+            ? episodeExtras(cinemetaEp, epSeasonNumber, episodeNum, d.title, sizeLabel)
+            : {}),
           isResumeTarget,
           isDefaultFocus: directItemsAreEpisodes && hasResumeIdentity ? isResumeTarget : index === 0,
           playTitle: info?.title || item?.title,
@@ -1130,6 +1559,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     info?.title,
     info?.type,
     item?.title,
+    tmdbEpisodeInfo,
+    tmdbIdentity?.tmdbId,
   ]);
 
   const resolveAndPlay = useCallback(
@@ -1382,6 +1813,18 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     return true;
   }, []);
 
+  horizontalListRef.current = Boolean(rows[0]?.isEpisode);
+
+  // Page scroll helpers for the horizontal episode layout: the episode row
+  // lives at the top of the page (no scrolling needed to reach it); the
+  // director / cast section below it is scrolled into view when focused.
+  const scrollPageToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+  }, []);
+  const scrollToCredits = useCallback(() => {
+    scrollRef.current?.scrollTo({ x: 0, y: Math.max(creditsYRef.current - 24, 0), animated: false });
+  }, []);
+
   // ---- Resume / Up next / Start card ------------------------------------------
   const resumeTarget = useMemo(() => {
     if (rows.length === 0 || !rows[0].isEpisode) return null;
@@ -1446,6 +1889,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       if (cancelled) return;
       const target = restoreTargetRef.current;
       if (!target) return;
+      if (target.kind === 'row' && horizontalListRef.current) {
+        // Episodes are a horizontal row at the top of the page: no vertical
+        // scroll needed, the list scrolls the card into view itself.
+        scrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+        refocus();
+        return;
+      }
       if (target.kind === 'row') {
         const rowLayout = rowLayoutsRef.current[target.key];
         const rowY = rowLayout === undefined ? undefined : episodeWrapperYRef.current + rowLayout.y;
@@ -1489,7 +1939,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const runtimeText = formatCinemetaRuntime(cinemetaMeta?.runtime);
   const yearText = String(cinemetaMeta?.year ?? cinemetaMeta?.releaseInfo ?? '').match(/(19|20)\d{2}/)?.[0];
   const genreList: string[] = cinemetaMeta?.genres?.length ? cinemetaMeta.genres : (info?.tags || []).slice(0, 3);
-  const castList: string[] = (cinemetaMeta?.cast?.length ? cinemetaMeta.cast : info?.cast || []).slice(0, 3);
   const overviewText =
     cinemetaMeta?.description || info?.synopsis || 'Select an episode or source below to start streaming.';
 
@@ -1624,21 +2073,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           pageContentHRef.current = h;
         }}
       >
-        <TVFocusablePressable
-          scaleFocused={1.08}
-          focusedBorderColor="#8A5CF6"
-          borderRadius={8}
-          onPress={onBack}
-          style={styles.backBtn}
-        >
-          {() => (
-            <View style={styles.backBtnInner}>
-              <MaterialCommunityIcons name="arrow-left" size={20} color="#FFFFFF" />
-              <Text style={styles.backBtnText}>Back</Text>
-            </View>
-          )}
-        </TVFocusablePressable>
-
         {/* Header -- logo (or title), rating / runtime / year / genres,
             synopsis and cast, laid out like the Discover results header. */}
         <View style={styles.cleanHeaderContainer}>
@@ -1667,46 +2101,92 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               <Text style={styles.targetGenreText}>{genreList.join(' • ')}</Text>
             ) : null}
           </View>
-          <Text numberOfLines={5} style={styles.targetOverview}>
+          <Text numberOfLines={3} style={styles.targetOverview}>
             {overviewText}
           </Text>
-          {castList.length > 0 ? (
-            <Text numberOfLines={1} style={styles.targetCastText}>
-              <Text style={styles.targetCastLabel}>Cast: </Text>
-              {castList.join(', ')}
-            </Text>
-          ) : null}
         </View>
 
-        {/* Season / Quality Selector -- a single button opening a picker
-            modal instead of an inline (and, with many options, multi-row)
-            chip list. Keeps the picker fully reachable regardless of how
-            many seasons/qualities there are, and keeps this ScrollView's
-            own layout stable while picking (see the comment by
-            `scrollRef` above for why that mattered). */}
-        {linkList.length > 1 && (
-          <TVFocusablePressable
-            key={`season-picker${restoreToPicker ? `-f${episodeFocusNonce}` : ''}`}
-            hasTVPreferredFocus={restoreToPicker}
-            scaleFocused={1.03}
-            focusedBorderColor="#8A5CF6"
-            borderRadius={10}
-            onPress={() => setSeasonPickerVisible(true)}
-            style={styles.seasonPickerBtn}
-          >
-            {() => (
-              <View style={styles.seasonPickerBtnInner}>
-                <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
-                {/* No numberOfLines: the button grows with its label up to
-                    `maxWidth`, then the label wraps onto more lines. */}
-                <Text style={styles.seasonPickerBtnText}>
-                  {activeLink?.title || 'Select'}
-                  {activeLink?.quality ? ` • ${activeLink.quality}` : ''}
-                </Text>
-                <MaterialCommunityIcons name="chevron-down" size={20} color="#C4B5FD" />
-              </View>
+        {/* Action row -- season / quality picker (a single button opening a
+            picker modal, so the picker stays fully reachable however many
+            seasons/qualities there are) next to the compact resume / up
+            next pill. Both live above the list so the episode row below is
+            on screen without scrolling. */}
+        {(linkList.length > 1 || (!stillResolving && resumeTarget)) && (
+          <View style={styles.actionRow}>
+            {linkList.length > 1 && (
+              <TVFocusablePressable
+                key={`season-picker${restoreToPicker ? `-f${episodeFocusNonce}` : ''}`}
+                hasTVPreferredFocus={restoreToPicker}
+                scaleFocused={1.03}
+                focusedBorderColor="#8A5CF6"
+                borderRadius={10}
+                onPress={() => setSeasonPickerVisible(true)}
+                style={styles.seasonPickerBtn}
+              >
+                {() => (
+                  <View style={styles.seasonPickerBtnInner}>
+                    <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
+                    {/* No numberOfLines: the button grows with its label up to
+                        `maxWidth`, then the label wraps onto more lines. */}
+                    <Text style={styles.seasonPickerBtnText}>
+                      {activeLink?.title || 'Select'}
+                      {activeLink?.quality ? ` \u2022 ${activeLink.quality}` : ''}
+                    </Text>
+                    <MaterialCommunityIcons name="chevron-down" size={20} color="#C4B5FD" />
+                  </View>
+                )}
+              </TVFocusablePressable>
             )}
-          </TVFocusablePressable>
+            {!stillResolving && resumeTarget && (
+              <TVFocusablePressable
+                scaleFocused={1.03}
+                focusedBorderColor="#FFFFFF"
+                borderRadius={10}
+                onPress={handleResumeCardPress}
+                style={styles.resumePill}
+              >
+                {() => (
+                  <View>
+                    <View style={styles.resumePillInner}>
+                      <MaterialCommunityIcons
+                        name={resumeTarget.mode === 'next' ? 'skip-next' : 'play'}
+                        size={20}
+                        color="#FFFFFF"
+                      />
+                      <Text numberOfLines={1} style={styles.resumePillText}>
+                        {[
+                          resumeTarget.mode === 'resume'
+                            ? 'Resume'
+                            : resumeTarget.mode === 'next'
+                            ? 'Up next'
+                            : 'Start watching',
+                          'seasonTitle' in resumeTarget ? resumeTarget.seasonTitle : undefined,
+                          resumeTarget.title,
+                          resumeTarget.mode === 'resume' && 'remaining' in resumeTarget && resumeTarget.remaining
+                            ? formatRemainingLabel(resumeTarget.remaining)
+                            : undefined,
+                        ]
+                          .filter(Boolean)
+                          .join(' \u00B7 ')}
+                      </Text>
+                    </View>
+                    {resumeTarget.mode === 'resume' &&
+                      'progress' in resumeTarget &&
+                      resumeTarget.progress !== undefined && (
+                        <View style={styles.resumeCardTrack}>
+                          <View
+                            style={[
+                              styles.resumeCardFill,
+                              { width: `${Math.min(100, Math.max(2, resumeTarget.progress * 100))}%` },
+                            ]}
+                          />
+                        </View>
+                      )}
+                  </View>
+                )}
+              </TVFocusablePressable>
+            )}
+          </View>
         )}
 
         {/* Episode / Source list -- full-width rows stacked vertically so
@@ -1733,59 +2213,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             </View>
           ) : rows.length > 0 ? (
             <View style={styles.listSection}>
-              {resumeTarget && (
-                <TVFocusablePressable
-                  scaleFocused={1.02}
-                  focusedBorderColor="#FFFFFF"
-                  borderRadius={14}
-                  onPress={handleResumeCardPress}
-                  style={styles.resumeCard}
-                >
-                  {() => (
-                    <View>
-                      <View style={styles.resumeCardInner}>
-                        <MaterialCommunityIcons
-                          name={resumeTarget.mode === 'next' ? 'skip-next' : 'play'}
-                          size={28}
-                          color="#FFFFFF"
-                        />
-                        <View style={styles.resumeCardTextCol}>
-                          <Text style={styles.resumeCardHeading}>
-                            {resumeTarget.mode === 'resume'
-                              ? 'Resume'
-                              : resumeTarget.mode === 'next'
-                              ? 'Up next'
-                              : 'Start watching'}
-                          </Text>
-                          <Text numberOfLines={1} style={styles.resumeCardDetail}>
-                            {[
-                              'seasonTitle' in resumeTarget ? resumeTarget.seasonTitle : undefined,
-                              resumeTarget.title,
-                              resumeTarget.mode === 'resume' && 'remaining' in resumeTarget && resumeTarget.remaining
-                                ? formatRemainingLabel(resumeTarget.remaining)
-                                : undefined,
-                            ]
-                              .filter(Boolean)
-                              .join(' \u00B7 ')}
-                          </Text>
-                        </View>
-                      </View>
-                      {resumeTarget.mode === 'resume' &&
-                        'progress' in resumeTarget &&
-                        resumeTarget.progress !== undefined && (
-                          <View style={styles.resumeCardTrack}>
-                            <View
-                              style={[
-                                styles.resumeCardFill,
-                                { width: `${Math.min(100, Math.max(2, resumeTarget.progress * 100))}%` },
-                              ]}
-                            />
-                          </View>
-                        )}
-                    </View>
-                  )}
-                </TVFocusablePressable>
-              )}
               <Text style={styles.sectionHeader}>{rows[0].isEpisode ? 'Episodes' : 'Select Source'}</Text>
               {episodeRanges.length > 0 && (
                 <ScrollView
@@ -1828,6 +2255,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 onRowLayout={handleRowLayout}
                 onWrapperLayout={handleWrapperLayout}
                 scrollToRow={scrollToEpisodeRow}
+                onFocusList={scrollPageToTop}
               />
             </View>
           ) : (
@@ -1860,8 +2288,53 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           )}
         </View>
 
+        {/* Director / creator + top cast, with photos. */}
+        {credits.directors.length + credits.cast.length > 0 && (
+          <View
+            style={styles.creditsSection}
+            onLayout={(e) => {
+              creditsYRef.current = e.nativeEvent.layout.y;
+            }}
+          >
+            <Text style={styles.sectionHeader}>
+              {credits.directors.length > 0
+                ? `${isSeriesTitle ? 'Creator' : 'Director'}${credits.directors.length > 1 ? 's' : ''}${
+                    credits.cast.length > 0 ? ' and Cast' : ''
+                  }`
+                : 'Cast'}
+            </Text>
+            <View style={styles.creditsRow}>
+              {credits.directors.map((person) => (
+                <CreditItem key={`dir-${person.id ?? person.name}`} person={person} onFocus={scrollToCredits} />
+              ))}
+              {credits.directors.length > 0 && credits.cast.length > 0 ? (
+                <View style={styles.creditsDivider} />
+              ) : null}
+              {credits.cast.map((person) => (
+                <CreditItem key={`cast-${person.id ?? person.name}`} person={person} onFocus={scrollToCredits} />
+              ))}
+            </View>
+          </View>
+        )}
+
         <View style={{ height: 60 }} />
       </ScrollView>
+
+      {/* Back -- icon only, in a circular glass button pinned to the top-left
+          corner (outside the ScrollView so it never scrolls away). */}
+      <TVFocusablePressable
+        scaleFocused={1.1}
+        focusedBorderColor="#FFFFFF"
+        borderRadius={20}
+        onPress={onBack}
+        style={styles.backCircle}
+      >
+        {() => (
+          <View style={styles.backCircleInner}>
+            <MaterialCommunityIcons name="arrow-left" size={22} color="#FFFFFF" />
+          </View>
+        )}
+      </TVFocusablePressable>
 
       <Modal
         visible={Boolean(serverPicker)}
@@ -2038,9 +2511,29 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 48,
-    paddingTop: 20,
+    // Clears the top-left back button; kept tight so the episode row fits
+    // on screen without scrolling.
+    paddingTop: 54,
     paddingBottom: 40,
   },
+  // Round glass back button, top-left corner.
+  backCircle: {
+    position: 'absolute',
+    top: 12,
+    left: 20,
+    width: 40,
+    height: 40,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    zIndex: 20,
+  },
+  backCircleInner: {
+    width: 36,
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Still used by the error screen's "Go back" button.
   backBtn: {
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
@@ -2061,20 +2554,20 @@ const styles = StyleSheet.create({
   // Header -- values match the Discover results header.
   cleanHeaderContainer: {
     maxWidth: 720,
-    marginBottom: 20,
+    marginBottom: 10,
     backgroundColor: 'transparent',
   },
   targetLogo: {
-    width: 320,
-    height: 100,
-    marginBottom: 12,
+    width: 260,
+    height: 64,
+    marginBottom: 6,
     alignSelf: 'flex-start',
   },
   targetTitle: {
     color: '#FFFFFF',
-    fontSize: 34,
+    fontSize: 28,
     fontWeight: '900',
-    marginBottom: 6,
+    marginBottom: 4,
     letterSpacing: -0.3,
     textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 2 },
@@ -2085,7 +2578,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 10,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   ratingBadge: {
     backgroundColor: '#F59E0B',
@@ -2111,28 +2604,11 @@ const styles = StyleSheet.create({
   targetOverview: {
     color: '#FFFFFF',
     fontSize: 13,
-    lineHeight: 20,
-    maxWidth: 460,
+    lineHeight: 18,
+    maxWidth: 520,
     textShadowColor: 'rgba(0, 0, 0, 0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
-  },
-  targetCastText: {
-    color: '#DDE00B',
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 6,
-    maxWidth: 460,
-    textShadowColor: 'rgba(0, 0, 0, 0.95)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 6,
-  },
-  targetCastLabel: {
-    color: '#DDE00B',
-    fontWeight: '700',
-    textShadowColor: 'rgba(0, 0, 0, 0.95)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 6,
   },
   // Single trigger button that opens the season/quality picker modal
   // (replaces the old inline, potentially multi-row, chip list).
@@ -2143,7 +2619,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(167, 139, 250, 0.35)',
     paddingHorizontal: 16,
     paddingVertical: 10,
-    marginBottom: 24,
     // Grows with the label up to this width, then the label wraps.
     maxWidth: 720,
   },
@@ -2251,9 +2726,9 @@ const styles = StyleSheet.create({
   },
   sectionHeader: {
     color: '#FFFFFF',
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
-    marginBottom: 14,
+    marginBottom: 6,
   },
   listSection: {
     marginBottom: 12,
@@ -2287,6 +2762,196 @@ const styles = StyleSheet.create({
   rangeChipSelected: { backgroundColor: 'rgba(124, 77, 255, 0.35)', borderColor: '#A78BFA' },
   rangeChipText: { color: '#C4B5FD', fontSize: 15, fontWeight: '600' },
   rangeChipTextSelected: { color: '#FFFFFF' },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 10,
+  },
+  resumePill: {
+    backgroundColor: '#7C4DFF',
+    overflow: 'hidden',
+    maxWidth: 460,
+  },
+  resumePillInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  resumePillText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  // Horizontal episode cards.
+  hRowContent: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: EPISODE_ROW_PAD_V,
+    paddingHorizontal: EPISODE_ROW_PAD_H,
+  },
+  hCard: {
+    width: EPISODE_CARD_W,
+    height: EPISODE_CARD_H,
+    marginRight: EPISODE_CARD_GAP,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: '#16161E',
+    overflow: 'hidden',
+  },
+  hCardSelected: {
+    borderColor: '#8A5CF6',
+    transform: [{ scale: 1.03 }],
+  },
+  hCardImage: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: EPISODE_CARD_W,
+    height: EPISODE_CARD_H,
+  },
+  hCardScrim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: EPISODE_CARD_W,
+    height: EPISODE_CARD_H,
+  },
+  hCardBody: {
+    position: 'absolute',
+    left: 0,
+    bottom: 0,
+    width: EPISODE_CARD_W - 4,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+  },
+  hBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    borderRadius: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    marginBottom: 4,
+  },
+  hBadgeText: {
+    color: '#E5E7EB',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  hTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 3,
+  },
+  hOverview: {
+    color: '#E5E7EB',
+    fontSize: 11,
+    lineHeight: 15,
+    marginBottom: 6,
+  },
+  hMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  hMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  hMetaSpacer: {
+    flex: 1,
+  },
+  hMetaText: {
+    color: '#D1D5DB',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  hRatingTag: {
+    backgroundColor: '#F5C518',
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  hRatingTagText: {
+    color: '#000000',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  hRatingValue: {
+    color: '#F5C518',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  hResumeBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+    backgroundColor: 'rgba(138, 92, 246, 0.85)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  // Director / cast.
+  creditsSection: {
+    marginTop: 4,
+  },
+  creditsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  creditsDivider: {
+    width: 1,
+    height: 88,
+    marginHorizontal: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  creditItem: {
+    width: 112,
+    padding: 4,
+  },
+  creditInner: {
+    alignItems: 'center',
+  },
+  creditPhoto: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: '#1A1A22',
+  },
+  creditPhotoFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  creditInitials: {
+    color: '#9CA3AF',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  creditName: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  creditRole: {
+    color: '#9CA3AF',
+    fontSize: 10,
+    textAlign: 'center',
+    marginTop: 1,
+  },
   // Episode card -- values match the Discover episode card.
   episodeCard: {
     backgroundColor: 'rgba(22, 22, 30, 0.6)',
@@ -2317,8 +2982,6 @@ const styles = StyleSheet.create({
   },
   listHost: {
     position: 'absolute',
-    left: 0,
-    right: 0,
     backgroundColor: 'transparent',
   },
   episodeInner: {
