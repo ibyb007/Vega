@@ -78,6 +78,11 @@ const ROW_LOOKAHEAD = 3;
 // moment; each hero change swaps up to three (blurred) full-screen images.
 const HERO_APPLY_DELAY_MS = 80;
 const PREFETCH_DELAY_MS = 300;
+// After a card takes focus, its row keeps (re)applying "scroll this card into
+// view" for this long -- every time the row's layout/content grows or a retry
+// timer fires -- so a row that is still laying out (Home remounting after
+// Back from Details/Discover) can't leave the focused card off-screen.
+const SCROLL_SETTLE_MS = 2500;
 // The secondary source's fetch waits for the primary's to finish (so two
 // sources never hammer the provider sandbox at once) but never longer than this.
 const SECONDARY_FETCH_MAX_DELAY_MS = 4000;
@@ -255,7 +260,10 @@ interface HomeCardProps {
   // Imperatively brings a card into view inside its row's horizontal
   // ScrollView. See the comment on HomeRow's own `scrollItemIntoView` for
   // why this can't just be left to Android's native focus-scroll.
-  scrollItemIntoView: (node: View | null) => void;
+  scrollItemIntoView: (itemKey: string) => void;
+  // Reports the card's x inside its row's content (from the card's own
+  // onLayout) so the row can scroll to it without measuring natively.
+  onCardLayout: (itemKey: string, x: number) => void;
 }
 
 const HomeCard = React.memo(function HomeCard({
@@ -270,6 +278,7 @@ const HomeCard = React.memo(function HomeCard({
   onCardLongPress,
   registerItemRef,
   scrollItemIntoView,
+  onCardLayout,
 }: HomeCardProps) {
   const isFirstInRow = pIndex === 0;
   const isTopRow = rowIndex === 0;
@@ -342,7 +351,7 @@ const HomeCard = React.memo(function HomeCard({
     // showing its first screenful while the "selected" card sits off to
     // the right, unscrolled-to. Doing it ourselves on every focus (not
     // just this remount case) makes it deterministic either way.
-    scrollItemIntoView(nodeRef.current);
+    scrollItemIntoView(itemKey);
   }, [
     onCardFocus,
     rowIndex,
@@ -354,6 +363,12 @@ const HomeCard = React.memo(function HomeCard({
     isTopRow,
     scrollItemIntoView,
   ]);
+
+  const handleLayout = useCallback(
+    (e: { nativeEvent: { layout: { x: number } } }) =>
+      onCardLayout(itemKey, e.nativeEvent.layout.x),
+    [onCardLayout, itemKey]
+  );
 
   const handlePress = useCallback(
     () => onCardPress(rowIndex, item, itemKey, isHistoryRow),
@@ -375,6 +390,7 @@ const HomeCard = React.memo(function HomeCard({
       borderRadius={isLive ? LIVE_CARD_RADIUS : 8}
       delayLongPress={350}
       onFocus={handleFocus}
+      onLayout={handleLayout}
       onPress={handlePress}
       onLongPress={handleLongPress}
       style={[
@@ -463,54 +479,54 @@ const HomeRow = React.memo(function HomeRow({
   // open). So every card scrolls itself into view explicitly on focus
   // instead of hoping the OS does it.
   const scrollViewRef = useRef<ScrollView>(null);
-  // The card most recently scrolled to, and whether the row is still in its
-  // "settling" window right after mounting. Coming back from Discover /
-  // Details remounts Home: the focused card (say the 9th) asks to be scrolled
-  // to while the row's content is still only partly laid out, so the single
-  // scrollTo is clamped back to 0 and the row sits on its first posters. While
-  // settling, the scroll is re-applied each time the content grows or a retry
+  // Scrolling is driven by the cards' own layout positions (onLayout x inside
+  // the row's content) rather than a native measureLayout call, and the
+  // *target card* is remembered instead of a one-shot scroll. Coming back from
+  // Discover / Details remounts Home: the focused card (say the 8th) asks to
+  // be scrolled to while the row is still only partly laid out, so a single
+  // scrollTo is clamped to 0 and the row sits on its first posters. For
+  // SCROLL_SETTLE_MS after a focus, the scroll is re-applied whenever the
+  // target's layout arrives, the content size / viewport changes, or a retry
   // timer fires, until the card's real position is reachable.
-  const lastScrolledNodeRef = useRef<View | null>(null);
-  const settlingRef = useRef(true);
-  const scrollItemIntoView = useCallback((node: View | null) => {
+  const cardXRef = useRef<Record<string, number>>({});
+  const scrollTargetKeyRef = useRef<string | null>(null);
+  const scrollPendingUntilRef = useRef(0);
+
+  const applyPendingScroll = useCallback(() => {
+    if (Date.now() > scrollPendingUntilRef.current) return;
+    const key = scrollTargetKeyRef.current;
     const scrollView = scrollViewRef.current;
-    if (!node || !scrollView) return;
-    lastScrolledNodeRef.current = node;
-    const scrollHandle = findNodeHandle(scrollView);
-    if (!scrollHandle) return;
-    // measureLayout gives the card's position relative to the ScrollView's
-    // own content, which is exactly what scrollTo's `x` needs -- no manual
-    // width/gap math, and it stays correct however the row is styled.
-    (node as any).measureLayout?.(
-      scrollHandle,
-      (x: number) => {
-        // A little left padding so the target card doesn't land flush
-        // against the row's edge.
-        const targetX = Math.max(0, x - 24);
-        scrollView.scrollTo({ x: targetX, y: 0, animated: false });
-      },
-      () => {}
-    );
+    if (!key || !scrollView) return;
+    const x = cardXRef.current[key];
+    if (x == null) return; // its onLayout will call us once it is placed
+    // A little left padding so the target card doesn't land flush against
+    // the row's edge.
+    scrollView.scrollTo({ x: Math.max(0, x - 24), y: 0, animated: false });
   }, []);
 
+  const scrollItemIntoView = useCallback(
+    (itemKey: string) => {
+      scrollTargetKeyRef.current = itemKey;
+      scrollPendingUntilRef.current = Date.now() + SCROLL_SETTLE_MS;
+      applyPendingScroll();
+    },
+    [applyPendingScroll]
+  );
+
+  const handleCardLayout = useCallback(
+    (itemKey: string, x: number) => {
+      cardXRef.current[itemKey] = x;
+      if (scrollTargetKeyRef.current === itemKey) applyPendingScroll();
+    },
+    [applyPendingScroll]
+  );
+
   useEffect(() => {
-    // Re-assert the position a few times while the row finishes laying out,
-    // then stop so normal browsing is never fought.
-    const timers = [60, 200, 450, 900].map((ms) =>
-      setTimeout(() => {
-        if (settlingRef.current && lastScrolledNodeRef.current) {
-          scrollItemIntoView(lastScrolledNodeRef.current);
-        }
-      }, ms),
+    const timers = [60, 200, 450, 900, 1500, 2200].map((ms) =>
+      setTimeout(applyPendingScroll, ms)
     );
-    const stop = setTimeout(() => {
-      settlingRef.current = false;
-    }, 1200);
-    return () => {
-      timers.forEach(clearTimeout);
-      clearTimeout(stop);
-    };
-  }, [scrollItemIntoView]);
+    return () => timers.forEach(clearTimeout);
+  }, [applyPendingScroll]);
 
   // Whatever card holds (or last held) focus in this row must always be
   // mounted -- e.g. coming back from Details to a poster that is well past
@@ -557,11 +573,8 @@ const HomeRow = React.memo(function HomeRow({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.horizontalRowScroll}
         removeClippedSubviews={false}
-        onContentSizeChange={() => {
-          if (settlingRef.current && lastScrolledNodeRef.current) {
-            scrollItemIntoView(lastScrolledNodeRef.current);
-          }
-        }}
+        onContentSizeChange={applyPendingScroll}
+        onLayout={applyPendingScroll}
       >
         {rowPosts.slice(0, renderCount).map((item: any, pIndex: number) => {
           const itemKey = buildItemKey(row, item, pIndex);
@@ -579,6 +592,7 @@ const HomeRow = React.memo(function HomeRow({
               onCardLongPress={onCardLongPress}
               registerItemRef={registerItemRef}
               scrollItemIntoView={scrollItemIntoView}
+              onCardLayout={handleCardLayout}
             />
           );
         })}
