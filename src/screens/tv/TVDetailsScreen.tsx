@@ -153,13 +153,6 @@ const formatRemainingLabel = (seconds: number): string => {
   return rest ? `${hours}h ${rest}m left` : `${hours}h left`;
 };
 
-// Action row (season / quality picker + resume pill).
-const PAGE_PAD_H = 48;
-const ACTION_ROW_GAP = 12;
-const PILL_MAX_COLLAPSED = 460;
-// Width the picker shrinks to while the resume pill is focused.
-const PICKER_COMPACT_W = 210;
-
 const KEYCODE_DPAD_UP = 19;
 const KEYCODE_DPAD_DOWN = 20;
 const KEYCODE_DPAD_LEFT = 21;
@@ -176,6 +169,9 @@ const EPISODE_CARD_GAP = 14;
 // Space kept around the focused (scaled) card so it is never clipped.
 const EPISODE_ROW_PAD_V = 12;
 const EPISODE_ROW_PAD_H = 8;
+// Credits strip: photo size and the strip's explicit height.
+const CREDIT_PHOTO = 104;
+const CREDIT_ROW_H = 190;
 
 // "125" -> "2h 5m", "59" -> "59m".
 const formatMinutes = (min: number | undefined): string | undefined => {
@@ -1275,9 +1271,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [tmdbCredits, setTmdbCredits] = useState<TmdbCredits | null>(null);
   const [tmdbEpisodeInfo, setTmdbEpisodeInfo] = useState<Record<string, TmdbEpisodeInfo>>({});
   const [tmdbRating, setTmdbRating] = useState<string | undefined>(undefined);
-  // The resume / up-next pill has D-pad focus: it then shows its full text and
-  // the season / quality picker beside it shrinks to make room.
-  const [resumeFocused, setResumeFocused] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -1328,6 +1321,13 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     };
   }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType]);
 
+  // Credits row: one horizontal strip (directors / creators, writers, then
+  // cast). Its own scrolling is off; focusing a person scrolls it.
+  const { width: creditsWidth } = useWindowDimensions();
+  const creditsScrollRef = useRef<ScrollView | null>(null);
+  const creditsOffsetRef = useRef(0);
+  const creditLayoutsRef = useRef<Record<string, { x: number; w: number }>>({});
+
   const cinemetaCredits: TmdbCredits = useMemo(() => {
     const extras = (cinemetaMeta as any)?.app_extras;
     const toPerson = (p: any, fallbackRole?: string): CreditPerson | null =>
@@ -1346,6 +1346,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     let directors = (Array.isArray(extras?.directors) ? extras.directors : [])
       .map((p: any) => toPerson(p, directorRole))
       .filter(Boolean) as CreditPerson[];
+    let writers = (Array.isArray(extras?.writers) ? extras.writers : [])
+      .map((p: any) => toPerson(p, 'Writer'))
+      .filter(Boolean) as CreditPerson[];
     // No structured credits: names only (initials stand in for photos).
     if (cast.length === 0) {
       const names: string[] = cinemetaMeta?.cast?.length ? cinemetaMeta.cast : info?.cast || [];
@@ -1356,30 +1359,38 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       const names: string[] = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
       directors = names.filter(Boolean).map((name) => ({ name, role: directorRole }));
     }
-    return { directors: directors.slice(0, 2), cast: cast.slice(0, 7) };
+    if (writers.length === 0) {
+      const raw = (cinemetaMeta as any)?.writer;
+      const names: string[] = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+      writers = names.filter(Boolean).map((name) => ({ name, role: 'Writer' }));
+    }
+    // Someone credited as both creator and writer is listed once.
+    const listed = new Set(directors.map((p) => p.name.toLowerCase()));
+    writers = writers.filter((p) => !listed.has(p.name.toLowerCase()));
+    return { directors: directors.slice(0, 2), writers: writers.slice(0, 2), cast: cast.slice(0, 15) };
   }, [cinemetaMeta, info?.cast, isSeriesTitle]);
-  const cinemetaHasPhotos = cinemetaCredits.cast.some((p) => Boolean(p.photo));
 
   useEffect(() => {
     let alive = true;
     setTmdbCredits(null);
-    if (!tmdbIdentity || cinemetaHasPhotos) {
+    if (!tmdbIdentity) {
       return () => {
         alive = false;
       };
     }
-    fetchTmdbCredits(tmdbIdentity, 7).then((result) => {
+    fetchTmdbCredits(tmdbIdentity, 15).then((result) => {
       if (alive) setTmdbCredits(result);
     });
     return () => {
       alive = false;
     };
-  }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType, cinemetaHasPhotos]);
+  }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType]);
 
   const credits: TmdbCredits = useMemo(
     () => ({
       directors: (tmdbCredits?.directors.length ? tmdbCredits.directors : cinemetaCredits.directors).slice(0, 2),
-      cast: (tmdbCredits?.cast.length ? tmdbCredits.cast : cinemetaCredits.cast).slice(0, 7),
+      writers: (tmdbCredits?.writers.length ? tmdbCredits.writers : cinemetaCredits.writers).slice(0, 2),
+      cast: (tmdbCredits?.cast.length ? tmdbCredits.cast : cinemetaCredits.cast).slice(0, 15),
     }),
     [tmdbCredits, cinemetaCredits],
   );
@@ -1867,6 +1878,25 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     scrollRef.current?.scrollTo({ x: 0, y: Math.max(creditsYRef.current - 24, 0), animated: false });
   }, []);
 
+  const focusCredit = useCallback(
+    (key: string) => {
+      scrollToCredits();
+      const l = creditLayoutsRef.current[key];
+      const viewport = creditsWidth - 48;
+      if (!l) return;
+      const margin = 24;
+      const offset = creditsOffsetRef.current;
+      let next = offset;
+      if (l.x - margin < offset) next = Math.max(0, l.x - margin);
+      else if (l.x + l.w + margin > offset + viewport) next = l.x + l.w + margin - viewport;
+      if (next !== offset) {
+        creditsOffsetRef.current = next;
+        creditsScrollRef.current?.scrollTo({ x: next, y: 0, animated: true });
+      }
+    },
+    [scrollToCredits, creditsWidth],
+  );
+
   // ---- Resume / Up next / Start card ------------------------------------------
   const resumeTarget = useMemo(() => {
     if (rows.length === 0 || !rows[0].isEpisode) return null;
@@ -1906,11 +1936,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     }
     return null;
   }, [rows, resumeHint, activeLink, linkList]);
-
-  // The pill can vanish while focused (list reloads) without a blur event.
-  useEffect(() => {
-    if ((!resumeTarget || stillResolving) && resumeFocused) setResumeFocused(false);
-  }, [resumeTarget, stillResolving, resumeFocused]);
 
   // `hasTVPreferredFocus` alone is not enough after a remount: the target
   // is usually below the fold, and the details ScrollView only has views
@@ -2071,14 +2096,6 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     );
   }
 
-  // Resume pill focused -> it takes the width the picker gives up.
-  const pillExpanded = resumeFocused && Boolean(resumeTarget) && !stillResolving;
-  const pickerShowing = linkList.length > 1;
-  const pillMaxExpanded = Math.max(
-    PILL_MAX_COLLAPSED,
-    windowWidth - PAGE_PAD_H * 2 - (pickerShowing ? PICKER_COMPACT_W + ACTION_ROW_GAP : 0),
-  );
-
   return (
     <View style={styles.container}>
       {/* Backdrop stays fixed behind the scrolling content, rather than
@@ -2177,17 +2194,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 focusedBorderColor="#8A5CF6"
                 borderRadius={10}
                 onPress={() => setSeasonPickerVisible(true)}
-                style={[styles.seasonPickerBtn, pillExpanded && styles.seasonPickerBtnCompact]}
+                style={styles.seasonPickerBtn}
               >
                 {() => (
                   <View style={styles.seasonPickerBtnInner}>
                     <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
                     {/* No numberOfLines: the button grows with its label up to
                         `maxWidth`, then the label wraps onto more lines. */}
-                    <Text
-                      numberOfLines={pillExpanded ? 1 : undefined}
-                      style={styles.seasonPickerBtnText}
-                    >
+                    <Text style={styles.seasonPickerBtnText}>
                       {activeLink?.title || 'Select'}
                       {activeLink?.quality ? ` \u2022 ${activeLink.quality}` : ''}
                     </Text>
@@ -2200,48 +2214,20 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               <TVFocusablePressable
                 scaleFocused={1.03}
                 focusedBorderColor="#FFFFFF"
-                borderRadius={14}
+                borderRadius={10}
                 onPress={handleResumeCardPress}
-                onFocus={() => {
-                  setResumeFocused(true);
-                  scrollPageToTop();
-                }}
-                onBlur={() => setResumeFocused(false)}
-                style={[
-                  styles.resumePill,
-                  { maxWidth: pillExpanded ? pillMaxExpanded : PILL_MAX_COLLAPSED },
-                ]}
+                onFocus={scrollPageToTop}
+                style={styles.resumePill}
               >
-                {({ focused }) => (
+                {() => (
                   <View>
-                    {/* Liquid glass: translucent tint, diagonal sheen, bright top
-                        edge and a hairline rim. Plain layers (no live blur) so it
-                        stays cheap on TV SoCs. */}
-                    <LinearGradient
-                      pointerEvents="none"
-                      colors={
-                        focused
-                          ? ['rgba(255,255,255,0.40)', 'rgba(167,139,250,0.22)', 'rgba(255,255,255,0.22)']
-                          : ['rgba(255,255,255,0.26)', 'rgba(138,92,246,0.14)', 'rgba(255,255,255,0.10)']
-                      }
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={StyleSheet.absoluteFill}
-                    />
-                    <View pointerEvents="none" style={styles.resumeGlassTopEdge} />
-                    <View pointerEvents="none" style={styles.resumeGlassRim} />
                     <View style={styles.resumePillInner}>
                       <MaterialCommunityIcons
                         name={resumeTarget.mode === 'next' ? 'skip-next' : 'play'}
                         size={20}
                         color="#FFFFFF"
                       />
-                      {/* One line while idle; the full text (wrapping only if even
-                          the expanded width is not enough) while focused. */}
-                      <Text
-                        numberOfLines={pillExpanded ? undefined : 1}
-                        style={styles.resumePillText}
-                      >
+                      <Text numberOfLines={1} style={styles.resumePillText}>
                         {[
                           resumeTarget.mode === 'resume'
                             ? 'Resume'
@@ -2261,10 +2247,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                     {resumeTarget.mode === 'resume' &&
                       'progress' in resumeTarget &&
                       resumeTarget.progress !== undefined && (
-                        <View style={styles.resumeGlassTrack}>
+                        <View style={styles.resumeCardTrack}>
                           <View
                             style={[
-                              styles.resumeGlassFill,
+                              styles.resumeCardFill,
                               { width: `${Math.min(100, Math.max(2, resumeTarget.progress * 100))}%` },
                             ]}
                           />
@@ -2378,8 +2364,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           )}
         </View>
 
-        {/* Director / creator + top cast, with photos. */}
-        {credits.directors.length + credits.cast.length > 0 && (
+        {/* Creator / director, writer and top cast, with photos -- one
+            horizontal strip that shows as many people as fit from the left. */}
+        {credits.directors.length + credits.writers.length + credits.cast.length > 0 && (
           <View
             style={styles.creditsSection}
             onLayout={(e) => {
@@ -2387,23 +2374,57 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             }}
           >
             <Text style={styles.sectionHeader}>
-              {credits.directors.length > 0
-                ? `${isSeriesTitle ? 'Creator' : 'Director'}${credits.directors.length > 1 ? 's' : ''}${
-                    credits.cast.length > 0 ? ' and Cast' : ''
-                  }`
-                : 'Cast'}
+              {(() => {
+                const parts: string[] = [];
+                if (credits.directors.length > 0) {
+                  parts.push(`${isSeriesTitle ? 'Creator' : 'Director'}${credits.directors.length > 1 ? 's' : ''}`);
+                }
+                if (credits.writers.length > 0) parts.push(credits.writers.length > 1 ? 'Writers' : 'Writer');
+                if (credits.cast.length > 0) parts.push('Cast');
+                return parts.length > 1
+                  ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+                  : parts[0];
+              })()}
             </Text>
-            <View style={styles.creditsRow}>
-              {credits.directors.map((person) => (
-                <CreditItem key={`dir-${person.id ?? person.name}`} person={person} onFocus={scrollToCredits} />
+            <ScrollView
+              ref={creditsScrollRef}
+              horizontal
+              scrollEnabled={false}
+              showsHorizontalScrollIndicator={false}
+              removeClippedSubviews={false}
+              style={{ width: creditsWidth - 48, height: CREDIT_ROW_H }}
+              contentContainerStyle={styles.creditsRow}
+            >
+              {[
+                ...credits.directors.map((p) => ({ p, key: `dir-${p.id ?? p.name}` })),
+                ...credits.writers.map((p) => ({ p, key: `wri-${p.id ?? p.name}` })),
+              ].map(({ p, key }) => (
+                <View
+                  key={key}
+                  onLayout={(e) => {
+                    creditLayoutsRef.current[key] = { x: e.nativeEvent.layout.x, w: e.nativeEvent.layout.width };
+                  }}
+                >
+                  <CreditItem person={p} onFocus={() => focusCredit(key)} />
+                </View>
               ))}
-              {credits.directors.length > 0 && credits.cast.length > 0 ? (
+              {credits.directors.length + credits.writers.length > 0 && credits.cast.length > 0 ? (
                 <View style={styles.creditsDivider} />
               ) : null}
-              {credits.cast.map((person) => (
-                <CreditItem key={`cast-${person.id ?? person.name}`} person={person} onFocus={scrollToCredits} />
-              ))}
-            </View>
+              {credits.cast.map((p) => {
+                const key = `cast-${p.id ?? p.name}`;
+                return (
+                  <View
+                    key={key}
+                    onLayout={(e) => {
+                      creditLayoutsRef.current[key] = { x: e.nativeEvent.layout.x, w: e.nativeEvent.layout.width };
+                    }}
+                  >
+                    <CreditItem person={p} onFocus={() => focusCredit(key)} />
+                  </View>
+                );
+              })}
+            </ScrollView>
           </View>
         )}
 
@@ -2719,10 +2740,6 @@ const styles = StyleSheet.create({
     // Grows with the label up to this width, then the label wraps.
     maxWidth: 720,
   },
-  // Shrunk while the resume pill is focused (label ellipsizes to one line).
-  seasonPickerBtnCompact: {
-    maxWidth: PICKER_COMPACT_W,
-  },
   seasonPickerBtnInner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2869,33 +2886,10 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 10,
   },
-  // Liquid-glass resume / up-next pill (maxWidth is set at render time).
   resumePill: {
-    backgroundColor: 'rgba(138, 92, 246, 0.20)',
+    backgroundColor: '#7C4DFF',
     overflow: 'hidden',
-    flexShrink: 1,
-  },
-  resumeGlassTopEdge: {
-    position: 'absolute',
-    top: 0,
-    left: 12,
-    right: 12,
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.6)',
-  },
-  resumeGlassRim: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
-  },
-  resumeGlassTrack: {
-    height: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.14)',
-  },
-  resumeGlassFill: {
-    height: 4,
-    backgroundColor: 'rgba(196, 181, 253, 0.95)',
+    maxWidth: 460,
   },
   resumePillInner: {
     flexDirection: 'row',
@@ -3033,25 +3027,27 @@ const styles = StyleSheet.create({
   creditsRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
   },
   creditsDivider: {
     width: 1,
-    height: 72,
-    marginHorizontal: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    height: CREDIT_PHOTO,
+    marginHorizontal: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
   },
   creditItem: {
-    width: 88,
-    padding: 2,
+    width: CREDIT_PHOTO + 24,
+    padding: 4,
+    marginRight: 4,
   },
   creditInner: {
     alignItems: 'center',
   },
   creditPhoto: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: CREDIT_PHOTO,
+    height: CREDIT_PHOTO,
+    borderRadius: CREDIT_PHOTO / 2,
     backgroundColor: '#1A1A22',
   },
   creditPhotoFallback: {
@@ -3060,21 +3056,37 @@ const styles = StyleSheet.create({
   },
   creditInitials: {
     color: '#9CA3AF',
-    fontSize: 20,
+    fontSize: 26,
     fontWeight: '700',
   },
+  // Dark hue behind names / roles so they stay readable over the backdrop.
   creditName: {
     color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '700',
     textAlign: 'center',
-    marginTop: 5,
+    marginTop: 6,
+    maxWidth: CREDIT_PHOTO + 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.62)',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    overflow: 'hidden',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   creditRole: {
-    color: '#9CA3AF',
+    color: '#E5E7EB',
     fontSize: 10,
     textAlign: 'center',
-    marginTop: 1,
+    marginTop: 3,
+    maxWidth: CREDIT_PHOTO + 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    overflow: 'hidden',
   },
   // Episode card -- values match the Discover episode card.
   episodeCard: {
