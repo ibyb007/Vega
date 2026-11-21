@@ -153,6 +153,13 @@ const formatRemainingLabel = (seconds: number): string => {
   return rest ? `${hours}h ${rest}m left` : `${hours}h left`;
 };
 
+// Action row (season / quality picker + resume pill).
+const PAGE_PAD_H = 48;
+const ACTION_ROW_GAP = 12;
+const PILL_MAX_COLLAPSED = 460;
+// Width the picker shrinks to while the resume pill is focused.
+const PICKER_COMPACT_W = 210;
+
 const KEYCODE_DPAD_UP = 19;
 const KEYCODE_DPAD_DOWN = 20;
 const KEYCODE_DPAD_LEFT = 21;
@@ -1268,6 +1275,9 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [tmdbCredits, setTmdbCredits] = useState<TmdbCredits | null>(null);
   const [tmdbEpisodeInfo, setTmdbEpisodeInfo] = useState<Record<string, TmdbEpisodeInfo>>({});
   const [tmdbRating, setTmdbRating] = useState<string | undefined>(undefined);
+  // The resume / up-next pill has D-pad focus: it then shows its full text and
+  // the season / quality picker beside it shrinks to make room.
+  const [resumeFocused, setResumeFocused] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -1897,6 +1907,11 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     return null;
   }, [rows, resumeHint, activeLink, linkList]);
 
+  // The pill can vanish while focused (list reloads) without a blur event.
+  useEffect(() => {
+    if ((!resumeTarget || stillResolving) && resumeFocused) setResumeFocused(false);
+  }, [resumeTarget, stillResolving, resumeFocused]);
+
   // `hasTVPreferredFocus` alone is not enough after a remount: the target
   // is usually below the fold, and the details ScrollView only has views
   // attached for what is on screen, so the focus request has nothing to
@@ -2056,6 +2071,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     );
   }
 
+  // Resume pill focused -> it takes the width the picker gives up.
+  const pillExpanded = resumeFocused && Boolean(resumeTarget) && !stillResolving;
+  const pickerShowing = linkList.length > 1;
+  const pillMaxExpanded = Math.max(
+    PILL_MAX_COLLAPSED,
+    windowWidth - PAGE_PAD_H * 2 - (pickerShowing ? PICKER_COMPACT_W + ACTION_ROW_GAP : 0),
+  );
+
   return (
     <View style={styles.container}>
       {/* Backdrop stays fixed behind the scrolling content, rather than
@@ -2154,14 +2177,17 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 focusedBorderColor="#8A5CF6"
                 borderRadius={10}
                 onPress={() => setSeasonPickerVisible(true)}
-                style={styles.seasonPickerBtn}
+                style={[styles.seasonPickerBtn, pillExpanded && styles.seasonPickerBtnCompact]}
               >
                 {() => (
                   <View style={styles.seasonPickerBtnInner}>
                     <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
                     {/* No numberOfLines: the button grows with its label up to
                         `maxWidth`, then the label wraps onto more lines. */}
-                    <Text style={styles.seasonPickerBtnText}>
+                    <Text
+                      numberOfLines={pillExpanded ? 1 : undefined}
+                      style={styles.seasonPickerBtnText}
+                    >
                       {activeLink?.title || 'Select'}
                       {activeLink?.quality ? ` \u2022 ${activeLink.quality}` : ''}
                     </Text>
@@ -2174,20 +2200,48 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               <TVFocusablePressable
                 scaleFocused={1.03}
                 focusedBorderColor="#FFFFFF"
-                borderRadius={10}
+                borderRadius={14}
                 onPress={handleResumeCardPress}
-                onFocus={scrollPageToTop}
-                style={styles.resumePill}
+                onFocus={() => {
+                  setResumeFocused(true);
+                  scrollPageToTop();
+                }}
+                onBlur={() => setResumeFocused(false)}
+                style={[
+                  styles.resumePill,
+                  { maxWidth: pillExpanded ? pillMaxExpanded : PILL_MAX_COLLAPSED },
+                ]}
               >
-                {() => (
+                {({ focused }) => (
                   <View>
+                    {/* Liquid glass: translucent tint, diagonal sheen, bright top
+                        edge and a hairline rim. Plain layers (no live blur) so it
+                        stays cheap on TV SoCs. */}
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={
+                        focused
+                          ? ['rgba(255,255,255,0.40)', 'rgba(167,139,250,0.22)', 'rgba(255,255,255,0.22)']
+                          : ['rgba(255,255,255,0.26)', 'rgba(138,92,246,0.14)', 'rgba(255,255,255,0.10)']
+                      }
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={StyleSheet.absoluteFill}
+                    />
+                    <View pointerEvents="none" style={styles.resumeGlassTopEdge} />
+                    <View pointerEvents="none" style={styles.resumeGlassRim} />
                     <View style={styles.resumePillInner}>
                       <MaterialCommunityIcons
                         name={resumeTarget.mode === 'next' ? 'skip-next' : 'play'}
                         size={20}
                         color="#FFFFFF"
                       />
-                      <Text numberOfLines={1} style={styles.resumePillText}>
+                      {/* One line while idle; the full text (wrapping only if even
+                          the expanded width is not enough) while focused. */}
+                      <Text
+                        numberOfLines={pillExpanded ? undefined : 1}
+                        style={styles.resumePillText}
+                      >
                         {[
                           resumeTarget.mode === 'resume'
                             ? 'Resume'
@@ -2207,10 +2261,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                     {resumeTarget.mode === 'resume' &&
                       'progress' in resumeTarget &&
                       resumeTarget.progress !== undefined && (
-                        <View style={styles.resumeCardTrack}>
+                        <View style={styles.resumeGlassTrack}>
                           <View
                             style={[
-                              styles.resumeCardFill,
+                              styles.resumeGlassFill,
                               { width: `${Math.min(100, Math.max(2, resumeTarget.progress * 100))}%` },
                             ]}
                           />
@@ -2665,6 +2719,10 @@ const styles = StyleSheet.create({
     // Grows with the label up to this width, then the label wraps.
     maxWidth: 720,
   },
+  // Shrunk while the resume pill is focused (label ellipsizes to one line).
+  seasonPickerBtnCompact: {
+    maxWidth: PICKER_COMPACT_W,
+  },
   seasonPickerBtnInner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2811,10 +2869,33 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 10,
   },
+  // Liquid-glass resume / up-next pill (maxWidth is set at render time).
   resumePill: {
-    backgroundColor: '#7C4DFF',
+    backgroundColor: 'rgba(138, 92, 246, 0.20)',
     overflow: 'hidden',
-    maxWidth: 460,
+    flexShrink: 1,
+  },
+  resumeGlassTopEdge: {
+    position: 'absolute',
+    top: 0,
+    left: 12,
+    right: 12,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.6)',
+  },
+  resumeGlassRim: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+  },
+  resumeGlassTrack: {
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+  },
+  resumeGlassFill: {
+    height: 4,
+    backgroundColor: 'rgba(196, 181, 253, 0.95)',
   },
   resumePillInner: {
     flexDirection: 'row',
