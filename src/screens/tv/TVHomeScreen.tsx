@@ -42,6 +42,8 @@ import {
   completeCinemetaHero,
   CinemetaHeroData,
 } from '../../lib/services/cinemetaService';
+import { getTmdbApiKey } from '../../lib/hooks/useTmdbStory';
+import { fetchTmdbRating, resolveTmdbIdentityLite } from '../../lib/services/tmdbDetailsService';
 import { TVRoute } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import {
@@ -933,10 +935,36 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           enrichment.backdrop = settledBackdrop;
         }
 
+        // Still no rating (provider and Cinemeta both had none): ask TMDB.
+        // Needs a TMDB key; silently skipped without one.
+        let tmdbRatingAdded = false;
+        if (!enrichment.rating && getTmdbApiKey()) {
+          try {
+            const isSeriesTitle =
+              (ds ? ds.type : info?.linkList?.some((l: any) => l?.episodesLink) ? 'series' : info?.type || item.type) ===
+              'series';
+            const tagYear = (info?.tags || [])
+              .map((t: any) => String(t).trim())
+              .find((t: string) => /^(19|20)\d{2}$/.test(t));
+            const identity = await resolveTmdbIdentityLite({
+              tmdbId: info?.tmdbId,
+              imdbId: info?.imdbId || (ds ? dsImdb : undefined),
+              title: ds?.title || info?.title || item.title,
+              year: enrichment.year || tagYear,
+              kind: isSeriesTitle ? 'series' : 'movie',
+            });
+            const tmdbRating = identity ? await fetchTmdbRating(identity) : undefined;
+            if (tmdbRating) {
+              enrichment.rating = tmdbRating;
+              tmdbRatingAdded = true;
+            }
+          } catch {}
+        }
+
         // A provider that failed to answer isn't cached (nothing learned),
         // so the next focus retries.
         if (info || ds || enrichment.backdrop) writeHeroEnrichment(enrichKey, enrichment);
-        if (completion && requestId === heroRequestIdRef.current) {
+        if ((completion || tmdbRatingAdded) && requestId === heroRequestIdRef.current) {
           heroHostRef.current?.set((prev) =>
             prev ? applyEnrichment(prev, enrichment, isHistory) : prev
           );
