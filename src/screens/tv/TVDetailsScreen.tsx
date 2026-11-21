@@ -36,6 +36,7 @@ import {
   TmdbEpisodeInfo,
   TmdbIdentityLite,
   fetchTmdbCredits,
+  fetchTmdbRating,
   fetchTmdbSeasonEpisodes,
   resolveTmdbIdentityLite,
 } from '../../lib/services/tmdbDetailsService';
@@ -465,8 +466,10 @@ const EpisodeList = React.memo(function EpisodeList({
   const handleFocus = useCallback(() => {
     listFocusedRef.current = true;
     setListFocused(true);
-    if (horizontal) onFocusListRef.current?.();
     const key = selectedKeyRef.current ?? rowsRef.current[0]?.key ?? null;
+    // Horizontal row: always back to the top. Vertical list: only when the
+    // cursor is on the first row (deeper rows keep their anchored scroll).
+    if (horizontal || key === rowsRef.current[0]?.key) onFocusListRef.current?.();
     if (key) {
       selectedKeyRef.current = key;
       setSelectedKey(key);
@@ -1264,6 +1267,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [tmdbIdentity, setTmdbIdentity] = useState<TmdbIdentityLite | null>(null);
   const [tmdbCredits, setTmdbCredits] = useState<TmdbCredits | null>(null);
   const [tmdbEpisodeInfo, setTmdbEpisodeInfo] = useState<Record<string, TmdbEpisodeInfo>>({});
+  const [tmdbRating, setTmdbRating] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let alive = true;
@@ -1297,6 +1301,23 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     cinemetaSettled,
   ]);
 
+  // Title-level rating from TMDB, only used when nothing else supplied one.
+  useEffect(() => {
+    let alive = true;
+    setTmdbRating(undefined);
+    if (!tmdbIdentity) {
+      return () => {
+        alive = false;
+      };
+    }
+    fetchTmdbRating(tmdbIdentity).then((value) => {
+      if (alive) setTmdbRating(value);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [tmdbIdentity?.tmdbId, tmdbIdentity?.mediaType]);
+
   const cinemetaCredits: TmdbCredits = useMemo(() => {
     const extras = (cinemetaMeta as any)?.app_extras;
     const toPerson = (p: any, fallbackRole?: string): CreditPerson | null =>
@@ -1325,7 +1346,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       const names: string[] = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
       directors = names.filter(Boolean).map((name) => ({ name, role: directorRole }));
     }
-    return { directors: directors.slice(0, 2), cast: cast.slice(0, 5) };
+    return { directors: directors.slice(0, 2), cast: cast.slice(0, 7) };
   }, [cinemetaMeta, info?.cast, isSeriesTitle]);
   const cinemetaHasPhotos = cinemetaCredits.cast.some((p) => Boolean(p.photo));
 
@@ -1337,7 +1358,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         alive = false;
       };
     }
-    fetchTmdbCredits(tmdbIdentity, 5).then((result) => {
+    fetchTmdbCredits(tmdbIdentity, 7).then((result) => {
       if (alive) setTmdbCredits(result);
     });
     return () => {
@@ -1348,7 +1369,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const credits: TmdbCredits = useMemo(
     () => ({
       directors: (tmdbCredits?.directors.length ? tmdbCredits.directors : cinemetaCredits.directors).slice(0, 2),
-      cast: (tmdbCredits?.cast.length ? tmdbCredits.cast : cinemetaCredits.cast).slice(0, 5),
+      cast: (tmdbCredits?.cast.length ? tmdbCredits.cast : cinemetaCredits.cast).slice(0, 7),
     }),
     [tmdbCredits, cinemetaCredits],
   );
@@ -1403,6 +1424,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     };
     const cleanLabel = (title: string | undefined, sizeLabel: string | undefined): string =>
       sizeLabel ? stripFileSize(title) || title || '' : title || '';
+    // TMDB's data for one episode (still, synopsis, runtime, ...) -- fills
+    // whatever Cinemeta / the provider left out.
+    const tmdbEpisodeFor = (epSeason: number, epNum: number): TmdbEpisodeInfo | undefined =>
+      tmdbIdentity ? tmdbEpisodeInfo[`${tmdbIdentity.tmdbId}:${epSeason}:${epNum}`] : undefined;
     // Everything the horizontal episode card shows beyond the basics.
     const episodeExtras = (
       cinemetaEp: any,
@@ -1412,7 +1437,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       sizeLabel: string | undefined,
     ) => {
       const cleaned = cleanLabel(providerTitle, sizeLabel);
-      const tmdbInfo = tmdbIdentity ? tmdbEpisodeInfo[`${tmdbIdentity.tmdbId}:${epSeason}:${epNum}`] : undefined;
+      const tmdbInfo = tmdbEpisodeFor(epSeason, epNum);
       const cinemetaRating = parseFloat(String(cinemetaEp?.rating ?? ''));
       let ratingLabel: string | undefined;
       let ratingSource: 'IMDb' | 'TMDB' | undefined;
@@ -1428,7 +1453,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         cardTitle:
           cinemetaEp?.name ||
           cinemetaEp?.title ||
-          (cleaned && !isBareEpisodeLabel(cleaned) ? cleaned : `Episode ${epNum}`),
+          (cleaned && !isBareEpisodeLabel(cleaned) ? cleaned : tmdbInfo?.name || `Episode ${epNum}`),
+
         runtimeLabel: formatMinutes(tmdbInfo?.runtime ?? parseRuntimeMinutes(cinemetaMeta?.runtime)),
         ratingLabel,
         ratingSource,
@@ -1465,8 +1491,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           // episode; providers without a TMDB/IMDb id typically only ever
           // return the show's own poster for every episode. Same
           // precedence as Discover.
-          thumb: cinemetaEp?.thumbnail || ep.image,
-          overview: ep.description || cinemetaEp?.overview,
+          // Cinemeta first, then TMDB's still / synopsis, and only then
+          // the provider's own (often just the show poster).
+          thumb: cinemetaEp?.thumbnail || tmdbEpisodeFor(epSeasonNumber, episodeNum)?.still || ep.image,
+          overview: ep.description || cinemetaEp?.overview || tmdbEpisodeFor(epSeasonNumber, episodeNum)?.overview,
           releaseDate: formatEpisodeReleaseDate(cinemetaEp?.released),
           sizeLabel,
           ...episodeExtras(cinemetaEp, epSeasonNumber, episodeNum, ep.title, sizeLabel),
@@ -1532,8 +1560,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 `Episode ${index + 1}`,
               )
             : baseTitle || `Source ${index + 1}`,
-          thumb: directItemsAreEpisodes ? cinemetaEp?.thumbnail || d.image : undefined,
-          overview: directItemsAreEpisodes ? d.description || cinemetaEp?.overview : undefined,
+          thumb: directItemsAreEpisodes
+            ? cinemetaEp?.thumbnail || tmdbEpisodeFor(epSeasonNumber, episodeNum)?.still || d.image
+            : undefined,
+          overview: directItemsAreEpisodes
+            ? d.description || cinemetaEp?.overview || tmdbEpisodeFor(epSeasonNumber, episodeNum)?.overview
+            : undefined,
           releaseDate: directItemsAreEpisodes ? formatEpisodeReleaseDate(cinemetaEp?.released) : undefined,
           sizeLabel,
           ...(directItemsAreEpisodes
@@ -1933,7 +1965,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   }, [logoUrl]);
   const displayTitle = cinemetaMeta?.name || info?.title || item?.title;
   const ratingText = (() => {
-    const raw = cinemetaMeta?.imdbRating ?? cinemetaMeta?.rating ?? info?.rating;
+    const raw = cinemetaMeta?.imdbRating ?? cinemetaMeta?.rating ?? info?.rating ?? tmdbRating;
     return raw !== undefined && raw !== null && String(raw).trim() !== '' ? String(raw) : undefined;
   })();
   const runtimeText = formatCinemetaRuntime(cinemetaMeta?.runtime);
@@ -2117,6 +2149,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               <TVFocusablePressable
                 key={`season-picker${restoreToPicker ? `-f${episodeFocusNonce}` : ''}`}
                 hasTVPreferredFocus={restoreToPicker}
+                onFocus={scrollPageToTop}
                 scaleFocused={1.03}
                 focusedBorderColor="#8A5CF6"
                 borderRadius={10}
@@ -2143,6 +2176,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 focusedBorderColor="#FFFFFF"
                 borderRadius={10}
                 onPress={handleResumeCardPress}
+                onFocus={scrollPageToTop}
                 style={styles.resumePill}
               >
                 {() => (
@@ -2226,6 +2260,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                     return (
                       <TVFocusablePressable
                         key={`range-${range.start}`}
+                        onFocus={scrollPageToTop}
                         scaleFocused={1.05}
                         focusedBorderColor="#8A5CF6"
                         borderRadius={16}
@@ -2263,6 +2298,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               <TVFocusablePressable
                 key={`play-btn-${episodeFocusNonce}`}
                 hasTVPreferredFocus={true}
+                onFocus={scrollPageToTop}
                 scaleFocused={1.06}
                 focusedBorderColor="#FFFFFF"
                 borderRadius={14}
@@ -2327,6 +2363,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         focusedBorderColor="#FFFFFF"
         borderRadius={20}
         onPress={onBack}
+        onFocus={scrollPageToTop}
         style={styles.backCircle}
       >
         {() => (
@@ -2595,11 +2632,17 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   targetGenreText: {
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+    textShadowColor: 'rgba(0, 0, 0, 0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   targetOverview: {
     color: '#FFFFFF',
@@ -2909,25 +2952,25 @@ const styles = StyleSheet.create({
   creditsRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 8,
+    gap: 6,
   },
   creditsDivider: {
     width: 1,
-    height: 88,
-    marginHorizontal: 6,
+    height: 72,
+    marginHorizontal: 4,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
   },
   creditItem: {
-    width: 112,
-    padding: 4,
+    width: 88,
+    padding: 2,
   },
   creditInner: {
     alignItems: 'center',
   },
   creditPhoto: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: '#1A1A22',
   },
   creditPhotoFallback: {
@@ -2936,15 +2979,15 @@ const styles = StyleSheet.create({
   },
   creditInitials: {
     color: '#9CA3AF',
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: '700',
   },
   creditName: {
     color: '#FFFFFF',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     textAlign: 'center',
-    marginTop: 6,
+    marginTop: 5,
   },
   creditRole: {
     color: '#9CA3AF',
