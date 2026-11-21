@@ -225,6 +225,7 @@ jobs:
           APP_CANARY_NUMBER: ${{ steps.release_meta.outputs.canary_number }}
           APP_VERSION_CODE: ${{ steps.release_meta.outputs.version_code }}
           APP_VERSION_NAME: ${{ steps.release_meta.outputs.version_name }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY || vars.TMDB_API_KEY }}
         run: npx expo prebuild --platform android --clean --no-install
 
       - name: Decode Release Keystore
@@ -244,6 +245,7 @@ jobs:
           # channel has to be set here too (not only at prebuild).
           APP_CHANNEL: ${{ steps.release_meta.outputs.channel }}
           APP_CANARY_NUMBER: ${{ steps.release_meta.outputs.canary_number }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY || vars.TMDB_API_KEY }}
           MYAPP_UPLOAD_STORE_FILE: "release.keystore"
           MYAPP_UPLOAD_STORE_PASSWORD: "${{ secrets.KEYSTORE_PASSWORD }}"
           MYAPP_UPLOAD_KEY_ALIAS: "${{ secrets.KEY_ALIAS }}"
