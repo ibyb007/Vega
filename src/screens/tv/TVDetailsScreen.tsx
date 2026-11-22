@@ -507,16 +507,18 @@ const EpisodeList = React.memo(function EpisodeList({
     }
   }, []);
 
-  // Moving along the list is swallowed natively (the cursor moves instead);
-  // at either end the key keeps its default search (left of the first card,
-  // up from the first source row -> whatever is there). Nothing is wired
-  // across the other axis: Up/Down from the episode row (and Down from a
-  // source list) fall through to the default search.
+  // Moving along the list is swallowed natively (the cursor moves instead).
+  // Horizontal episode row: Left/Right always point at the host itself, so
+  // at the first / last card the key is consumed and focus stays put --
+  // there is nothing beside those cards, and the default search would jump
+  // to the credits strip below. (Vertical source list: at either end the key
+  // keeps its default search.) Nothing is wired across the other axis:
+  // Up/Down fall through to the default search.
   const hostLinks: { nextFocusUp?: number; nextFocusLeft?: number; nextFocusRight?: number } = {};
   if (hostHandle != null) {
     if (horizontal) {
-      if (selectedIndex > 0) hostLinks.nextFocusLeft = hostHandle;
-      if (selectedIndex >= 0 && selectedIndex < rows.length - 1) hostLinks.nextFocusRight = hostHandle;
+      hostLinks.nextFocusLeft = hostHandle;
+      hostLinks.nextFocusRight = hostHandle;
     } else if (selectedIndex > 0) {
       hostLinks.nextFocusUp = hostHandle;
     }
