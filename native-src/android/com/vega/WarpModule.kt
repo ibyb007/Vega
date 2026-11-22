@@ -14,10 +14,15 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.uimanager.ViewManager
 import com.facebook.react.modules.network.OkHttpClientProvider
 import java.io.File
+import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ProxySelector
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketAddress
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "WarpModule"
@@ -31,11 +36,62 @@ private const val TAG = "WarpModule"
 // leaves /system/etc/security/cacerts as a compatibility path.
 private const val ANDROID_CA_DIRS = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
 
+// Process-wide routing (ported from tvBuddy's WarpManager). While the tunnel is
+// up, everything that honours the default ProxySelector -- ExoPlayer's
+// HttpURLConnection data source, OkHttp, downloads -- goes through the local
+// usque HTTP proxy, not just clients built by DohOkHttpFactory. Loopback and
+// LAN addresses are never proxied.
+private object WarpRouting {
+    @Volatile
+    var proxyPort: Int? = null
+
+    private var installed = false
+
+    @Synchronized
+    fun install() {
+        if (installed) return
+        installed = true
+        val previous = ProxySelector.getDefault()
+        ProxySelector.setDefault(object : ProxySelector() {
+            override fun select(uri: URI?): List<Proxy> {
+                val port = proxyPort
+                val host = uri?.host
+                if (port != null && port > 0 && host != null && !isLocalHost(host)) {
+                    return listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", port)))
+                }
+                return previous?.select(uri) ?: listOf(Proxy.NO_PROXY)
+            }
+
+            override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {
+                Log.w(TAG, "Proxy connection failed for $uri: ${ioe?.message}")
+                previous?.connectFailed(uri, sa, ioe)
+            }
+        })
+    }
+
+    private val IPV4_LITERAL = Regex("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$")
+
+    private fun isLocalHost(host: String): Boolean {
+        val h = host.lowercase()
+        if (h == "localhost" || h.endsWith(".local")) return true
+        // Only literal IPs are checked, so no DNS lookup happens here.
+        val m = IPV4_LITERAL.matchEntire(h)
+        if (m != null) {
+            val a = m.groupValues[1].toInt()
+            val b = m.groupValues[2].toInt()
+            return a == 127 || a == 10 || (a == 192 && b == 168) ||
+                (a == 172 && b in 16..31) || (a == 169 && b == 254)
+        }
+        return h == "::1" || h == "[::1]"
+    }
+}
+
 class WarpModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext), LifecycleEventListener {
 
     init {
         reactContext.addLifecycleEventListener(this)
+        WarpRouting.install()
     }
 
     override fun getName(): String = "WarpModule"
@@ -127,8 +183,16 @@ class WarpModule(reactContext: ReactApplicationContext) :
     // Some devices report a local private-DNS proxy address here instead
     // of a real resolver, so we filter loopback addresses out and always
     // append public fallbacks to guarantee at least one working server.
+    // usque only ever asks the FIRST server (a UDP "connect" never fails, so
+    // there is no fallback), so the order matters: public DNS goes first because
+    // some ISPs poison or redirect lookups for blocked domains, which breaks
+    // streams in WARP mode even though the traffic itself is tunnelled. The
+    // device's own (non-loopback) servers come last.
     private fun getUsqueDnsServersEnv(): String {
         val servers = LinkedHashSet<String>()
+        servers.add("1.1.1.1:53")
+        servers.add("1.0.0.1:53")
+        servers.add("8.8.8.8:53")
         try {
             val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             val network = cm?.activeNetwork
@@ -137,17 +201,13 @@ class WarpModule(reactContext: ReactApplicationContext) :
                 if (!addr.isLoopbackAddress) {
                     val host = addr.hostAddress
                     if (!host.isNullOrBlank()) {
-                        servers.add(if (addr.hostAddress?.contains(':') == true) "[$host]:53" else "$host:53")
+                        servers.add(if (host.contains(':')) "[$host]:53" else "$host:53")
                     }
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read device DNS servers: ${e.message}")
         }
-        // Public fallbacks in case the device reports nothing usable (or a
-        // Private DNS / DoT proxy address that isn't a plain port-53 server).
-        servers.add("1.1.1.1:53")
-        servers.add("8.8.8.8:53")
         return servers.joinToString(",")
     }
 
@@ -166,6 +226,7 @@ class WarpModule(reactContext: ReactApplicationContext) :
         } finally {
             warpProcess = null
             currentPort = null
+            WarpRouting.proxyPort = null
             DohOkHttpFactory.instance?.warpProxyPort = null
             flushConnections()
         }
@@ -262,18 +323,27 @@ class WarpModule(reactContext: ReactApplicationContext) :
                 pb.directory(getWarpDir())
                 pb.environment()["USQUE_DNS_SERVERS"] = dnsServersEnv
                 pb.environment()["SSL_CERT_DIR"] = ANDROID_CA_DIRS
+                // IPv6-first dialling: shared WARP IPv4 exit addresses are blocked or
+                // throttled by many hosts (buffering); per-user IPv6 ones are not.
+                pb.environment()["USQUE_IP_MODE"] = "ipv6"
                 pb.redirectErrorStream(true)
                 val proc = pb.start()
                 warpProcess = proc
                 currentPort = port
 
                 var isListening = false
-                val logLines = StringBuilder()
+                val logLines = StringBuffer()
                 Thread {
                     try {
+                        var lines = 0
                         proc.inputStream.bufferedReader().forEachLine { line ->
-                            Log.d("WarpProcess", line)
+                            // usque writes a line per connection for as long as it runs.
+                            // Logging / keeping all of it grew the heap over a session
+                            // (GC pauses -> stutter), so only start-up output is logged
+                            // and just a short tail is kept.
+                            if (lines++ < 60) Log.d("WarpProcess", line)
                             logLines.append(line).append("\n")
+                            if (logLines.length > 4000) logLines.delete(0, logLines.length - 2000)
                             if (line.contains("listening on", ignoreCase = true) || line.contains("HTTP proxy", ignoreCase = true)) {
                                 isListening = true
                             }
@@ -294,6 +364,7 @@ class WarpModule(reactContext: ReactApplicationContext) :
                     return@Thread
                 }
 
+                WarpRouting.proxyPort = port
                 DohOkHttpFactory.instance?.warpProxyPort = port
                 flushConnections()
 
