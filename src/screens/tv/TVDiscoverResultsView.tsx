@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Modal,
   StyleSheet,
+  findNodeHandle,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
@@ -517,6 +518,10 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
     [resultsScrollRef],
   );
 
+  // Episode cards' own native nodes, so the first card's Left and the last
+  // card's Right can point at themselves (key consumed, focus stays put).
+  const episodeNodesRef = useRef<Record<string, any>>({});
+
   // Season numbers present in the current list (usually exactly one).
   const seasonsKey = Array.from(new Set(baseEpisodes.map((e) => e.seasonNum)))
     .filter((n) => Number.isFinite(n) && n >= 0)
@@ -890,11 +895,27 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                         style={local.episodesRow}
                         contentContainerStyle={local.episodesRowContent}
                       >
-                        {episodeCards.map((card) => (
+                        {episodeCards.map((card, cardIdx) => {
+                          // Keep the card's place in the reading-order chain,
+                          // but nothing sits left of the first card or right
+                          // of the last one: those keys must not move focus
+                          // (the default search would jump to the credits).
+                          const links: { nextFocusLeft?: number; nextFocusRight?: number } = {
+                            ...chain.propsFor(card.focusKey),
+                          };
+                          const selfHandle = episodeNodesRef.current[card.focusKey]
+                            ? findNodeHandle(episodeNodesRef.current[card.focusKey]) ?? undefined
+                            : undefined;
+                          if (cardIdx === 0) links.nextFocusLeft = selfHandle;
+                          if (cardIdx === episodeCards.length - 1) links.nextFocusRight = selfHandle;
+                          return (
                           <TVFocusablePressable
                             key={keyFor(card.focusKey)}
-                            ref={(el) => setItemRef(card.focusKey, el)}
-                            {...chain.propsFor(card.focusKey)}
+                            ref={(el) => {
+                              episodeNodesRef.current[card.focusKey] = el;
+                              setItemRef(card.focusKey, el);
+                            }}
+                            {...links}
                             hasTVPreferredFocus={
                               resumeHint?.episodeKey || resumeHint?.episodeLink
                                 ? shouldPreferResultsFocus(card.focusKey, card.isResumeTarget)
@@ -929,7 +950,8 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                               />
                             )}
                           </TVFocusablePressable>
-                        ))}
+                          );
+                        })}
                       </ScrollView>
                     </View>
                   ) : (
