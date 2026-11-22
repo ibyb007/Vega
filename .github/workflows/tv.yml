@@ -172,6 +172,9 @@ jobs:
           cd /tmp/usque-src
           git checkout --quiet "$USQUE_COMMIT"
           cp "$GITHUB_WORKSPACE/native-src/usque/main.go" ./main.go
+          # IPv6-first dialling (shared WARP IPv4 exit addresses are blocked or
+          # throttled by many sites, which shows up as constant buffering)
+          git apply "$GITHUB_WORKSPACE/native-src/usque/prefer-ipv6.patch"
 
           build_abi() {
             local goarch="$1" goarm="$2" abi="$3"
