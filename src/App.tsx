@@ -10,6 +10,8 @@ import GlobalErrorBoundary from './components/GlobalErrorBoundary';
 import WafWebViewDialog from './components/WafWebViewDialog';
 import ProviderSandboxHost from './components/ProviderSandboxHost';
 import AppDialogHost from './components/AppDialogHost';
+import UpdateGlassPanel from './components/tv/UpdateGlassPanel';
+import { showUpdatePanel } from './lib/zustand/updatePanelStore';
 import { syncDohSettings } from './lib/services/dohService';
 import { syncWarpSettings } from './lib/services/warpService';
 import { syncByeDpiSettings } from './lib/services/byeDpiService';
@@ -19,7 +21,6 @@ import type { TextTracks, SkipInterval, StreamDrm } from './lib/providers/types'
 import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH, TVRoute } from './lib/native/NavRail';
 import { updateDetailsReturnEpisode } from './lib/tv/detailsReturnState';
 import { settingsStorage } from './lib/storage';
-import { showAppDialog } from './lib/zustand/appDialogStore';
 import {
   checkForUpdates,
   downloadAndInstallUpdate,
@@ -175,17 +176,12 @@ export default function App() {
         downloadAndInstallUpdate();
         return;
       }
-      showAppDialog({
-        title: 'Update available',
-        message:
-          `Vega TV ${release.displayVersion} is ready${release.prerelease ? ' (Canary)' : ''}. ` +
-          `You have ${getInstalledDisplayVersion()}.` +
-          (release.notes ? `\n\n${release.notes}` : ''),
-        variant: 'info',
-        actions: [
-          { label: 'Later' },
-          { label: 'Update now', variant: 'primary', onPress: () => downloadAndInstallUpdate() },
-        ],
+      showUpdatePanel({
+        newVersion: release.displayVersion,
+        installedVersion: getInstalledDisplayVersion(),
+        prerelease: Boolean(release.prerelease),
+        notes: release.notes,
+        onUpdate: () => downloadAndInstallUpdate(),
       });
     }, 6000);
     return () => clearTimeout(timer);
@@ -365,6 +361,7 @@ export default function App() {
                   barStyle="light-content"
                 />
                 <AppDialogHost />
+                <UpdateGlassPanel />
 
                 {activeStream ? (
                   <TVPlayerScreen
