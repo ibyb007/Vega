@@ -97,7 +97,7 @@ export const syncByeDpiSettings = async (): Promise<void> => {
     return;
   }
   const enabled = settingsStorage.isByeDpiEnabled();
-  // WARP and ByeDPI are mutually exclusive. ByeDPI defaults to on, so a user
+  // WARP and ByeDPI are mutually exclusive. ByeDPI is off by default, but a user
   // who enabled WARP must not also get ByeDPI started at launch.
   if (enabled && settingsStorage.isWarpEnabled()) {
     await stopByeDpi();
