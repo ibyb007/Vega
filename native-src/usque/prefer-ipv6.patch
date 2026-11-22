@@ -1,0 +1,113 @@
+diff --git a/cmd/httpproxy.go b/cmd/httpproxy.go
+index 505cffa..ce50690 100644
+--- a/cmd/httpproxy.go
++++ b/cmd/httpproxy.go
+@@ -316,19 +316,17 @@ func handleHTTPSConnect(w http.ResponseWriter, r *http.Request, tunNet *netstack
+ 		return
+ 	}
+ 
+-	var destAddr string
++	var destConn net.Conn
+ 	if resolver != nil {
+-		ips, err := resolver.LookupIP(ctx, "ip", host)
+-		if err != nil || len(ips) == 0 {
++		ips, lookupErr := resolver.LookupIP(ctx, "ip", host)
++		if lookupErr != nil || len(ips) == 0 {
+ 			http.Error(w, "DNS resolution failed", http.StatusServiceUnavailable)
+ 			return
+ 		}
+-		destAddr = net.JoinHostPort(ips[0].String(), port)
++		destConn, err = dialPreferIPv6(ctx, tunNet, "tcp", ips, port)
+ 	} else {
+-		destAddr = r.Host
++		destConn, err = tunNet.DialContext(ctx, "tcp", r.Host)
+ 	}
+-
+-	destConn, err := tunNet.DialContext(ctx, "tcp", destAddr)
+ 	if err != nil {
+ 		http.Error(w, "Unable to connect to destination", http.StatusServiceUnavailable)
+ 		return
+@@ -379,18 +377,15 @@ func handleHTTPProxy(w http.ResponseWriter, r *http.Request, tunNet *netstack.Ne
+ 					return nil, fmt.Errorf("invalid address: %w", err)
+ 				}
+ 
+-				var dialAddr string
+ 				if resolver != nil {
+ 					ips, err := resolver.LookupIP(ctx, "ip", host)
+ 					if err != nil || len(ips) == 0 {
+ 						return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+ 					}
+-					dialAddr = net.JoinHostPort(ips[0].String(), port)
+-				} else {
+-					dialAddr = addr
++					return dialPreferIPv6(ctx, tunNet, network, ips, port)
+ 				}
+ 
+-				return tunNet.DialContext(ctx, network, dialAddr)
++				return tunNet.DialContext(ctx, network, addr)
+ 			},
+ 		},
+ 	}
+@@ -452,3 +447,30 @@ func init() {
+ 	httpProxyCmd.Flags().String("on-disconnect", "", "Path to an executable to run after each tunnel disconnect (no args; context via USQUE_* env vars)")
+ 	rootCmd.AddCommand(httpProxyCmd)
+ }
++
++// dialPreferIPv6 dials the resolved addresses through the tunnel, IPv6 first (IPv4 first when USQUE_IP_MODE=ipv4),
++// then the other family.
++// Cloudflare's shared WARP IPv4 exit addresses are blocked by many sites, while the per-user IPv6
++// ones are not, and the original code always dialled ips[0] (IPv4 whenever the device itself has no
++// IPv6 route, because Go sorts the lookup result by the host's connectivity). Falls back to the
++// next address when one fails, so IPv4-only or broken-AAAA hosts still work.
++func dialPreferIPv6(ctx context.Context, tunNet *netstack.Net, network string, ips []net.IP, port string) (net.Conn, error) {
++	ordered := orderByFamily(ips, preferIPv4())
++	var lastErr error
++	for _, ip := range ordered {
++		attemptCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
++		conn, err := tunNet.DialContext(attemptCtx, network, net.JoinHostPort(ip.String(), port))
++		cancel()
++		if err == nil {
++			return conn, nil
++		}
++		lastErr = err
++		if ctx.Err() != nil {
++			break
++		}
++	}
++	if lastErr == nil {
++		lastErr = fmt.Errorf("no addresses to dial")
++	}
++	return nil, lastErr
++}
+diff --git a/cmd/ipmode.go b/cmd/ipmode.go
+new file mode 100644
+index 0000000..73c5145
+--- /dev/null
++++ b/cmd/ipmode.go
+@@ -0,0 +1,26 @@
++package cmd
++
++import (
++	"net"
++	"os"
++)
++
++// preferIPv4 is true when the host app asked for the IPv4 mode (USQUE_IP_MODE=ipv4). Default is IPv6 first.
++func preferIPv4() bool {
++	return os.Getenv("USQUE_IP_MODE") == "ipv4"
++}
++
++// orderByFamily returns ips with the preferred family first; the other family stays as the fallback.
++func orderByFamily(ips []net.IP, v4First bool) []net.IP {
++	first := make([]net.IP, 0, len(ips))
++	second := make([]net.IP, 0, len(ips))
++	for _, ip := range ips {
++		isV4 := ip.To4() != nil
++		if isV4 == v4First {
++			first = append(first, ip)
++		} else {
++			second = append(second, ip)
++		}
++	}
++	return append(first, second...)
++}
