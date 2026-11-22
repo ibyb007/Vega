@@ -127,7 +127,7 @@ export class SettingsStorage {
 
   // ByeDPI Anti-DPI
   isByeDpiEnabled(): boolean {
-    return MMKV.getBool(SETTINGS_KEYS.BYEDPI_ENABLED, true);
+    return MMKV.getBool(SETTINGS_KEYS.BYEDPI_ENABLED, false);
   }
 
   setByeDpiEnabled(enabled: boolean): void {
