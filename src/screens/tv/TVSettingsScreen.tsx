@@ -329,7 +329,7 @@ export const TVSettingsScreen: React.FC<TVSettingsScreenProps> = ({
       const warpOn = settingsStorage?.isWarpEnabled ? settingsStorage.isWarpEnabled() : false;
       setWarpEnabled(warpOn);
       // WARP and AntiDPI are mutually exclusive; WARP wins if both flags are set.
-      const byeOn = settingsStorage?.isByeDpiEnabled ? settingsStorage.isByeDpiEnabled() : true;
+      const byeOn = settingsStorage?.isByeDpiEnabled ? settingsStorage.isByeDpiEnabled() : false;
       setByeDpiEnabled(byeOn && !warpOn);
       const storedArgs = settingsStorage?.getByeDpiCmdArgs ? settingsStorage.getByeDpiCmdArgs() : '';
       setByeDpiArgs(storedArgs || DEFAULT_BYEDPI_ARGS);
