@@ -404,7 +404,7 @@ export default function Extensions({
           ToastAndroid.show(
             result.hasStreams
               ? `Installed ${result.provider.display_name}${
-                  result.usesNuvioCatalog ? ' (catalog from Nuvio)' : ''
+                  result.usesNuvioCatalog ? ' (+ Nuvio catalog)' : ''
                 }`
               : `Installed ${result.provider.display_name} (no streams: catalog/metadata only)`,
             ToastAndroid.LONG,
