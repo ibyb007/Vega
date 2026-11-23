@@ -7,6 +7,8 @@ export interface StremioCatalogDef {
   type: string; // 'movie' | 'series' | ...
   id: string;
   name?: string;
+  extra?: { name: string; isRequired?: boolean }[];
+  extraRequired?: string[];
 }
 
 export interface StremioManifest {
