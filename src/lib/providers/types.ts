@@ -15,6 +15,14 @@ export interface Post {
   link: string;
   image: string;
   provider?: string;
+  // Optional richer data (Stremio addons): lets Home paint the landscape
+  // backdrop + synopsis for a focused card immediately.
+  poster?: string;
+  background?: string;
+  extra?: string;
+  year?: string;
+  rating?: string;
+  genres?: string[];
   // Optional card hints (used by Live TV style providers).
   aspectRatio?: number | string;
   borderRadius?: number;
