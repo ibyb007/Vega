@@ -7,6 +7,15 @@ import {extensionStorage} from '../storage/extensionStorage';
 import {providerKvStorage} from '../storage/StorageService';
 import {MAX_STATE_BYTES} from '../sandbox/protocol';
 import {sandboxBridge, setSandboxStateHandler} from '../sandbox/sandboxBridge';
+import {
+  getStremioCatalog,
+  getStremioEpisodes,
+  getStremioMeta,
+  getStremioPosts,
+  getStremioStreams,
+  isStremioProvider,
+  searchStremio,
+} from './stremioAddon';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message) {
@@ -158,6 +167,9 @@ export class ProviderManager {
   }: {
     providerValue: string;
   }): Promise<Catalog[]> => {
+    if (isStremioProvider(providerValue)) {
+      return getStremioCatalog(providerValue);
+    }
     const catalogModule = this.getModule(providerValue, 'catalog');
     if (!catalogModule) {
       return [];
@@ -189,6 +201,9 @@ export class ProviderManager {
   }: {
     providerValue: string;
   }): Promise<Catalog[]> => {
+    if (isStremioProvider(providerValue)) {
+      return [];
+    }
     const catalogModule = this.getModule(providerValue, 'catalog');
     if (!catalogModule) {
       return [];
@@ -221,6 +236,9 @@ export class ProviderManager {
     providerValue: string;
     signal: AbortSignal;
   }): Promise<Post[]> => {
+    if (isStremioProvider(providerValue)) {
+      return getStremioPosts({filter, page, providerValue, signal});
+    }
     const getPostsModule = this.getModule(providerValue, 'posts');
     if (!getPostsModule) {
       throw new Error(`No posts module found for provider: ${providerValue}`);
@@ -255,6 +273,9 @@ export class ProviderManager {
     providerValue: string;
     signal: AbortSignal;
   }): Promise<Post[]> => {
+    if (isStremioProvider(providerValue)) {
+      return searchStremio({searchQuery, page, providerValue, signal});
+    }
     const getPostsModule = this.getModule(providerValue, 'posts');
     if (!getPostsModule) {
       throw new Error(`No posts module found for provider: ${providerValue}`);
@@ -285,6 +306,9 @@ export class ProviderManager {
     link: string;
     provider: string;
   }): Promise<Info> => {
+    if (isStremioProvider(provider)) {
+      return getStremioMeta({link, provider});
+    }
     const getMetaDataModule = this.getModule(provider, 'meta');
     if (!getMetaDataModule) {
       throw new Error(`No meta data module found for provider: ${provider}`);
@@ -319,6 +343,9 @@ export class ProviderManager {
     providerValue: string;
     isDownload?: boolean;
   }): Promise<Stream[]> => {
+    if (isStremioProvider(providerValue)) {
+      return getStremioStreams({link, providerValue, signal});
+    }
     const getStreamModule = this.getModule(providerValue, 'stream');
     if (!getStreamModule) {
       throw new Error(`No stream module found for provider: ${providerValue}`);
@@ -349,6 +376,9 @@ export class ProviderManager {
     url: string;
     providerValue: string;
   }): Promise<EpisodeLink[]> => {
+    if (isStremioProvider(providerValue)) {
+      return getStremioEpisodes({url, providerValue});
+    }
     const getEpisodeLinksModule = this.getModule(providerValue, 'episodes');
     if (!getEpisodeLinksModule) {
       throw new Error(
@@ -385,6 +415,9 @@ export class ProviderManager {
     providerValue: string;
     sourceAuthor?: string;
   }): Promise<SettingsField[]> => {
+    if (isStremioProvider(providerValue)) {
+      return [];
+    }
     const cacheKey = `${sourceAuthor || ''}:${providerValue}`;
     const cached = this.settingsSchemaCache.get(cacheKey);
     if (cached) {
