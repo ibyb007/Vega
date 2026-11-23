@@ -20,6 +20,12 @@ export const getHomePageDataOptimized = async (
     providerValue: activeProvider.value,
   });
 
+  // A source without a catalog is not an error -- Home falls back to the
+  // Nuvio catalog for it (see useNuvioFallbackRows).
+  if (catalogs.length === 0) {
+    return [];
+  }
+
   // Use Promise.allSettled for partial success
   const fetchPromises = catalogs.map(async item => {
     try {
