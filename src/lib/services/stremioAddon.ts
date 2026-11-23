@@ -5,8 +5,7 @@
 // provider whose `source.url` is the manifest URL. ProviderManager routes
 // every call for such a provider here instead of the JS sandbox.
 //
-//   catalogs : the addon's own catalogs, or -- when it has none (typical for
-//              stream-only addons) -- the Nuvio catalog.
+//   catalogs : the Nuvio catalog (default) followed by the addon's own.
 //   search   : the addon's / Nuvio's searchable catalogs, else Cinemeta.
 //   meta     : the addon's meta resource, else Nuvio, else Cinemeta.
 //   streams  : {addon}/stream/{type}/{id}.json -> direct URLs and torrents.
@@ -197,7 +196,7 @@ export const installStremioAddon = async (
     provider: existing ?? provider,
     alreadyInstalled: !!existing,
     hasStreams,
-    usesNuvioCatalog: browsableCatalogs(manifest).length === 0,
+    usesNuvioCatalog: true,
   };
 };
 
@@ -223,33 +222,53 @@ const browsableCatalogs = (manifest: AddonManifest): any[] =>
 
 const TYPE_LABEL: Record<string, string> = {movie: 'Movies', series: 'Series'};
 
-type CatalogSource = 'addon' | 'nuvio';
-
 export const getStremioCatalog = async (providerValue: string): Promise<Catalog[]> => {
-  const {manifest} = await loadManifest(getAddonUrl(providerValue));
-  let source: CatalogSource = 'addon';
-  let list = browsableCatalogs(manifest).slice(0, MAX_ADDON_ROWS);
+  const label = (c: any) =>
+    `${c.name || c.id} - ${TYPE_LABEL[c.type] || c.type}`;
 
-  if (list.length === 0) {
-    // The addon has no browsable catalog: use Nuvio's.
+  // The Nuvio catalog is always part of an addon's Home (it brings 16:9
+  // backdrops and synopses with every title); the addon's own catalogs
+  // follow it. A failing Nuvio manifest just leaves the addon's rows.
+  const rows: Catalog[] = [];
+  const usedTitles = new Set<string>();
+  try {
     const nuvio = await loadManifest(NUVIO_MANIFEST_URL);
-    source = 'nuvio';
-    list = browsableCatalogs(nuvio.manifest).slice(0, MAX_FALLBACK_ROWS);
+    for (const c of browsableCatalogs(nuvio.manifest).slice(0, MAX_FALLBACK_ROWS)) {
+      usedTitles.add(label(c));
+      rows.push({title: label(c), filter: `nuvio|${c.type}|${c.id}`});
+    }
+  } catch (err) {
+    console.warn('[Stremio] Nuvio catalog unavailable:', err);
   }
 
-  return list.map(c => ({
-    title: `${c.name || c.id} - ${TYPE_LABEL[c.type] || c.type}`,
-    filter: `${source}|${c.type}|${c.id}`,
-  }));
+  const {manifest} = await loadManifest(getAddonUrl(providerValue));
+  for (const c of browsableCatalogs(manifest).slice(0, MAX_ADDON_ROWS)) {
+    const title = usedTitles.has(label(c))
+      ? `${manifest.name} - ${label(c)}`
+      : label(c);
+    rows.push({title, filter: `addon|${c.type}|${c.id}`});
+  }
+  return rows;
 };
 
 const toPost = (m: any, fallbackType: string): Post | null => {
   const title = m?.name || m?.title;
   if (!m?.id || !title) return null;
+  const background = m.background || m.banner || undefined;
   return {
     title: String(title),
     link: `${m.type || fallbackType}/${m.id}`,
-    image: m.poster || m.background || m.banner || '',
+    image: m.poster || background || '',
+    poster: m.poster || undefined,
+    background,
+    extra: m.description || m.overview || undefined,
+    year: m.year
+      ? String(m.year)
+      : m.releaseInfo
+      ? String(m.releaseInfo).slice(0, 4)
+      : undefined,
+    rating: m.imdbRating ? String(m.imdbRating) : undefined,
+    genres: Array.isArray(m.genres) ? m.genres : undefined,
   };
 };
 
