@@ -35,6 +35,7 @@ import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
+import { useNuvioFallbackRows } from '../../lib/hooks/useNuvioFallbackRows';
 import { getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import {
@@ -772,13 +773,26 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     }));
   }, [hasSecondaryProvider, secondaryHomeData, secondaryProviderValue, secondaryProviderName]);
 
+  // When the active addon(s) have no catalog of their own (or none of it
+  // loaded), fill Home from the Nuvio catalog instead of showing nothing.
+  const secondaryBusy = hasSecondaryProvider && secondaryQuery.isPending;
+  const needsNuvioFallback =
+    hasProviders &&
+    !primaryQuery.isLoading &&
+    !secondaryBusy &&
+    primaryRows.length === 0 &&
+    secondaryRows.length === 0;
+  const nuvio = useNuvioFallbackRows(needsNuvioFallback);
+  const nuvioRows = needsNuvioFallback ? nuvio.rows : EMPTY_ROWS;
+
   const displayRows = useMemo(() => {
     const rows: any[] = [];
     if (historyRow) rows.push(historyRow);
     rows.push(...primaryRows);
     rows.push(...secondaryRows);
+    rows.push(...nuvioRows);
     return rows;
-  }, [historyRow, primaryRows, secondaryRows]);
+  }, [historyRow, primaryRows, secondaryRows, nuvioRows]);
 
   const updateHeroWithBestMetadata = useCallback(
     (item: any, isHistory: boolean = false, immediate: boolean = false) => {
@@ -846,6 +860,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       const enrichKey =
         isLiveItem
           ? null
+          : item.nuvioFallback
+          ? dsImdb
+            ? `discover::${dsImdb}`
+            : null
           : isHistory && ds && dsImdb
           ? `discover::${dsImdb}`
           : !hasSourceBackdrop && targetUrl && targetProvider
@@ -1114,7 +1132,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       }
       const targetUrl = item.infoUrl || item.link;
       const targetProvider = item.providerValue || item.provider || provider?.value;
-      if (targetUrl && targetProvider) {
+      if (targetUrl && targetProvider && !item.nuvioFallback) {
         prefetchTimerRef.current = setTimeout(() => {
           prefetchTimerRef.current = null;
           prefetchMetadata(targetUrl, targetProvider);
@@ -1168,6 +1186,10 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
             linkTitle: item.linkTitle,
           },
         });
+      } else if (item.nuvioFallback && item.discoverSource && openDiscoverItem) {
+        // Nuvio catalog title: not tied to an installed addon, so let the
+        // user pick a source for it in Discover's results view.
+        openDiscoverItem(item.discoverSource);
       } else {
         selectItem(item);
       }
@@ -1280,7 +1302,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     );
   }
 
-  if (isLoading && displayRows.length === 0) {
+  if ((isLoading || (needsNuvioFallback && nuvio.isLoading)) && displayRows.length === 0) {
     return (
       <View style={styles.centerLoading}>
         <ActivityIndicator size="large" color="#8A5CF6" />
