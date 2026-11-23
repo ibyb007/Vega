@@ -27,6 +27,11 @@ import {
 } from '../../lib/storage/extensionStorage';
 import { extensionManager } from '../../lib/services/ExtensionManager';
 import { createProviderSource } from '../../lib/utils/helpers';
+import {
+  installStremioAddon,
+  isStremioProvider,
+  looksLikeStremioManifest,
+} from '../../lib/services/stremioAddon';
 
 // True when `latest` is a higher dotted version than `current` ("1.20" > "1.9").
 const isNewerVersion = (current?: string, latest?: string): boolean => {
@@ -70,13 +75,14 @@ const AddSourceModal = memo(({
           </View>
 
           <Text style={styles.modalDesc}>
-            Enter URL of your hosted provider source or GitHub author:
+            Enter a GitHub author / provider source URL, or a Stremio / Nuvio addon
+            manifest URL (.../manifest.json):
           </Text>
 
           <TextInput
             value={text}
             onChangeText={setText}
-            placeholder="GitHub author or source URL"
+            placeholder="GitHub author, source URL or addon manifest.json URL"
             placeholderTextColor="#6B7280"
             style={styles.textInput}
             autoCapitalize="none"
@@ -385,6 +391,29 @@ export default function Extensions({
 
     setIsAddingSource(true);
     try {
+      // Stremio / Nuvio addon: installed directly as a provider.
+      if (looksLikeStremioManifest(trimmed)) {
+        const result = await installStremioAddon(trimmed);
+        syncInstalledProviders();
+        if (result.alreadyInstalled) {
+          ToastAndroid.show(`${result.provider.display_name} is already installed`, ToastAndroid.SHORT);
+        } else {
+          if (!useContentStore.getState().provider?.value) {
+            setProvider(result.provider);
+          }
+          ToastAndroid.show(
+            result.hasStreams
+              ? `Installed ${result.provider.display_name}${
+                  result.usesNuvioCatalog ? ' (catalog from Nuvio)' : ''
+                }`
+              : `Installed ${result.provider.display_name} (no streams: catalog/metadata only)`,
+            ToastAndroid.LONG,
+          );
+        }
+        setIsModalVisible(false);
+        return;
+      }
+
       const parsedSource = createProviderSource(trimmed);
       const providers = await extensionManager.fetchManifest(parsedSource, true);
       // Providers the manifest marks `"disabled": true` are not listed, so
@@ -464,9 +493,16 @@ export default function Extensions({
   // exception: a disabled provider that is *already installed* stays
   // listed, otherwise it would be stranded on the device with no way to
   // uninstall it from here.
+  // Stremio / Nuvio addons never appear in a repository manifest, so the
+  // installed ones are listed first (that is also where they get uninstalled).
   const visibleProviders = useMemo(
-    () => availableProviders.filter((p) => !p.disabled || installedSet.has(p.value)),
-    [availableProviders, installedSet],
+    () => [
+      ...installedProviders.filter((p) => isStremioProvider(p.value)),
+      ...availableProviders.filter(
+        (p) => (!p.disabled || installedSet.has(p.value)) && !isStremioProvider(p.value),
+      ),
+    ],
+    [availableProviders, installedProviders, installedSet],
   );
 
   // ---- list: ONE focus target, cursor kept in JS ----------------------------
