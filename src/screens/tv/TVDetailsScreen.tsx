@@ -19,6 +19,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import { providerManager } from '../../lib/services/ProviderManager';
+import { isStremioProvider } from '../../lib/services/stremioAddon';
 import { getCachedMetadata, getOrFetchMetadata } from '../../lib/services/metadataCache';
 import {
   resolveCinemetaMeta,
@@ -833,7 +834,10 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [serverPicker, setServerPicker] = useState<{
     title: string;
     player: PlayerChoice;
-    options: { name: string; url: string; headers?: Record<string, string> }[];
+    options: { name: string; detail?: string; url: string; headers?: Record<string, string> }[];
+    // Set for the in-app picker (Stremio addons): plays the chosen option
+    // in the built-in player instead of handing it to an external one.
+    onSelect?: (index: number) => void;
   } | null>(null);
 
   const resumeHint: ResumeHint | undefined = item?.resumeHint;
@@ -1699,6 +1703,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
             player: toPlayerChoice(playerPref),
             options: streams.filter((s) => !s.drm).map((s, idx) => ({
               name: s.quality ? `${s.quality}p${s.server ? ` — ${s.server}` : ''}` : s.server || `Source ${idx + 1}`,
+              detail: isStremioProvider(providerId) ? extractStreamTags(s).join(' • ') || undefined : undefined,
               url: s.link,
               headers: s.headers,
             })),
@@ -1707,7 +1712,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         }
 
         // Same server/quality the viewer last chose for this title.
-        const best = pickPreferredStream(streams, getPlaybackPrefs(item?.link)) || streams[0];
+        const defaultBest = pickPreferredStream(streams, getPlaybackPrefs(item?.link)) || streams[0];
         const qualities = streams.map((s, idx) => ({
           name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
           url: s.link,
@@ -1721,6 +1726,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           tags: extractStreamTags(s),
         }));
 
+        const playStream = (best: any) => {
         // This screen is about to be unmounted by the player -- leave
         // behind everything needed to rebuild it exactly as it is now
         // (see the "Return-from-player restore" note at the top).
@@ -1770,6 +1776,27 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           subtitles: best.subtitles,
           startPosition,
         });
+        };
+
+        // Stremio addons usually return many streams (different servers,
+        // qualities, releases): let the person choose instead of auto-picking.
+        if (isStremioProvider(providerId) && streams.length > 1) {
+          setServerPicker({
+            title: streamTitle,
+            player: toPlayerChoice(playerPref),
+            options: streams.map((s, idx) => ({
+              name: s.quality
+                ? `${s.quality}p${s.server ? ` — ${s.server}` : ''}`
+                : s.server || `Source ${idx + 1}`,
+              detail: extractStreamTags(s).join(' • ') || undefined,
+              url: s.link,
+              headers: s.headers,
+            })),
+            onSelect: (idx: number) => playStream(streams[idx]),
+          });
+          return;
+        }
+        playStream(defaultBest);
       } catch (e: any) {
         console.warn('[TVDetailsScreen] Stream extraction failed:', e);
         ToastAndroid.show(e?.message || 'Failed to extract playback stream', ToastAndroid.LONG);
@@ -1794,8 +1821,14 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     ],
   );
 
-  const handlePickServer = async (option: { url: string; headers?: Record<string, string> }) => {
+  const handlePickServer = async (option: { url: string; headers?: Record<string, string> }, index: number) => {
     if (!serverPicker) return;
+    if (serverPicker.onSelect) {
+      const select = serverPicker.onSelect;
+      setServerPicker(null);
+      select(index);
+      return;
+    }
     const opened = await launchVideo(option.url, serverPicker.title, serverPicker.player, option.headers);
     setServerPicker(null);
     if (!opened) {
@@ -2007,7 +2040,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // ---- Header data ---------------------------------------------------------
   // Same fields, same precedence as the Discover results header: Cinemeta's
   // canonical data when we have it, the provider's own where we do not.
-  const bannerImage = cinemetaMeta?.background || info?.image || info?.poster || item?.image;
+  const bannerImage =
+    cinemetaMeta?.background || info?.image || item?.background || info?.poster || item?.image;
   const logoUrl = cinemetaMeta?.logo || info?.logo;
   useEffect(() => {
     setLogoFailed(false);
@@ -2505,8 +2539,11 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Select a Server</Text>
             <Text style={styles.modalSubtitle}>
-              Choose which stream to open in{' '}
-              {serverPicker?.player === 'vlc' ? 'VLC' : 'your external player'}.
+              {serverPicker?.onSelect
+                ? 'Choose a server / quality to play.'
+                : `Choose which stream to open in ${
+                    serverPicker?.player === 'vlc' ? 'VLC' : 'your external player'
+                  }.`}
             </Text>
             <ScrollView showsVerticalScrollIndicator={false}>
               {serverPicker?.options.map((opt, i) => (
@@ -2516,10 +2553,19 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                   scaleFocused={1.03}
                   focusedBorderColor="#8A5CF6"
                   borderRadius={8}
-                  onPress={() => handlePickServer(opt)}
+                  onPress={() => handlePickServer(opt, i)}
                   style={styles.serverOption}
                 >
-                  {() => <Text style={styles.serverOptionText}>{opt.name}</Text>}
+                  {() => (
+                    <View>
+                      <Text style={styles.serverOptionText}>{opt.name}</Text>
+                      {opt.detail ? (
+                        <Text numberOfLines={2} style={styles.serverOptionDetail}>
+                          {opt.detail}
+                        </Text>
+                      ) : null}
+                    </View>
+                  )}
                 </TVFocusablePressable>
               ))}
             </ScrollView>
@@ -3352,6 +3398,11 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  serverOptionDetail: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    marginTop: 3,
   },
   modalCancelBtn: {
     alignSelf: 'flex-end',
