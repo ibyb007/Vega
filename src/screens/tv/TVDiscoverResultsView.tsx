@@ -16,6 +16,7 @@ import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import type { useReadingOrderFocus } from '../../lib/tv/useReadingOrderFocus';
 import { Post, Info, Link, EpisodeLink } from '../../lib/providers/types';
+import { isStremioProvider, scheduleStremioStreamPrefetch } from '../../lib/services/stremioAddon';
 import { CatalogMediaItem, DiscoverCatalog } from '../../lib/services/stremioCatalog';
 import { findCinemetaEpisode, formatEpisodeReleaseDate, CinemetaMeta } from '../../lib/services/cinemetaService';
 import { getTmdbApiKey } from '../../lib/hooks/useTmdbStory';
@@ -923,6 +924,14 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                             }
                             onFocus={() => {
                               noteResultsFocus(card.focusKey);
+                              // Stremio addon: warm this episode's (and the
+                              // next one's) server/quality list.
+                              if (isStremioProvider(activeSourcePost?.provider)) {
+                                scheduleStremioStreamPrefetch(activeSourcePost!.provider!, [
+                                  card.link,
+                                  episodeCards[cardIdx + 1]?.link,
+                                ]);
+                              }
                             }}
                             scaleFocused={1.04}
                             focusedBorderColor="#8A5CF6"
@@ -1195,15 +1204,27 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                     {() => (
                       <View style={styles.seasonPickerOptionInner}>
                         {/* Full label, wrapped -- never truncated. */}
-                        <Text
-                          style={[
-                            styles.seasonPickerOptionText,
-                            isActive && styles.seasonPickerOptionTextActive,
-                          ]}
-                        >
-                          {l.title}
-                          {l.quality ? ` • ${l.quality}` : ''}
-                        </Text>
+                        <View style={{ flexShrink: 1 }}>
+                          <Text
+                            style={[
+                              styles.seasonPickerOptionText,
+                              isActive && styles.seasonPickerOptionTextActive,
+                            ]}
+                          >
+                            {l.title}
+                            {l.quality ? ` • ${l.quality}` : ''}
+                          </Text>
+                          {l.description ? (
+                            <Text numberOfLines={7} style={styles.pickerOptionDetail}>
+                              {l.description}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {getFileSizeLabel({ size: l.size }) ? (
+                          <View style={styles.pickerSizeBadge}>
+                            <Text style={styles.pickerSizeBadgeText}>{getFileSizeLabel({ size: l.size })}</Text>
+                          </View>
+                        ) : null}
                         {isActive && (
                           <MaterialCommunityIcons
                             name="check-circle"
