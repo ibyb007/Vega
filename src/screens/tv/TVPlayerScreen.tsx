@@ -30,6 +30,7 @@ import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import useSettingsStore, { AudioBoostProfile } from '../../lib/zustand/settingsStore';
 import { providerManager } from '../../lib/services/ProviderManager';
+import { isStremioProvider, prefetchStremioStreams } from '../../lib/services/stremioAddon';
 import { launchVideo } from '../../lib/services/PlayerLauncher';
 import { settingsStorage } from '../../lib/storage';
 import { formatEpisodeLabel as formatSeasonEpisodeLabel } from '../../lib/utils/episodeParsing';
@@ -1602,6 +1603,18 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   const hasNextEpisode = episodes.length > currentEpisodeIndex + 1;
   const nextEpisodePreview = hasNextEpisode ? episodes[currentEpisodeIndex + 1] : undefined;
+
+  // Stremio / Nuvio addons: once this episode has been playing for a bit, warm
+  // the next episode's server/quality list so "Next episode" / auto-advance
+  // starts without a cold addon request.
+  const nextEpisodeLink = nextEpisodePreview?.link;
+  useEffect(() => {
+    if (!nextEpisodeLink || !providerValue || !isStremioProvider(providerValue)) return;
+    const timer = setTimeout(() => {
+      prefetchStremioStreams(providerValue, [nextEpisodeLink]);
+    }, 20000);
+    return () => clearTimeout(timer);
+  }, [nextEpisodeLink, providerValue]);
 
   // "Up Next" card tint: derived from the mini-poster's dominant colour and
   // muted toward a dark neutral (Stremio-style), so the card reads as a
