@@ -17,6 +17,8 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import KeyEvent from 'react-native-keyevent';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVDiscoverResultsView } from './TVDiscoverResultsView';
+import { TVStreamPickerModal, StreamPickerOption } from '../../components/tv/TVStreamPickerModal';
+import { isStremioProvider } from '../../lib/services/stremioAddon';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
@@ -656,6 +658,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // flash on the episode list.
   const cinemetaKeyRef = useRef<string | null>(null);
   const [extractingLink, setExtractingLink] = useState(false);
+  // Stremio addon episodes: streams to choose from before playing.
+  const [streamPicker, setStreamPicker] = useState<{
+    options: StreamPickerOption[];
+    onSelect: (index: number) => void;
+  } | null>(null);
 
   // Resume context handed off by Home's Continue Watching card (see
   // `openDiscoverResultFor`/`pendingDiscoverResumeHint` above), consumed
@@ -1461,7 +1468,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         );
         const usableStreams = filteredStreams.length > 0 ? filteredStreams : streams;
 
-        const best =
+        const defaultBest =
           pickPreferredStream(usableStreams, getPlaybackPrefs(activeSourcePost?.link)) || usableStreams[0];
         const qualities = usableStreams.map((s, idx) => ({
           name: s.quality ? `${s.quality}p` : s.server || `Source ${idx + 1}`,
@@ -1484,6 +1491,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           })(),
         }));
 
+        const playStream = (best: Stream) => {
         const episodesToSend =
           customEpisodes && customEpisodes.length > 0
             ? customEpisodes
@@ -1608,6 +1616,27 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           mediaTitle: resultsTarget?.title || sourceInfo?.title,
           mediaYear: resultsTarget?.year,
         });
+        };
+
+        // Stremio addons return many servers/qualities per episode: let
+        // the person choose, with release details and size.
+        if (isStremioProvider(providerValue) && usableStreams.length > 1) {
+          setStreamPicker({
+            options: usableStreams.map((s, idx) => ({
+              name: s.quality
+                ? `${s.quality}p${s.server ? ` — ${s.server}` : ''}`
+                : s.server || `Source ${idx + 1}`,
+              detail: s.description || (Array.isArray(s.tags) ? s.tags.join(' • ') : undefined),
+              size: s.size,
+            })),
+            onSelect: (idx: number) => {
+              setStreamPicker(null);
+              playStream(usableStreams[idx]);
+            },
+          });
+          return;
+        }
+        playStream(defaultBest);
       } catch (err: any) {
         console.warn('[Discover] getStream error:', err);
         ToastAndroid.show(err?.message || 'Failed to extract stream link.', ToastAndroid.SHORT);
@@ -1794,6 +1823,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     // handleResultsScroll) that are the only things still allowed to
     // touch the module-level saved/focus-restore state directly.
     return (
+      <>
+      <TVStreamPickerModal
+        visible={Boolean(streamPicker)}
+        options={streamPicker?.options ?? []}
+        onSelect={(i) => streamPicker?.onSelect(i)}
+        onCancel={() => setStreamPicker(null)}
+      />
       <TVDiscoverResultsView
         resultsTarget={resultsTarget}
         selectedCatalog={selectedCatalog}
@@ -1823,6 +1859,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         handleSelectSourceCard={handleSelectSourceCard}
         handleResolveAndPlay={handleResolveAndPlay}
       />
+      </>
     );
   }
 
@@ -2691,6 +2728,23 @@ export const styles = StyleSheet.create({
   },
   seasonPickerOptionTextActive: {
     color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  pickerOptionDetail: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
+  },
+  pickerSizeBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  pickerSizeBadgeText: {
+    color: '#D1D5DB',
+    fontSize: 11,
     fontWeight: '700',
   },
   seasonPickerCheck: {
