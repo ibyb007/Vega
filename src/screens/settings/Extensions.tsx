@@ -75,8 +75,8 @@ const AddSourceModal = memo(({
           </View>
 
           <Text style={styles.modalDesc}>
-            Enter a GitHub author / provider source URL, or a Stremio / Nuvio addon
-            manifest URL (.../manifest.json):
+            Enter a GitHub author / provider source URL, or a Stremio addon
+            manifest URL:
           </Text>
 
           <TextInput
