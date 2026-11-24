@@ -276,6 +276,12 @@ const EpisodeRow = React.memo(function EpisodeRow({
                 <Text style={styles.hRatingValue}>{row.ratingLabel}</Text>
               </View>
             ) : null}
+            {row.sizeLabel ? (
+              <View style={styles.hMetaItem}>
+                <MaterialCommunityIcons name="harddisk" size={13} color="#D1D5DB" />
+                <Text style={styles.hMetaText}>{row.sizeLabel}</Text>
+              </View>
+            ) : null}
             <View style={styles.hMetaSpacer} />
             {row.releaseDate ? (
               <Text numberOfLines={1} style={styles.hMetaText}>
@@ -834,7 +840,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [serverPicker, setServerPicker] = useState<{
     title: string;
     player: PlayerChoice;
-    options: { name: string; detail?: string; url: string; headers?: Record<string, string> }[];
+    options: { name: string; detail?: string; size?: string; url: string; headers?: Record<string, string> }[];
     // Set for the in-app picker (Stremio addons): plays the chosen option
     // in the built-in player instead of handing it to an external one.
     onSelect?: (index: number) => void;
@@ -1788,7 +1794,8 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
               name: s.quality
                 ? `${s.quality}p${s.server ? ` — ${s.server}` : ''}`
                 : s.server || `Source ${idx + 1}`,
-              detail: extractStreamTags(s).join(' • ') || undefined,
+              detail: s.description || extractStreamTags(s).join(' • ') || undefined,
+              size: s.size,
               url: s.link,
               headers: s.headers,
             })),
@@ -2529,8 +2536,82 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
         )}
       </TVFocusablePressable>
 
+      {/* In-app stream picker (Stremio addon episodes): same look as the
+          Season / Quality menu, with release details and file size. */}
       <Modal
-        visible={Boolean(serverPicker)}
+        visible={Boolean(serverPicker?.onSelect)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setServerPicker(null)}
+      >
+        <View style={styles.pickerOverlay}>
+          <View
+            style={[
+              styles.pickerBox,
+              { maxWidth: Math.min(windowWidth * 0.7, 900), maxHeight: windowHeight * 0.85 },
+            ]}
+          >
+            <View style={styles.pickerHeader}>
+              <MaterialCommunityIcons name="playlist-play" size={22} color="#A78BFA" />
+              <View style={styles.pickerHeaderText}>
+                <Text style={styles.pickerTitle}>Select Server / Quality</Text>
+                <Text style={styles.pickerSubtitle}>
+                  {serverPicker?.options.length ?? 0} streams • choose one to play
+                </Text>
+              </View>
+            </View>
+            <View style={styles.pickerDivider} />
+            <ScrollView
+              style={styles.pickerList}
+              contentContainerStyle={styles.pickerListContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {serverPicker?.onSelect &&
+                serverPicker.options.map((opt, i) => (
+                  <TVFocusablePressable
+                    key={`stream-opt-${i}`}
+                    hasTVPreferredFocus={i === 0}
+                    scaleFocused={1.02}
+                    focusedBorderColor="#8A5CF6"
+                    borderRadius={10}
+                    onPress={() => handlePickServer(opt, i)}
+                    style={styles.seasonPickerOption}
+                  >
+                    {() => (
+                      <View style={styles.seasonPickerOptionInner}>
+                        <View style={{ flexShrink: 1 }}>
+                          <Text style={styles.seasonPickerOptionText}>{opt.name}</Text>
+                          {opt.detail ? (
+                            <Text numberOfLines={7} style={styles.pickerOptionDetail}>
+                              {opt.detail}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {opt.size ? (
+                          <View style={styles.sizeBadge}>
+                            <Text style={styles.sizeBadgeText}>{opt.size}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    )}
+                  </TVFocusablePressable>
+                ))}
+            </ScrollView>
+            <TVFocusablePressable
+              scaleFocused={1.05}
+              focusedBorderColor="#FFFFFF"
+              borderRadius={8}
+              onPress={() => setServerPicker(null)}
+              style={styles.modalCancelBtn}
+            >
+              {() => <Text style={styles.modalCancelText}>Cancel</Text>}
+            </TVFocusablePressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={Boolean(serverPicker) && !serverPicker?.onSelect}
         transparent
         animationType="fade"
         onRequestClose={() => setServerPicker(null)}
@@ -2651,15 +2732,27 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                     {() => (
                       <View style={styles.seasonPickerOptionInner}>
                         {/* Full label, wrapped -- never truncated. */}
-                        <Text
-                          style={[
-                            styles.seasonPickerOptionText,
-                            isActive && styles.seasonPickerOptionTextActive,
-                          ]}
-                        >
-                          {l.title}
-                          {l.quality ? ` • ${l.quality}` : ''}
-                        </Text>
+                        <View style={{ flexShrink: 1 }}>
+                          <Text
+                            style={[
+                              styles.seasonPickerOptionText,
+                              isActive && styles.seasonPickerOptionTextActive,
+                            ]}
+                          >
+                            {l.title}
+                            {l.quality ? ` • ${l.quality}` : ''}
+                          </Text>
+                          {l.description ? (
+                            <Text numberOfLines={7} style={styles.pickerOptionDetail}>
+                              {l.description}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {getFileSizeLabel({ size: l.size }) ? (
+                          <View style={styles.sizeBadge}>
+                            <Text style={styles.sizeBadgeText}>{getFileSizeLabel({ size: l.size })}</Text>
+                          </View>
+                        ) : null}
                         {isActive && (
                           <MaterialCommunityIcons
                             name="check-circle"
@@ -2935,6 +3028,12 @@ const styles = StyleSheet.create({
   seasonPickerOptionTextActive: {
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  pickerOptionDetail: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
   },
   seasonPickerCheck: {
     flexShrink: 0,
