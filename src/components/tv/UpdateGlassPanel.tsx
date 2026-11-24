@@ -1,18 +1,24 @@
-import React from 'react';
-import {Modal, StyleSheet, Text, View} from 'react-native';
+import React, {useEffect, useRef} from 'react';
+import {Animated, Easing, Modal, StyleSheet, Text, View} from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {BlurView} from 'expo-blur';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import {TVFocusablePressable} from './TVFocusablePressable';
 import useUpdatePanelStore from '../../lib/zustand/updatePanelStore';
+import {
+  cancelUpdateDownload,
+  installDownloadedUpdate,
+  useUpdateStore,
+} from '../../lib/services/AppUpdater';
 
 /**
- * "Update available" pop-up, in the app's liquid-glass look: a translucent
- * panel with a diagonal sheen, bright top edge and hairline rim. The release
- * text sits on its own small blurred, darkened plate so it stays readable over
- * whatever is behind the panel. Only that one small plate is blurred (a live
- * blur over the whole screen is too heavy for TV SoCs); the dark tint under it
- * keeps the text readable even where the blur isn't supported.
+ * "Update available" pop-up: clear, transparent glass with a light blur.
+ *
+ * Like Nuvio TV's update banner, the panel itself is the progress bar: while
+ * the APK downloads, an accent fill sweeps across the whole glass from left
+ * to right and the status line reads "Downloading 42%" with size, speed and
+ * time left. The same panel then turns into "Download complete" / "Install",
+ * or an error with Retry.
  */
 
 // Notes are markdown; the panel shows a short plain-text version (no D-pad
@@ -29,6 +35,19 @@ const toPlainNotes = (notes?: string): string => {
     .replace(/(\*\*|__|`)/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+};
+
+const formatBytes = (n: number): string => {
+  if (!Number.isFinite(n) || n <= 0) return '0 MB';
+  const mb = n / (1024 * 1024);
+  return mb >= 100 ? `${mb.toFixed(0)} MB` : `${mb.toFixed(1)} MB`;
+};
+
+const formatEta = (seconds: number): string => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+  const s = Math.ceil(seconds);
+  if (s < 60) return `${s}s left`;
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s left`;
 };
 
 const GlassButton = ({
@@ -52,23 +71,12 @@ const GlassButton = ({
     onPress={onPress}
     style={[styles.btn, primary && styles.btnPrimary]}>
     {({focused}) => (
-      <View style={styles.btnInner}>
-        <LinearGradient
-          pointerEvents="none"
-          colors={
-            primary
-              ? focused
-                ? ['rgba(255,255,255,0.42)', 'rgba(167,139,250,0.34)', 'rgba(255,255,255,0.22)']
-                : ['rgba(255,255,255,0.28)', 'rgba(138,92,246,0.28)', 'rgba(255,255,255,0.10)']
-              : focused
-              ? ['rgba(255,255,255,0.34)', 'rgba(255,255,255,0.12)', 'rgba(255,255,255,0.20)']
-              : ['rgba(255,255,255,0.18)', 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.08)']
-          }
-          start={{x: 0, y: 0}}
-          end={{x: 1, y: 1}}
-          style={StyleSheet.absoluteFill}
-        />
-        <View pointerEvents="none" style={styles.topEdge} />
+      <View
+        style={[
+          styles.btnInner,
+          primary && styles.btnInnerPrimary,
+          focused && (primary ? styles.btnInnerPrimaryFocused : styles.btnInnerFocused),
+        ]}>
         <MaterialCommunityIcons name={icon as any} size={20} color="#FFFFFF" />
         <Text style={styles.btnText}>{label}</Text>
       </View>
@@ -79,33 +87,124 @@ const GlassButton = ({
 const UpdateGlassPanel = () => {
   const panel = useUpdatePanelStore(s => s.panel);
   const dismiss = useUpdatePanelStore(s => s.dismiss);
+  const status = useUpdateStore(s => s.status);
+  const progress = useUpdateStore(s => s.progress);
+  const received = useUpdateStore(s => s.received);
+  const total = useUpdateStore(s => s.total);
+  const speedBps = useUpdateStore(s => s.speedBps);
+  const error = useUpdateStore(s => s.error);
+
+  const downloading = status === 'downloading';
+  const ready = status === 'ready';
+  const failed = status === 'error';
+
+  // Fill width follows progress smoothly between the native 250 ms ticks.
+  const fill = useRef(new Animated.Value(0)).current;
+  const target = ready ? 1 : downloading ? progress : 0;
+  useEffect(() => {
+    Animated.timing(fill, {
+      toValue: target,
+      duration: target === 0 ? 0 : 300,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+  }, [fill, target]);
 
   if (!panel) return null;
   const notes = toPlainNotes(panel.notes);
+  const pct = Math.round(Math.min(1, Math.max(0, progress)) * 100);
+
+  let statusLine = `Vega TV ${panel.newVersion} is ready to install.`;
+  let detailLine = '';
+  if (downloading) {
+    statusLine = total > 0 && received > 0 ? `Downloading ${pct}%` : 'Preparing download…';
+    if (total > 0 && received > 0) {
+      const eta = speedBps > 0 ? formatEta((total - received) / speedBps) : '';
+      detailLine = [
+        `${formatBytes(received)} / ${formatBytes(total)}`,
+        speedBps > 0 ? `${formatBytes(speedBps)}/s` : '',
+        eta,
+      ]
+        .filter(Boolean)
+        .join('  ·  ');
+    }
+  } else if (ready) {
+    statusLine = 'Download complete';
+    detailLine = error || 'Tap Install to finish updating.';
+  } else if (failed) {
+    statusLine = 'Update failed';
+    detailLine = error || 'Something went wrong.';
+  } else if (panel && total > 0) {
+    detailLine = formatBytes(total);
+  }
+
+  const fillWidth = fill.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0%', '100%'],
+  });
 
   return (
-    <Modal transparent animationType="fade" visible onRequestClose={dismiss}>
+    <Modal
+      transparent
+      animationType="fade"
+      visible
+      onRequestClose={() => {
+        if (downloading) cancelUpdateDownload();
+        else dismiss();
+      }}>
       <View style={styles.scrim}>
         <View style={styles.glass}>
+          {/* Light blur over the whole glass; the tint below stays clear. */}
+          <BlurView
+            intensity={18}
+            tint="light"
+            experimentalBlurMethod="dimezisBlurView"
+            style={StyleSheet.absoluteFill}
+          />
+          <View pointerEvents="none" style={styles.tint} />
           <LinearGradient
             pointerEvents="none"
-            colors={['rgba(255,255,255,0.26)', 'rgba(138,92,246,0.14)', 'rgba(255,255,255,0.08)']}
+            colors={['rgba(255,255,255,0.20)', 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.10)']}
             start={{x: 0, y: 0}}
             end={{x: 1, y: 1}}
             style={StyleSheet.absoluteFill}
           />
+
+          {/* Download progress: the glass fills left to right. */}
+          <Animated.View pointerEvents="none" style={[styles.fillClip, {width: fillWidth}]}>
+            <LinearGradient
+              colors={['rgba(138,92,246,0.42)', 'rgba(167,139,250,0.30)']}
+              start={{x: 0, y: 0}}
+              end={{x: 1, y: 0}}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.fillEdge} />
+          </Animated.View>
+
           <View pointerEvents="none" style={styles.topEdge} />
           <View pointerEvents="none" style={styles.rim} />
 
           <View style={styles.header}>
             <View style={styles.iconBubble}>
-              <MaterialCommunityIcons name="cloud-download-outline" size={28} color="#FFFFFF" />
+              <MaterialCommunityIcons
+                name={
+                  failed
+                    ? 'alert-circle-outline'
+                    : ready
+                    ? 'check-circle-outline'
+                    : 'cloud-download-outline'
+                }
+                size={28}
+                color="#FFFFFF"
+              />
             </View>
             <View style={styles.headerText}>
-              <Text style={styles.title}>Update available</Text>
+              <Text style={styles.title}>
+                {downloading ? 'Updating Vega TV' : ready ? 'Ready to install' : 'Update available'}
+              </Text>
               <View style={styles.versionRow}>
                 <Text style={styles.versionOld}>{panel.installedVersion}</Text>
-                <MaterialCommunityIcons name="arrow-right" size={16} color="#C4B5FD" />
+                <MaterialCommunityIcons name="arrow-right" size={16} color="#E5E7EB" />
                 <Text style={styles.versionNew}>{panel.newVersion}</Text>
                 {panel.prerelease ? (
                   <View style={styles.tag}>
@@ -116,38 +215,65 @@ const UpdateGlassPanel = () => {
             </View>
           </View>
 
-          {/* Text plate: small blur + dark tint behind the words. */}
-          <View style={styles.plate}>
-            <BlurView
-              intensity={28}
-              tint="dark"
-              // Real blur on Android (otherwise only the tint is drawn).
-              experimentalBlurMethod="dimezisBlurView"
-              style={StyleSheet.absoluteFill}
-            />
-            <View pointerEvents="none" style={styles.plateTint} />
-            <Text style={styles.plateLead}>
-              Vega TV {panel.newVersion} is ready to install.
-            </Text>
-            {notes ? (
-              <Text numberOfLines={9} style={styles.plateNotes}>
-                {notes}
-              </Text>
+          <View style={styles.statusBlock}>
+            <Text style={styles.statusLine}>{statusLine}</Text>
+            {detailLine ? (
+              <Text style={[styles.detailLine, failed && styles.detailError]}>{detailLine}</Text>
             ) : null}
           </View>
 
+          {notes && !downloading ? (
+            <View style={styles.notes}>
+              <Text numberOfLines={8} style={styles.notesText}>
+                {notes}
+              </Text>
+            </View>
+          ) : null}
+
           <View style={styles.actions}>
-            <GlassButton label="Later" icon="clock-outline" onPress={dismiss} />
-            <GlassButton
-              label="Update now"
-              icon="download"
-              primary
-              preferred
-              onPress={() => {
-                dismiss();
-                panel.onUpdate();
-              }}
-            />
+            {downloading ? (
+              <GlassButton
+                label="Cancel"
+                icon="close"
+                preferred
+                onPress={cancelUpdateDownload}
+              />
+            ) : ready ? (
+              <>
+                <GlassButton label="Close" icon="close" onPress={dismiss} />
+                <GlassButton
+                  label="Install"
+                  icon="package-variant-closed"
+                  primary
+                  preferred
+                  onPress={() => {
+                    installDownloadedUpdate();
+                  }}
+                />
+              </>
+            ) : failed ? (
+              <>
+                <GlassButton label="Close" icon="close" onPress={dismiss} />
+                <GlassButton
+                  label="Retry"
+                  icon="refresh"
+                  primary
+                  preferred
+                  onPress={panel.onUpdate}
+                />
+              </>
+            ) : (
+              <>
+                <GlassButton label="Later" icon="clock-outline" onPress={dismiss} />
+                <GlassButton
+                  label="Update now"
+                  icon="download"
+                  primary
+                  preferred
+                  onPress={panel.onUpdate}
+                />
+              </>
+            )}
           </View>
         </View>
       </View>
@@ -158,7 +284,7 @@ const UpdateGlassPanel = () => {
 const styles = StyleSheet.create({
   scrim: {
     flex: 1,
-    backgroundColor: 'rgba(5, 5, 10, 0.62)',
+    backgroundColor: 'rgba(0, 0, 0, 0.32)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -168,7 +294,26 @@ const styles = StyleSheet.create({
     borderRadius: 26,
     overflow: 'hidden',
     padding: 28,
-    backgroundColor: 'rgba(24, 20, 40, 0.55)',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  tint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+  },
+  fillClip: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    overflow: 'hidden',
+  },
+  fillEdge: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: 2,
+    backgroundColor: 'rgba(255,255,255,0.55)',
   },
   topEdge: {
     position: 'absolute',
@@ -176,13 +321,13 @@ const styles = StyleSheet.create({
     left: 18,
     right: 18,
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.65)',
+    backgroundColor: 'rgba(255,255,255,0.55)',
   },
   rim: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: 26,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
+    borderColor: 'rgba(255,255,255,0.26)',
   },
   header: {flexDirection: 'row', alignItems: 'center', marginBottom: 18},
   iconBubble: {
@@ -191,19 +336,25 @@ const styles = StyleSheet.create({
     borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(138, 92, 246, 0.45)',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.35)',
+    borderColor: 'rgba(255,255,255,0.32)',
     marginRight: 16,
   },
   headerText: {flex: 1},
-  title: {color: '#FFFFFF', fontSize: 26, fontWeight: '800'},
+  title: {
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '800',
+    textShadowColor: 'rgba(0,0,0,0.35)',
+    textShadowRadius: 6,
+  },
   versionRow: {flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4},
-  versionOld: {color: '#D1D5DB', fontSize: 15, fontWeight: '600'},
+  versionOld: {color: '#E5E7EB', fontSize: 15, fontWeight: '600'},
   versionNew: {color: '#FFFFFF', fontSize: 15, fontWeight: '800'},
   tag: {
-    backgroundColor: 'rgba(250, 204, 21, 0.25)',
-    borderColor: 'rgba(250, 204, 21, 0.6)',
+    backgroundColor: 'rgba(250, 204, 21, 0.22)',
+    borderColor: 'rgba(250, 204, 21, 0.55)',
     borderWidth: 1,
     borderRadius: 6,
     paddingHorizontal: 7,
@@ -211,24 +362,31 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   tagText: {color: '#FDE68A', fontSize: 11, fontWeight: '800', letterSpacing: 0.6},
-  plate: {
-    borderRadius: 16,
-    overflow: 'hidden',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
+  statusBlock: {marginBottom: 4},
+  statusLine: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+    textShadowColor: 'rgba(0,0,0,0.35)',
+    textShadowRadius: 6,
+  },
+  detailLine: {color: '#E5E7EB', fontSize: 14, marginTop: 4},
+  detailError: {color: '#FCA5A5'},
+  notes: {
+    marginTop: 12,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(255,255,255,0.07)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.14)',
   },
-  plateTint: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(8, 8, 16, 0.55)',
-  },
-  plateLead: {color: '#FFFFFF', fontSize: 17, fontWeight: '700'},
-  plateNotes: {
-    color: '#E5E7EB',
+  notesText: {
+    color: '#F3F4F6',
     fontSize: 14,
     lineHeight: 20,
-    marginTop: 8,
+    textShadowColor: 'rgba(0,0,0,0.3)',
+    textShadowRadius: 4,
   },
   actions: {
     flexDirection: 'row',
@@ -248,9 +406,15 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.26)',
+    backgroundColor: 'rgba(255,255,255,0.10)',
   },
+  btnInnerFocused: {backgroundColor: 'rgba(255,255,255,0.26)'},
+  btnInnerPrimary: {
+    backgroundColor: 'rgba(138,92,246,0.45)',
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  btnInnerPrimaryFocused: {backgroundColor: 'rgba(138,92,246,0.70)'},
   btnText: {color: '#FFFFFF', fontSize: 16, fontWeight: '800'},
 });
 
