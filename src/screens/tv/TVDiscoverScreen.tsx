@@ -18,7 +18,7 @@ import KeyEvent from 'react-native-keyevent';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import { TVDiscoverResultsView } from './TVDiscoverResultsView';
 import { TVStreamPickerModal, StreamPickerOption } from '../../components/tv/TVStreamPickerModal';
-import { isStremioProvider } from '../../lib/services/stremioAddon';
+import { getStremioDirectMatch, isStremioProvider } from '../../lib/services/stremioAddon';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
@@ -980,6 +980,26 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       await Promise.allSettled(
         installedProviders.map(async (provider) => {
           try {
+            // Stremio / Nuvio addons that serve streams are asked by id:
+            // the poster's IMDb id is the match, so there is no title search
+            // that could return same-named titles of other years.
+            const targetImdb = targetIds.imdbId || (item as any).imdb_id || undefined;
+            if (isStremioProvider(provider.value) && targetImdb) {
+              try {
+                const direct = await getStremioDirectMatch({
+                  providerValue: provider.value,
+                  imdbId: targetImdb,
+                  type: item.type,
+                  title: item.title,
+                  year: item.year,
+                  poster: item.poster,
+                });
+                if (direct) {
+                  if (!controller.signal.aborted) addMatch(direct);
+                  return;
+                }
+              } catch {}
+            }
             const data = await providerManager.getSearchPosts({
               searchQuery: item.title,
               page: 1,
@@ -1041,6 +1061,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   });
                   if (controller.signal.aborted) return;
                   const metaImdbId = (info as any)?.imdbId;
+                  // Ids the candidate's own page reports settle it outright
+                  // when both sides name the same kind of id.
+                  const infoIds = extractExternalIds(info);
+                  if (infoIds.imdbId && targetIds.imdbId) {
+                    if (infoIds.imdbId === targetIds.imdbId) addMatch(post);
+                    return;
+                  }
+                  if (infoIds.tmdbId && targetIds.tmdbId) {
+                    if (infoIds.tmdbId === targetIds.tmdbId) addMatch(post);
+                    return;
+                  }
                   // The provider's own info page for this exact post/link is
                   // the strongest type signal available for it -- stronger
                   // than the search-result's `type` (if any), and it's what
@@ -1064,7 +1095,19 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       metaYear = String(cMeta.releaseInfo).match(/(19|20)\d{2}/)?.[0];
                     }
                   }
+                  if (!metaYear) {
+                    // The page's own tags usually lead with the year.
+                    metaYear = ((info as any)?.tags || [])
+                      .map((t: any) => String(t).match(/^(19|20)\d{2}$/)?.[0])
+                      .find(Boolean);
+                  }
                   if (controller.signal.aborted) return;
+                  // Stremio addons: a same-titled hit whose year can't be
+                  // verified is not accepted when we know the clicked
+                  // title's year (e.g. other "The Odyssey" releases).
+                  if (!metaYear && isStremioProvider(provider.value) && item.year) {
+                    return;
+                  }
                   if (
                     !metaYear ||
                     isStrictMatch(item.title, post.title, item.year, metaYear, item.type, metaType)
