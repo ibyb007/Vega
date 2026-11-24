@@ -34,6 +34,21 @@ const MAX_ADDON_ROWS = 15;
 export const isStremioProvider = (providerValue?: string | null): boolean =>
   !!providerValue && providerValue.startsWith(STREMIO_PROVIDER_PREFIX);
 
+/**
+ * Name to show for a provider value: the installed provider's display name
+ * (what Extensions lists), never the internal `stremio-<hash>` value.
+ */
+export const getProviderDisplayName = (providerValue?: string | null): string => {
+  if (!providerValue) return '';
+  try {
+    const found = extensionStorage
+      .getInstalledProviders()
+      .find(p => p.value === providerValue);
+    if (found?.display_name) return found.display_name;
+  } catch {}
+  return isStremioProvider(providerValue) ? 'Stremio addon' : providerValue;
+};
+
 /** True for text that should be installed as a Stremio addon, not a repo. */
 export const looksLikeStremioManifest = (input: string): boolean => {
   const t = input.trim();
@@ -280,6 +295,11 @@ const toPost = (m: any, fallbackType: string): Post | null => {
       : undefined,
     rating,
     genres: Array.isArray(m.genres) ? m.genres : undefined,
+    imdb_id: /^tt\d+$/i.test(String(m.imdb_id || '')) ? String(m.imdb_id).toLowerCase() : undefined,
+    tmdb_id:
+      m.moviedb_id ?? m.tmdb_id ?? m.tmdbId
+        ? String(m.moviedb_id ?? m.tmdb_id ?? m.tmdbId)
+        : undefined,
   };
 };
 
@@ -322,6 +342,62 @@ export const getStremioPosts = async ({
     type,
     signal,
   );
+};
+
+// ---------------------------------------------------------------------------
+// Direct match (Discover)
+// ---------------------------------------------------------------------------
+
+/**
+ * For a title opened by IMDb id (Cinemeta / Nuvio catalog poster): if this
+ * addon serves streams for that kind of title and id, the match IS the id.
+ * No title search, so same-named titles of other years can't sneak in (this
+ * is how Nuvio TV asks addons). Returns null when the addon can't take the
+ * id -- the caller then falls back to searching.
+ */
+export const getStremioDirectMatch = async ({
+  providerValue,
+  imdbId,
+  type,
+  title,
+  year,
+  poster,
+}: {
+  providerValue: string;
+  imdbId: string;
+  type: string;
+  title: string;
+  year?: string;
+  poster?: string;
+}): Promise<Post | null> => {
+  if (!/^tt\d+$/i.test(imdbId) || !isMediaType(type)) return null;
+  const {manifest} = await loadManifest(getAddonUrl(providerValue));
+  const res = manifest.resources.find(
+    r => (typeof r === 'string' ? r : r?.name) === 'stream',
+  );
+  if (!res) return null;
+  const types: string[] | undefined =
+    (typeof res === 'object' && Array.isArray(res.types) ? res.types : undefined) ||
+    (Array.isArray((manifest as any).types) ? (manifest as any).types : undefined);
+  if (types && types.length > 0 && !types.includes(type)) return null;
+  const prefixes: string[] | undefined =
+    (typeof res === 'object' && Array.isArray(res.idPrefixes) ? res.idPrefixes : undefined) ||
+    (Array.isArray((manifest as any).idPrefixes) ? (manifest as any).idPrefixes : undefined);
+  if (prefixes && prefixes.length > 0 && !prefixes.some(p => imdbId.startsWith(p))) {
+    return null;
+  }
+  const id = imdbId.toLowerCase();
+  return {
+    id,
+    type,
+    title,
+    link: `${type}/${id}`,
+    image: poster || '',
+    poster,
+    year,
+    imdb_id: id,
+    provider: providerValue,
+  };
 };
 
 // ---------------------------------------------------------------------------
