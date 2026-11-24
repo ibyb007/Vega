@@ -252,11 +252,21 @@ export const getStremioCatalog = async (providerValue: string): Promise<Catalog[
   return rows;
 };
 
+// Rating/year the catalog already showed on Home, so the details screen can
+// still show them when the title's own meta lacks them.
+const catalogHints = new Map<string, {rating?: string; year?: string}>();
+
 const toPost = (m: any, fallbackType: string): Post | null => {
   const title = m?.name || m?.title;
   if (!m?.id || !title) return null;
   const background = m.background || m.banner || undefined;
+  const rating = m.imdbRating ? String(m.imdbRating) : m.rating ? String(m.rating) : undefined;
+  if (rating) {
+    catalogHints.set(`${m.type || fallbackType}/${m.id}`, {rating});
+  }
   return {
+    id: String(m.id),
+    type: String(m.type || fallbackType),
     title: String(title),
     link: `${m.type || fallbackType}/${m.id}`,
     image: m.poster || background || '',
@@ -268,7 +278,7 @@ const toPost = (m: any, fallbackType: string): Post | null => {
       : m.releaseInfo
       ? String(m.releaseInfo).slice(0, 4)
       : undefined,
-    rating: m.imdbRating ? String(m.imdbRating) : undefined,
+    rating,
     genres: Array.isArray(m.genres) ? m.genres : undefined,
   };
 };
@@ -447,6 +457,10 @@ export const getStremioMeta = async ({
   provider: string;
 }): Promise<Info> => {
   const {type, id} = splitLink(link);
+  // Start the stream request right away so it runs alongside the meta
+  // request instead of after it.
+  const streamsPromise =
+    type === 'series' ? null : movieStreamsFor(provider, type, id);
   const meta = await fetchRawMeta(provider, type, id);
   const isSeries = type === 'series' || meta.type === 'series';
   const imdbId: string | undefined =
@@ -466,17 +480,11 @@ export const getStremioMeta = async ({
   let linkList: Link[];
   let movieStreams: Stream[] = [];
   if (!isSeries) {
-    // Movies: load the addon's streams now so the details screen's
-    // Season / Quality menu can list every server/quality up front.
-    try {
-      const {manifest} = await loadManifest(getAddonUrl(provider));
-      if (hasResource(manifest, 'stream')) {
-        movieStreams = await withTimeout(
-          loadStreams(provider, type, id),
-          15000,
-        );
-      }
-    } catch {}
+    // Movies: the addon's streams feed the details screen's Season /
+    // Quality menu so every server/quality is listed up front.
+    movieStreams = streamsPromise
+      ? await streamsPromise
+      : await movieStreamsFor(provider, type, id);
   }
   if (isSeries) {
     const seasons = new Set<number>();
@@ -538,7 +546,10 @@ export const getStremioMeta = async ({
     populateMeta: Boolean(imdbId),
     tags,
     cast,
-    rating: meta.imdbRating ? String(meta.imdbRating) : undefined,
+    rating:
+      meta.imdbRating || meta.rating
+        ? String(meta.imdbRating || meta.rating)
+        : catalogHints.get(`${type}/${id}`)?.rating,
     trailerUrl: youtubeUrl(meta),
     linkList,
   };
@@ -642,6 +653,54 @@ const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
       },
     );
   });
+
+// Never rejects: an addon that is slow or down just yields no list.
+const movieStreamsFor = async (
+  providerValue: string,
+  type: string,
+  id: string,
+): Promise<Stream[]> => {
+  try {
+    const {manifest} = await loadManifest(getAddonUrl(providerValue));
+    if (!hasResource(manifest, 'stream')) return [];
+    return await withTimeout(loadStreams(providerValue, type, id), 15000);
+  } catch {
+    return [];
+  }
+};
+
+/** Warm the caches for a title (Home calls this when a card is focused). */
+export const prefetchStremioDetails = (providerValue: string, link: string): void => {
+  try {
+    const {type, id} = splitLink(link);
+    fetchRawMeta(providerValue, type, id).catch(() => {});
+    if (type !== 'series') movieStreamsFor(providerValue, type, id);
+  } catch {}
+};
+
+let episodePrefetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Warm the stream list for episodes the person is likely to open next (the
+ * focused one and the one after it). Debounced, so sweeping across a row of
+ * episodes only requests where the cursor comes to rest.
+ */
+export const scheduleStremioStreamPrefetch = (
+  providerValue: string,
+  links: (string | undefined)[],
+): void => {
+  if (episodePrefetchTimer) clearTimeout(episodePrefetchTimer);
+  episodePrefetchTimer = setTimeout(() => {
+    episodePrefetchTimer = null;
+    for (const link of links) {
+      if (!link) continue;
+      try {
+        const {type, id} = splitLink(link);
+        loadStreams(providerValue, type, id).catch(() => {});
+      } catch {}
+    }
+  }, 250);
+};
 
 const STREAM_CACHE_MS = 5 * 60 * 1000;
 const streamCache = new Map<string, {at: number; p: Promise<Stream[]>}>();
