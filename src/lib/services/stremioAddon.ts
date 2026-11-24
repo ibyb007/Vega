@@ -23,6 +23,7 @@ import type {
 } from '../providers/types';
 import {extensionStorage, ProviderExtension} from '../storage/extensionStorage';
 import {NUVIO_MANIFEST_URL} from './nuvioCatalog';
+import {getFileSizeLabel, formatBytes} from '../utils/fileSize';
 
 export const STREMIO_PROVIDER_PREFIX = 'stremio-';
 export const STREMIO_SOURCE_AUTHOR = 'Stremio addon';
@@ -463,6 +464,20 @@ export const getStremioMeta = async ({
     : [];
 
   let linkList: Link[];
+  let movieStreams: Stream[] = [];
+  if (!isSeries) {
+    // Movies: load the addon's streams now so the details screen's
+    // Season / Quality menu can list every server/quality up front.
+    try {
+      const {manifest} = await loadManifest(getAddonUrl(provider));
+      if (hasResource(manifest, 'stream')) {
+        movieStreams = await withTimeout(
+          loadStreams(provider, type, id),
+          15000,
+        );
+      }
+    } catch {}
+  }
   if (isSeries) {
     const seasons = new Set<number>();
     (meta.videos || []).forEach((v: any) => {
@@ -478,6 +493,30 @@ export const getStremioMeta = async ({
       title: `Season ${s}`,
       episodesLink: `${type}/${id}#${s}`,
     }));
+  } else if (movieStreams.length > 0) {
+    linkList = movieStreams.map((s, i) => {
+      const qLabel = s.quality
+        ? s.quality === '2160'
+          ? '4K'
+          : `${s.quality}p`
+        : undefined;
+      const alreadyInTitle =
+        !!qLabel && s.server.toLowerCase().includes(qLabel.toLowerCase());
+      return {
+        title: s.server,
+        quality: qLabel && !alreadyInTitle ? qLabel : undefined,
+        description: s.description,
+        size: s.size,
+        directLinks: [
+          {
+            title: 'Play',
+            link: `${type}/${id}#${i}`,
+            type: 'movie' as const,
+            size: s.size,
+          },
+        ],
+      };
+    });
   } else {
     linkList = [
       {
@@ -589,23 +628,70 @@ const mapSubtitles = (subs: any): TextTracks | undefined => {
   return tracks.length > 0 ? tracks : undefined;
 };
 
+const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), ms);
+    p.then(
+      v => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      e => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+
+const STREAM_CACHE_MS = 5 * 60 * 1000;
+const streamCache = new Map<string, {at: number; p: Promise<Stream[]>}>();
+
+// Shared by the details screen's movie quality menu and by playback, so the
+// addon is asked once and the `#n` indexes used in links stay stable.
+const loadStreams = (
+  providerValue: string,
+  type: string,
+  id: string,
+): Promise<Stream[]> => {
+  const key = `${providerValue}|${type}/${id}`;
+  const cached = streamCache.get(key);
+  if (cached && Date.now() - cached.at < STREAM_CACHE_MS) return cached.p;
+  const p = fetchStreamList(providerValue, type, id);
+  streamCache.set(key, {at: Date.now(), p});
+  p.catch(() => streamCache.delete(key));
+  return p;
+};
+
 export const getStremioStreams = async ({
   link,
   providerValue,
-  signal,
 }: {
   link: string;
   providerValue: string;
   signal?: AbortSignal;
 }): Promise<Stream[]> => {
-  const {type, id} = splitLink(link);
+  // `type/id#n` selects one entry of the (cached) stream list.
+  const hashIdx = link.lastIndexOf('#');
+  const plain = hashIdx >= 0 ? link.slice(0, hashIdx) : link;
+  const pick = hashIdx >= 0 ? Number(link.slice(hashIdx + 1)) : NaN;
+  const {type, id} = splitLink(plain);
+  const all = await loadStreams(providerValue, type, id);
+  if (Number.isInteger(pick) && all[pick]) return [all[pick]];
+  return all;
+};
+
+const fetchStreamList = async (
+  providerValue: string,
+  type: string,
+  id: string,
+): Promise<Stream[]> => {
   const {base, manifest} = await loadManifest(getAddonUrl(providerValue));
   if (!hasResource(manifest, 'stream')) {
     throw new Error(`${manifest.name} does not provide streams`);
   }
   const data = await fetchJson(
     `${base}/stream/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`,
-    signal,
+    undefined,
     30000,
   );
   const raw: any[] = Array.isArray(data?.streams) ? data.streams : [];
@@ -638,6 +724,11 @@ export const getStremioStreams = async ({
         : 'mp4',
       quality: parseQuality(`${s.name || ''} ${lines.join(' ')}`),
       tags: lines.slice(0, 3),
+      description: lines.join('\n') || undefined,
+      size:
+        (typeof s.behaviorHints?.videoSize === 'number'
+          ? formatBytes(s.behaviorHints.videoSize)
+          : undefined) || getFileSizeLabel({description: lines.join(' ')}),
       subtitles: mapSubtitles(s.subtitles),
       ...(headers ? {headers} : {}),
     });
