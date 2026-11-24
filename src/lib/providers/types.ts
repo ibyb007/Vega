@@ -19,6 +19,10 @@ export interface Post {
   // a post to the title that was opened by id instead of by name.
   id?: string;
   type?: string;
+  // Stremio addons: external ids the addon's own meta carries, so a match can
+  // be decided on ids instead of title text.
+  imdb_id?: string;
+  tmdb_id?: string;
   // Optional richer data (Stremio addons): lets Home paint the landscape
   // backdrop + synopsis for a focused card immediately.
   poster?: string;
