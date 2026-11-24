@@ -729,7 +729,12 @@ export default function Extensions({
                 }
               }
             }}
-            hasTVPreferredFocus={preferFocusOnMount('add-source-btn', visibleProviders.length === 0)}
+            // Default landing spot on a fresh mount. This used to depend on
+            // `visibleProviders.length === 0`, which is false from the very
+            // first render once a Stremio addon is installed (those rows are
+            // known immediately, repo providers only after the manifest
+            // loads), leaving nothing to take focus from the nav rail.
+            hasTVPreferredFocus={preferFocusOnMount('add-source-btn', true)}
             onFocus={() => (lastFocusedAddonsKey = 'add-source-btn')}
             scaleFocused={1.05}
             focusedBorderColor="#8A5CF6"
