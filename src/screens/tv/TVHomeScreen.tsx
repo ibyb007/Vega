@@ -36,7 +36,7 @@ import useContentStore from '../../lib/zustand/contentStore';
 import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { useNuvioFallbackRows } from '../../lib/hooks/useNuvioFallbackRows';
-import { isStremioProvider } from '../../lib/services/stremioAddon';
+import { isStremioProvider, prefetchStremioDetails } from '../../lib/services/stremioAddon';
 import { getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import {
@@ -1133,10 +1133,16 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
       }
       const targetUrl = item.infoUrl || item.link;
       const targetProvider = item.providerValue || item.provider || provider?.value;
-      if (targetUrl && targetProvider && !item.nuvioFallback && !isStremioProvider(targetProvider)) {
+      if (targetUrl && targetProvider && !item.nuvioFallback) {
         prefetchTimerRef.current = setTimeout(() => {
           prefetchTimerRef.current = null;
-          prefetchMetadata(targetUrl, targetProvider);
+          // Stremio addons: warm the meta + stream list so the details
+          // screen opens with its quality menu already filled.
+          if (isStremioProvider(targetProvider)) {
+            prefetchStremioDetails(targetProvider, targetUrl);
+          } else {
+            prefetchMetadata(targetUrl, targetProvider);
+          }
         }, PREFETCH_DELAY_MS);
       }
     },
