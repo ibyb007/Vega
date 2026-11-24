@@ -16,6 +16,7 @@ import { syncDohSettings } from './lib/services/dohService';
 import { syncWarpSettings } from './lib/services/warpService';
 import { syncByeDpiSettings } from './lib/services/byeDpiService';
 import { updateProvidersService } from './lib/services/UpdateProviders';
+import { warmStremioAddons } from './lib/services/stremioAddon';
 import useContentStore from './lib/zustand/contentStore';
 import type { TextTracks, SkipInterval, StreamDrm } from './lib/providers/types';
 import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH, TVRoute } from './lib/native/NavRail';
@@ -196,6 +197,9 @@ export default function App() {
     syncDohSettings().catch((e) => console.warn('[DoH] Startup error:', e));
     syncWarpSettings().catch((e) => console.warn('[WARP] Startup error:', e));
     syncByeDpiSettings().catch((e) => console.warn('[ByeDPI] Startup error:', e));
+    // Stremio / Nuvio addons: fetch their manifests now so the first stream
+    // request doesn't pay for it.
+    warmStremioAddons();
     try {
       updateProvidersService.startAutomaticUpdateCheck();
     } catch (e) {
