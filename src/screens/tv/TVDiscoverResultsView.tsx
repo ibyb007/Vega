@@ -16,7 +16,11 @@ import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import type { useReadingOrderFocus } from '../../lib/tv/useReadingOrderFocus';
 import { Post, Info, Link, EpisodeLink } from '../../lib/providers/types';
-import { isStremioProvider, scheduleStremioStreamPrefetch } from '../../lib/services/stremioAddon';
+import {
+  getProviderDisplayName,
+  isStremioProvider,
+  scheduleStremioStreamPrefetch,
+} from '../../lib/services/stremioAddon';
 import { CatalogMediaItem, DiscoverCatalog } from '../../lib/services/stremioCatalog';
 import { findCinemetaEpisode, formatEpisodeReleaseDate, CinemetaMeta } from '../../lib/services/cinemetaService';
 import { getTmdbApiKey } from '../../lib/hooks/useTmdbStory';
@@ -792,7 +796,7 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                         )}
                         <View style={styles.sourceBadge}>
                           <Text numberOfLines={1} style={styles.sourceBadgeText}>
-                            {post.provider}
+                            {getProviderDisplayName(post.provider)}
                           </Text>
                         </View>
                         {focused && <View style={styles.focusBorderGlow} />}
@@ -815,7 +819,7 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
         {activeSourcePost && (
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>
-              Episodes & Streams ({activeSourcePost.provider})
+              Episodes & Streams ({getProviderDisplayName(activeSourcePost.provider)})
             </Text>
 
             {loadingSourceInfo || extractingLink || isAwaitingEpisodes ? (
