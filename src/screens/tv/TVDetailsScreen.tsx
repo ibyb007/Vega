@@ -19,7 +19,11 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
 import useContentStore from '../../lib/zustand/contentStore';
 import { providerManager } from '../../lib/services/ProviderManager';
-import { isStremioProvider } from '../../lib/services/stremioAddon';
+import {
+  isStremioProvider,
+  prefetchStremioStreams,
+  scheduleStremioStreamPrefetch,
+} from '../../lib/services/stremioAddon';
 import { getCachedMetadata, getOrFetchMetadata } from '../../lib/services/metadataCache';
 import {
   resolveCinemetaMeta,
@@ -346,6 +350,7 @@ const EpisodeList = React.memo(function EpisodeList({
   onWrapperLayout,
   scrollToRow,
   onFocusList,
+  onCursorRow,
 }: {
   rows: DetailRow[];
   // Row that should take focus when the list mounts / is refocused (or null).
@@ -362,6 +367,8 @@ const EpisodeList = React.memo(function EpisodeList({
   // The horizontal episode row took focus: bring the page back to the top so
   // the whole row is on screen.
   onFocusList?: () => void;
+  // The cursor came to rest on a row (with the row after it, if any).
+  onCursorRow?: (row: DetailRow, next?: DetailRow) => void;
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const horizontal = rows[0]?.isEpisode === true;
@@ -380,6 +387,8 @@ const EpisodeList = React.memo(function EpisodeList({
   const [hostHandle, setHostHandle] = useState<number | null>(null);
   const onFocusListRef = useRef(onFocusList);
   onFocusListRef.current = onFocusList;
+  const onCursorRowRef = useRef(onCursorRow);
+  onCursorRowRef.current = onCursorRow;
 
   // Horizontal row scroll state. The ScrollView's own scrolling is off, so
   // `hOffsetRef` is the single source of truth for its offset.
@@ -407,6 +416,15 @@ const EpisodeList = React.memo(function EpisodeList({
       setSelectedKey(effectiveKey);
     }
   }, [effectiveKey]);
+
+  // Tell the screen where the cursor is (it warms that episode's streams).
+  // The screen debounces, so a held key sweeping the row costs nothing.
+  useEffect(() => {
+    if (!listFocused || !effectiveKey) return;
+    const list = rowsRef.current;
+    const idx = list.findIndex((r) => r.key === effectiveKey);
+    if (idx >= 0) onCursorRowRef.current?.(list[idx], list[idx + 1]);
+  }, [listFocused, effectiveKey]);
 
   // Brings the cursor row into view. Horizontal: scrolls the row only when
   // the card is not fully visible. Vertical: the page-level scroll. Returns
@@ -1886,10 +1904,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       : rows.findIndex((r) => r.isDefaultFocus);
     return rangeForIndex(episodeRanges, Math.max(focusIdx, 0));
   }, [episodeRanges, rangeStart, rows, restoreActive, restoredRow]);
+  const visibleRowsRef = useRef<DetailRow[]>([]);
   const visibleRows = useMemo(
     () => (activeRange ? rows.slice(activeRange.start, activeRange.end) : rows),
     [rows, activeRange],
   );
+  visibleRowsRef.current = visibleRows;
   // A different season/quality entry starts over on its own default block.
   useEffect(() => {
     setRangeStart(null);
@@ -2065,6 +2085,22 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
     cinemetaMeta?.description || info?.synopsis || 'Select an episode or source below to start streaming.';
 
   // ---- Row rendering -------------------------------------------------------
+  // Stremio / Nuvio addons: warm the server/quality list for the episode the
+  // cursor rests on and the next two, so pressing OK opens the picker at once.
+  const handleCursorRow = useCallback(
+    (row: DetailRow, next?: DetailRow) => {
+      if (!providerId || !row.isEpisode || !isStremioProvider(providerId)) return;
+      const rowsNow = visibleRowsRef.current;
+      const i = rowsNow.findIndex((r) => r.key === row.key);
+      scheduleStremioStreamPrefetch(providerId, [
+        row.link,
+        next?.link,
+        i >= 0 ? rowsNow[i + 2]?.link : undefined,
+      ]);
+    },
+    [providerId],
+  );
+
   const handleRowPress = useCallback(
     (row: DetailRow) =>
       resolveAndPlay(
@@ -2120,6 +2156,26 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
       : visibleRows.find((r) => r.isDefaultFocus);
     return target ? target.key : null;
   }, [rangeStart, restoreActive, restoredRow, restoreToPicker, visibleRows]);
+
+  // As soon as a season's episodes are on screen, warm the one the viewer is
+  // most likely to open (resume / up-next / default focus, else the first)
+  // and the one after it -- before they have even moved the cursor.
+  useEffect(() => {
+    if (!providerId || !isStremioProvider(providerId)) return;
+    const list = visibleRows;
+    if (list.length === 0 || !list[0].isEpisode) return;
+    const resumeIdx = list.findIndex((r) => r.isResumeTarget);
+    const focusIdx = list.findIndex((r) => r.isDefaultFocus);
+    const start = resumeTarget && 'row' in resumeTarget && resumeTarget.row
+      ? list.findIndex((r) => r.key === resumeTarget.row.key)
+      : resumeIdx >= 0
+      ? resumeIdx
+      : focusIdx >= 0
+      ? focusIdx
+      : 0;
+    const at = start >= 0 ? start : 0;
+    prefetchStremioStreams(providerId, [list[at]?.link, list[at + 1]?.link]);
+  }, [providerId, visibleRows, resumeTarget]);
 
   if (error && !info) {
     return (
@@ -2420,6 +2476,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
                 onWrapperLayout={handleWrapperLayout}
                 scrollToRow={scrollToEpisodeRow}
                 onFocusList={scrollPageToTop}
+                onCursorRow={handleCursorRow}
               />
             </View>
           ) : (
