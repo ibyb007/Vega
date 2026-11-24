@@ -680,10 +680,25 @@ export const prefetchStremioDetails = (providerValue: string, link: string): voi
 
 let episodePrefetchTimer: ReturnType<typeof setTimeout> | null = null;
 
+const warmStreams = (providerValue: string, links: (string | undefined)[]): void => {
+  const seen = new Set<string>();
+  for (const link of links) {
+    if (!link) continue;
+    try {
+      const plain = link.includes('#') ? link.slice(0, link.lastIndexOf('#')) : link;
+      if (seen.has(plain)) continue;
+      seen.add(plain);
+      const {type, id} = splitLink(plain);
+      loadStreams(providerValue, type, id).catch(() => {});
+    } catch {}
+  }
+};
+
 /**
  * Warm the stream list for episodes the person is likely to open next (the
- * focused one and the one after it). Debounced, so sweeping across a row of
- * episodes only requests where the cursor comes to rest.
+ * focused one and the ones after it). Debounced, so sweeping across a row of
+ * episodes only requests where the cursor comes to rest. Links already
+ * cached or in flight are free (loadStreams shares them).
  */
 export const scheduleStremioStreamPrefetch = (
   providerValue: string,
@@ -692,21 +707,41 @@ export const scheduleStremioStreamPrefetch = (
   if (episodePrefetchTimer) clearTimeout(episodePrefetchTimer);
   episodePrefetchTimer = setTimeout(() => {
     episodePrefetchTimer = null;
-    for (const link of links) {
-      if (!link) continue;
-      try {
-        const {type, id} = splitLink(link);
-        loadStreams(providerValue, type, id).catch(() => {});
-      } catch {}
-    }
-  }, 250);
+    warmStreams(providerValue, links);
+  }, 150);
 };
 
-const STREAM_CACHE_MS = 5 * 60 * 1000;
-const streamCache = new Map<string, {at: number; p: Promise<Stream[]>}>();
+/** Same as above but immediately (a screen just opened on a known target). */
+export const prefetchStremioStreams = (
+  providerValue: string,
+  links: (string | undefined)[],
+): void => warmStreams(providerValue, links);
 
-// Shared by the details screen's movie quality menu and by playback, so the
-// addon is asked once and the `#n` indexes used in links stay stable.
+/**
+ * Load the manifest of every installed addon (and the Nuvio catalog) in the
+ * background so the first meta / stream request skips that round trip.
+ */
+export const warmStremioAddons = (): void => {
+  try {
+    extensionStorage
+      .getInstalledProviders()
+      .filter(p => isStremioProvider(p.value) && !p.disabled && p.source?.url)
+      .forEach(p => {
+        loadManifest(p.source!.url as string).catch(() => {});
+      });
+    loadManifest(NUVIO_MANIFEST_URL).catch(() => {});
+  } catch {}
+};
+
+const STREAM_CACHE_MS = 10 * 60 * 1000;
+// An empty list is often a cold/slow addon: don't pin it for 10 minutes.
+const EMPTY_STREAM_CACHE_MS = 20 * 1000;
+const STREAM_CACHE_MAX = 80;
+const streamCache = new Map<string, {at: number; ttl: number; p: Promise<Stream[]>}>();
+
+// Shared by the details screen's movie quality menu, by prefetching and by
+// playback, so the addon is asked once and the `#n` indexes used in links
+// stay stable.
 const loadStreams = (
   providerValue: string,
   type: string,
@@ -714,11 +749,24 @@ const loadStreams = (
 ): Promise<Stream[]> => {
   const key = `${providerValue}|${type}/${id}`;
   const cached = streamCache.get(key);
-  if (cached && Date.now() - cached.at < STREAM_CACHE_MS) return cached.p;
-  const p = fetchStreamList(providerValue, type, id);
-  streamCache.set(key, {at: Date.now(), p});
-  p.catch(() => streamCache.delete(key));
-  return p;
+  if (cached && Date.now() - cached.at < cached.ttl) return cached.p;
+
+  const entry = {at: Date.now(), ttl: STREAM_CACHE_MS, p: fetchStreamList(providerValue, type, id)};
+  streamCache.set(key, entry);
+  if (streamCache.size > STREAM_CACHE_MAX) {
+    // Maps iterate in insertion order: drop the oldest.
+    const oldest = streamCache.keys().next().value;
+    if (oldest !== undefined) streamCache.delete(oldest);
+  }
+  entry.p.then(
+    list => {
+      if (list.length === 0) entry.ttl = EMPTY_STREAM_CACHE_MS;
+    },
+    () => {
+      if (streamCache.get(key) === entry) streamCache.delete(key);
+    },
+  );
+  return entry.p;
 };
 
 export const getStremioStreams = async ({
@@ -748,11 +796,15 @@ const fetchStreamList = async (
   if (!hasResource(manifest, 'stream')) {
     throw new Error(`${manifest.name} does not provide streams`);
   }
-  const data = await fetchJson(
-    `${base}/stream/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`,
-    undefined,
-    30000,
-  );
+  const streamUrl = `${base}/stream/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`;
+  let data: any;
+  try {
+    data = await fetchJson(streamUrl, undefined, 30000);
+  } catch (err) {
+    // One quick retry: addons often fail the first (cold) hit.
+    await new Promise(r => setTimeout(r, 400));
+    data = await fetchJson(streamUrl, undefined, 30000);
+  }
   const raw: any[] = Array.isArray(data?.streams) ? data.streams : [];
 
   const seen = new Set<string>();
