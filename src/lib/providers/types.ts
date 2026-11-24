@@ -71,6 +71,9 @@ export interface Stream {
   quality?: '360' | '480' | '720' | '1080' | '2160' | string;
   tag?: string;
   tags?: string[];
+  // Optional multi-line release description and file size (Stremio addons).
+  description?: string;
+  size?: string;
   subtitles?: TextTracks;
   headers?: any;
   drm?: StreamDrm;
@@ -115,6 +118,10 @@ export interface EpisodeLink {
 export interface Link {
   title: string;
   quality?: string;
+  // Optional extra lines + file size shown under the entry in the details
+  // screen's Season / Quality picker (Stremio addon streams).
+  description?: string;
+  size?: string | number;
   episodesLink?: string;
   quickDownload?: boolean;
   directLinks?: {
