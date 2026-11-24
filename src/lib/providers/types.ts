@@ -15,6 +15,10 @@ export interface Post {
   link: string;
   image: string;
   provider?: string;
+  // Stremio addons: catalog id (tt...) and media type, so Discover can match
+  // a post to the title that was opened by id instead of by name.
+  id?: string;
+  type?: string;
   // Optional richer data (Stremio addons): lets Home paint the landscape
   // backdrop + synopsis for a focused card immediately.
   poster?: string;
