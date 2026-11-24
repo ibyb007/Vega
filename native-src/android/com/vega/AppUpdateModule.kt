@@ -16,7 +16,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * In-app updater support: downloads a release APK into the app cache with
@@ -30,6 +34,10 @@ class AppUpdateModule(
     companion object {
         private const val PROGRESS_EVENT = "VegaAppUpdateProgress"
         private const val UPDATE_DIR = "updates"
+        // Release APKs are tens of MB: split them over parallel connections.
+        private const val PARALLEL_PARTS = 6
+        private const val MIN_PART_BYTES = 1L * 1024 * 1024
+        private const val PART_RETRIES = 3
     }
 
     @Volatile private var cancelled = false
@@ -100,7 +108,11 @@ class AppUpdateModule(
         }
     }
 
-    /** Downloads [url] to cache/updates/[fileName]; resolves with the file path. */
+    /**
+     * Downloads [url] to cache/updates/[fileName]; resolves with the file path.
+     * Uses several parallel Range requests when the server supports them
+     * (GitHub's release CDN does) and falls back to one stream otherwise.
+     */
     @ReactMethod
     fun downloadApk(url: String, fileName: String, promise: Promise) {
         if (downloading) {
@@ -110,43 +122,19 @@ class AppUpdateModule(
         downloading = true
         cancelled = false
         Thread {
+            val safeName = File(fileName).name
             val dir = updateDir()
             // Drop older downloaded APKs so the cache never accumulates.
-            dir.listFiles()?.forEach { if (it.name != fileName) it.delete() }
-            val safeName = File(fileName).name
+            dir.listFiles()?.forEach { if (it.name != safeName) it.delete() }
             val target = File(dir, safeName)
             val part = File(dir, "$safeName.part")
             try {
-                val request = Request.Builder().url(url).header("Accept", "application/octet-stream").build()
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        throw RuntimeException("Server returned HTTP " + response.code)
-                    }
-                    val body = response.body ?: throw RuntimeException("Empty response")
-                    val total = body.contentLength()
-                    var received = 0L
-                    var lastEmit = 0L
-                    body.byteStream().use { input ->
-                        FileOutputStream(part).use { output ->
-                            val buffer = ByteArray(64 * 1024)
-                            while (true) {
-                                if (cancelled) throw RuntimeException("Download cancelled")
-                                val read = input.read(buffer)
-                                if (read < 0) break
-                                output.write(buffer, 0, read)
-                                received += read
-                                val now = System.currentTimeMillis()
-                                if (now - lastEmit > 250) {
-                                    lastEmit = now
-                                    emitProgress(received, total)
-                                }
-                            }
-                        }
-                    }
-                    if (total > 0 && received != total) {
-                        throw RuntimeException("Download incomplete")
-                    }
-                    emitProgress(received, total)
+                if (part.exists()) part.delete()
+                val probe = probeRanges(url)
+                if (probe != null && probe.second >= MIN_PART_BYTES * 2) {
+                    downloadParallel(probe.first, probe.second, part)
+                } else {
+                    downloadSingle(url, part)
                 }
                 if (target.exists()) target.delete()
                 if (!part.renameTo(target)) throw RuntimeException("Could not save the APK")
@@ -158,6 +146,141 @@ class AppUpdateModule(
                 downloading = false
             }
         }.start()
+    }
+
+    /**
+     * Asks for the first byte only. Returns (final URL after redirects, total
+     * size) when the server answers 206 with a Content-Range, else null.
+     */
+    private fun probeRanges(url: String): Pair<String, Long>? {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("Range", "bytes=0-0")
+                .header("Accept", "application/octet-stream")
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.code != 206) return null
+                val range = response.header("Content-Range") ?: return null
+                val total = range.substringAfter('/', "").trim().toLongOrNull() ?: return null
+                if (total <= 0) return null
+                Pair(response.request.url.toString(), total)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun downloadSingle(url: String, part: File) {
+        val request = Request.Builder().url(url).header("Accept", "application/octet-stream").build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw RuntimeException("Server returned HTTP " + response.code)
+            }
+            val body = response.body ?: throw RuntimeException("Empty response")
+            val total = body.contentLength()
+            var received = 0L
+            var lastEmit = 0L
+            body.byteStream().use { input ->
+                FileOutputStream(part).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        if (cancelled) throw RuntimeException("Download cancelled")
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        received += read
+                        val now = System.currentTimeMillis()
+                        if (now - lastEmit > 250) {
+                            lastEmit = now
+                            emitProgress(received, total)
+                        }
+                    }
+                }
+            }
+            if (total > 0 && received != total) throw RuntimeException("Download incomplete")
+            emitProgress(received, total)
+        }
+    }
+
+    private fun downloadParallel(url: String, total: Long, part: File) {
+        RandomAccessFile(part, "rw").use { it.setLength(total) }
+
+        val partCount = minOf(PARALLEL_PARTS.toLong(), maxOf(1L, total / MIN_PART_BYTES)).toInt()
+        val chunk = total / partCount
+        val received = AtomicLong(0)
+        val lastEmit = AtomicLong(0)
+        val progress = {
+            val now = System.currentTimeMillis()
+            val last = lastEmit.get()
+            if (now - last > 250 && lastEmit.compareAndSet(last, now)) {
+                emitProgress(received.get(), total)
+            }
+        }
+
+        val pool = Executors.newFixedThreadPool(partCount)
+        try {
+            val futures = ArrayList<Future<*>>()
+            for (i in 0 until partCount) {
+                val start = i * chunk
+                val end = if (i == partCount - 1) total - 1 else start + chunk - 1
+                futures.add(pool.submit {
+                    var offset = start
+                    var attempt = 0
+                    while (offset <= end) {
+                        if (cancelled) throw RuntimeException("Download cancelled")
+                        try {
+                            val request = Request.Builder()
+                                .url(url)
+                                .header("Range", "bytes=$offset-$end")
+                                .header("Accept", "application/octet-stream")
+                                .build()
+                            client.newCall(request).execute().use { response ->
+                                if (response.code != 206) {
+                                    throw RuntimeException("Server returned HTTP " + response.code)
+                                }
+                                val body = response.body ?: throw RuntimeException("Empty response")
+                                RandomAccessFile(part, "rw").use { out ->
+                                    out.seek(offset)
+                                    val buffer = ByteArray(64 * 1024)
+                                    body.byteStream().use { input ->
+                                        while (offset <= end) {
+                                            if (cancelled) throw RuntimeException("Download cancelled")
+                                            val want = minOf(buffer.size.toLong(), end - offset + 1).toInt()
+                                            val read = input.read(buffer, 0, want)
+                                            if (read < 0) break
+                                            out.write(buffer, 0, read)
+                                            offset += read
+                                            received.addAndGet(read.toLong())
+                                            progress()
+                                        }
+                                    }
+                                }
+                            }
+                            if (offset <= end) throw RuntimeException("Connection closed early")
+                        } catch (e: Exception) {
+                            if (cancelled) throw e
+                            // Resume this part from where it stopped.
+                            if (++attempt > PART_RETRIES) throw e
+                            Thread.sleep(500L * attempt)
+                        }
+                    }
+                })
+            }
+            for (f in futures) {
+                try {
+                    f.get()
+                } catch (e: java.util.concurrent.ExecutionException) {
+                    // One part gave up: stop the rest and surface its error.
+                    cancelled = true
+                    throw RuntimeException(e.cause?.message ?: "Download failed")
+                }
+            }
+        } finally {
+            pool.shutdownNow()
+        }
+        if (received.get() != total) throw RuntimeException("Download incomplete")
+        emitProgress(total, total)
     }
 
     @ReactMethod
