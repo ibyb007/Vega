@@ -35,6 +35,9 @@ interface UpdateState {
   status: UpdateStatus;
   release: ReleaseInfo | null;
   progress: number; // 0..1 while downloading
+  received: number; // bytes so far
+  total: number; // bytes expected (0 until known)
+  speedBps: number; // smoothed bytes per second
   apkPath: string | null;
   error: string | null;
   lastChecked: number | null;
@@ -45,6 +48,9 @@ export const useUpdateStore = create<UpdateState>((set) => ({
   status: 'idle',
   release: null,
   progress: 0,
+  received: 0,
+  total: 0,
+  speedBps: 0,
   apkPath: null,
   error: null,
   lastChecked: null,
@@ -190,7 +196,7 @@ export const checkForUpdates = async (): Promise<ReleaseInfo | null> => {
   try {
     const release = await findLatestRelease(getUpdateChannel());
     if (release) {
-      patch({ status: 'available', release, lastChecked: Date.now(), progress: 0, apkPath: null });
+      patch({ status: 'available', release, lastChecked: Date.now(), progress: 0, received: 0, total: 0, speedBps: 0, apkPath: null });
     } else {
       patch({ status: 'uptodate', release: null, lastChecked: Date.now() });
     }
@@ -220,21 +226,52 @@ export const installDownloadedUpdate = async (): Promise<void> => {
   }
 };
 
-/** Downloads the found release, then opens the installer. */
+let cancelRequested = false;
+
+/** Stops a running download; the release stays available to retry. */
+export const cancelUpdateDownload = (): void => {
+  if (useUpdateStore.getState().status !== 'downloading') return;
+  cancelRequested = true;
+  AppUpdate.cancelDownload();
+};
+
+/** Downloads the found release (parallel connections), then opens the installer. */
 export const downloadAndInstallUpdate = async (): Promise<void> => {
   const { release, status } = useUpdateStore.getState();
   if (!release || status === 'downloading') return;
-  patch({ status: 'downloading', progress: 0, error: null });
+  cancelRequested = false;
+  patch({ status: 'downloading', progress: 0, received: 0, total: release.apkSize, speedBps: 0, error: null });
+  let lastAt = Date.now();
+  let lastBytes = 0;
+  let speed = 0;
   const off = AppUpdate.onProgress((received, total) => {
     const size = total > 0 ? total : release.apkSize;
-    patch({ progress: size > 0 ? Math.min(1, received / size) : 0 });
+    const now = Date.now();
+    const dt = (now - lastAt) / 1000;
+    if (dt >= 0.5) {
+      const inst = (received - lastBytes) / dt;
+      // Exponential smoothing keeps the readout from jumping around.
+      speed = speed === 0 ? inst : speed * 0.7 + inst * 0.3;
+      lastAt = now;
+      lastBytes = received;
+    }
+    patch({
+      progress: size > 0 ? Math.min(1, received / size) : 0,
+      received,
+      total: size,
+      speedBps: speed,
+    });
   });
   try {
     const path = await AppUpdate.downloadApk(release.apkUrl, release.apkName);
-    patch({ status: 'ready', progress: 1, apkPath: path });
+    patch({ status: 'ready', progress: 1, speedBps: 0, apkPath: path });
     await installDownloadedUpdate();
   } catch (e: any) {
-    patch({ status: 'error', error: e?.message || 'Download failed' });
+    if (cancelRequested) {
+      patch({ status: 'available', progress: 0, received: 0, speedBps: 0, error: null });
+    } else {
+      patch({ status: 'error', speedBps: 0, error: e?.message || 'Download failed' });
+    }
   } finally {
     off();
   }
