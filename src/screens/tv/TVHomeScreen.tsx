@@ -37,6 +37,7 @@ import useContinueWatchingStore from '../../lib/zustand/continueWatchingStore';
 import { useHomePageData } from '../../lib/hooks/useHomePageData';
 import { useNuvioFallbackRows } from '../../lib/hooks/useNuvioFallbackRows';
 import { isStremioProvider, prefetchStremioDetails } from '../../lib/services/stremioAddon';
+import { providerManager } from '../../lib/services/ProviderManager';
 import { getOrFetchMetadata, prefetchMetadata } from '../../lib/services/metadataCache';
 import { formatEpisodeLabel } from '../../lib/utils/episodeParsing';
 import {
@@ -57,6 +58,7 @@ import {
 import { isLiveProvider } from '../../lib/player/drm';
 
 const ROW_HEIGHT = 235;
+const POSTER_RADIUS = 12;
 
 // ---------------------------------------------------------------------------
 // Performance tuning knobs (see the notes on HomeRow / HomeCard below).
@@ -69,6 +71,11 @@ const EMPTY_ROWS: any[] = [];
 // of what is mounted, so a 40-poster row only pays for ~12 posters (views +
 // decoded bitmaps) until the user actually scrolls into it.
 const INITIAL_CARDS_PER_ROW = 12;
+// Rows used to stop at whatever the first catalog page returned (~20). When
+// focus gets within LOAD_MORE_LOOKAHEAD posters of the end of what is loaded,
+// the next catalog page is fetched and appended, up to MAX_ROW_POSTS.
+const LOAD_MORE_LOOKAHEAD = 10;
+const MAX_ROW_POSTS = 300;
 const CARDS_PAGE = 12;
 const CARDS_LOOKAHEAD = 8;
 // Same idea vertically: rows are mounted up to this many rows below the row
@@ -185,11 +192,18 @@ const mergeCinemetaHero = (enrichment: HeroEnrichment, hero: CinemetaHeroData) =
 // Layers an enrichment over a hero. Every field is "only if we have it", so
 // whatever the base hero already shows (poster fallback, provider synopsis,
 // ...) stays when Cinemeta had nothing better.
-const applyEnrichment = (hero: TVHeroMedia, e: HeroEnrichment, isHistory: boolean): TVHeroMedia => ({
+// `keepBackdrop`: the title came from the Nuvio catalog and already has its own
+// banner; Cinemeta must not swap that for a different image.
+const applyEnrichment = (
+  hero: TVHeroMedia,
+  e: HeroEnrichment,
+  isHistory: boolean,
+  keepBackdrop: boolean = false
+): TVHeroMedia => ({
   ...hero,
-  backdropUrl: e.backdrop || hero.backdropUrl,
-  hasLandscapeBackdrop: e.backdrop ? true : hero.hasLandscapeBackdrop,
-  isPosterFallback: e.backdrop ? false : hero.isPosterFallback,
+  backdropUrl: keepBackdrop ? hero.backdropUrl : e.backdrop || hero.backdropUrl,
+  hasLandscapeBackdrop: keepBackdrop ? hero.hasLandscapeBackdrop : e.backdrop ? true : hero.hasLandscapeBackdrop,
+  isPosterFallback: keepBackdrop ? hero.isPosterFallback : e.backdrop ? false : hero.isPosterFallback,
   // Continue Watching keeps its "Resume watching (N%)" line.
   overview: isHistory ? hero.overview : e.description || hero.overview,
   rating: e.rating || hero.rating,
@@ -255,7 +269,7 @@ interface HomeCardProps {
     itemKey: string,
     isHistory: boolean,
     pIndex: number,
-  ) => void;
+  ) => boolean | void;
   onCardPress: (rowIndex: number, item: any, itemKey: string, isHistory: boolean) => void;
   onCardLongPress: (item: any, isHistory: boolean) => void;
   registerItemRef: (itemKey: string, el: View | null) => void;
@@ -327,7 +341,9 @@ const HomeCard = React.memo(function HomeCard({
   );
 
   const handleFocus = useCallback(() => {
-    onCardFocus(rowIndex, item, itemKey, isHistoryRow, pIndex);
+    // `false` = the screen rejected this focus as a stray sideways jump into
+    // another row and is putting focus back; do nothing else for this card.
+    if (onCardFocus(rowIndex, item, itemKey, isHistoryRow, pIndex) === false) return;
     // Only the first card of a row sits at the screen's left edge --
     // re-register it every time it's focused so Left always reaches the
     // Home rail button, from whichever row the user is on.
@@ -389,7 +405,8 @@ const HomeCard = React.memo(function HomeCard({
       hasTVPreferredFocus={shouldFocus}
       scaleFocused={1.05}
       focusedBorderColor="#FFFFFF"
-      borderRadius={isLive ? LIVE_CARD_RADIUS : 8}
+      borderRadius={isLive ? LIVE_CARD_RADIUS : POSTER_RADIUS}
+      borderWidth={isLive ? undefined : 3}
       delayLongPress={350}
       onFocus={handleFocus}
       onLayout={handleLayout}
@@ -432,7 +449,6 @@ const HomeCard = React.memo(function HomeCard({
             </View>
           )}
 
-          {focused && <View style={styles.focusBorderGlow} />}
         </View>
       )}
     </TVFocusablePressable>
@@ -450,6 +466,8 @@ interface HomeRowProps {
   onCardPress: HomeCardProps['onCardPress'];
   onCardLongPress: HomeCardProps['onCardLongPress'];
   registerItemRef: HomeCardProps['registerItemRef'];
+  // Asks the screen for the next catalog page of this row.
+  onNeedMore?: (row: any) => void;
 }
 
 const HomeRow = React.memo(function HomeRow({
@@ -461,7 +479,10 @@ const HomeRow = React.memo(function HomeRow({
   onCardPress,
   onCardLongPress,
   registerItemRef,
+  onNeedMore,
 }: HomeRowProps) {
+  const rowRef = useRef(row);
+  rowRef.current = row;
   const rowPosts: any[] = row.Posts || [];
   const isHistoryRow = Boolean(row.isHistory);
   const rowId = getRowId(row);
@@ -556,7 +577,7 @@ const HomeRow = React.memo(function HomeRow({
     if (x == null) return; // its onLayout will call us once it is placed
     // A little left padding so the target card doesn't land flush against
     // the row's edge.
-    scrollView.scrollTo({ x: Math.max(0, x - 24), y: 0, animated: false });
+    scrollView.scrollTo({ x: Math.max(0, x - 36), y: 0, animated: false });
   }, []);
 
   const scrollItemIntoView = useCallback(
@@ -609,13 +630,18 @@ const HomeRow = React.memo(function HomeRow({
 
   const handleCardFocus = useCallback<HomeCardProps['onCardFocus']>(
     (rIdx, item, itemKey, isHistory, pIndex) => {
-      onCardFocus(rIdx, item, itemKey, isHistory, pIndex);
+      if (onCardFocus(rIdx, item, itemKey, isHistory, pIndex) === false) return false;
       // Mount the next page of posters before focus can run off the end.
       setMountedCount((c) =>
         c < totalRef.current && pIndex >= c - CARDS_LOOKAHEAD ? c + CARDS_PAGE : c
       );
+      // Near the end of what is loaded: fetch the next catalog page.
+      if (onNeedMore && pIndex >= totalRef.current - LOAD_MORE_LOOKAHEAD) {
+        onNeedMore(rowRef.current);
+      }
+      return true;
     },
-    [onCardFocus]
+    [onCardFocus, onNeedMore]
   );
 
   return (
@@ -633,6 +659,7 @@ const HomeRow = React.memo(function HomeRow({
         ref={scrollViewRef}
         horizontal
         showsHorizontalScrollIndicator={false}
+        style={styles.rowScroll}
         contentContainerStyle={styles.horizontalRowScroll}
         removeClippedSubviews={false}
         onContentSizeChange={applyPendingScroll}
@@ -846,14 +873,86 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
   const nuvio = useNuvioFallbackRows(needsNuvioFallback);
   const nuvioRows = needsNuvioFallback ? nuvio.rows : EMPTY_ROWS;
 
+  // Extra catalog pages fetched as focus nears the end of a row (see
+  // loadMoreRow). Kept apart from the query data so refetches don't drop them.
+  const [extraPosts, setExtraPosts] = useState<Record<string, any[]>>({});
+  const pagingRef = useRef<Record<string, { page: number; loading: boolean; done: boolean }>>({});
+  const pagingAbortRef = useRef<AbortController | null>(null);
+  const extraPostsRef = useRef<Record<string, any[]>>({});
+  extraPostsRef.current = extraPosts;
+
+  useEffect(() => {
+    pagingRef.current = {};
+    setExtraPosts({});
+  }, [provider?.value, secondaryProviderValue]);
+  useEffect(() => () => pagingAbortRef.current?.abort(), []);
+
+  const withExtras = (rows: any[]) =>
+    rows.map((row) => {
+      const extra = extraPosts[getRowId(row)];
+      if (!extra || extra.length === 0) return row;
+      const seen = new Set(row.Posts.map((p: any) => p?.link || p?.infoUrl || p?.id));
+      const fresh = extra.filter((p) => !seen.has(p?.link || p?.infoUrl || p?.id));
+      return fresh.length > 0
+        ? { ...row, Posts: [...row.Posts, ...fresh].slice(0, MAX_ROW_POSTS) }
+        : row;
+    });
+  const primaryRowsPaged = useMemo(() => withExtras(primaryRows), [primaryRows, extraPosts]);
+  const secondaryRowsPaged = useMemo(() => withExtras(secondaryRows), [secondaryRows, extraPosts]);
+
+  const loadMoreRow = useCallback((row: any) => {
+    if (!row || row.isHistory || !row.filter) return;
+    const first = row.Posts?.[0];
+    const providerValue = first?.provider;
+    if (!providerValue || first?.nuvioFallback) return;
+    if ((row.Posts?.length || 0) >= MAX_ROW_POSTS) return;
+
+    const rowId = getRowId(row);
+    const state = (pagingRef.current[rowId] ||= { page: 1, loading: false, done: false });
+    if (state.loading || state.done) return;
+    state.loading = true;
+    const nextPage = state.page + 1;
+    const controller = (pagingAbortRef.current ||= new AbortController());
+
+    providerManager
+      .getPosts({ filter: row.filter, page: nextPage, providerValue, signal: controller.signal })
+      .then((posts) => {
+        const incoming = (posts || []).map((p: any) => ({ ...p, provider: p.provider || providerValue }));
+        if (incoming.length === 0) {
+          state.done = true;
+          return;
+        }
+        const have = new Set(
+          [...(row.Posts || []), ...(extraPostsRef.current[rowId] || [])].map(
+            (p: any) => p?.link || p?.infoUrl || p?.id
+          )
+        );
+        const fresh = incoming.filter((p: any) => !have.has(p?.link || p?.infoUrl || p?.id));
+        // A provider that ignores `page` just repeats itself: stop asking.
+        if (fresh.length === 0) {
+          state.done = true;
+          return;
+        }
+        state.page = nextPage;
+        if (incoming.length < 5) state.done = true;
+        setExtraPosts((prev) => ({ ...prev, [rowId]: [...(prev[rowId] || []), ...fresh] }));
+      })
+      .catch(() => {
+        state.done = true;
+      })
+      .finally(() => {
+        state.loading = false;
+      });
+  }, []);
+
   const displayRows = useMemo(() => {
     const rows: any[] = [];
     if (historyRow) rows.push(historyRow);
-    rows.push(...primaryRows);
-    rows.push(...secondaryRows);
+    rows.push(...primaryRowsPaged);
+    rows.push(...secondaryRowsPaged);
     rows.push(...nuvioRows);
     return rows;
-  }, [historyRow, primaryRows, secondaryRows, nuvioRows]);
+  }, [historyRow, primaryRowsPaged, secondaryRowsPaged, nuvioRows]);
 
   const updateHeroWithBestMetadata = useCallback(
     (item: any, isHistory: boolean = false, immediate: boolean = false) => {
@@ -918,15 +1017,24 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         return /^tt\d+$/i.test(id) ? id.toLowerCase() : null;
       })();
       const isLiveItem = isLiveProvider(targetProvider);
+      // Nuvio-catalog titles (Home fallback rows and Continue Watching entries
+      // played from them) carry the catalog's own banner: use it as the
+      // backdrop and don't replace it with Cinemeta's. Metadata (synopsis,
+      // rating, ...) is still enriched. Separate cache key, since that cached
+      // enrichment deliberately has no backdrop.
+      const keepNuvioBackdrop = Boolean(ds?.banner);
+      const discoverKey = dsImdb
+        ? keepNuvioBackdrop
+          ? `discover::nb::${dsImdb}`
+          : `discover::${dsImdb}`
+        : null;
       const enrichKey =
         isLiveItem
           ? null
           : item.nuvioFallback
-          ? dsImdb
-            ? `discover::${dsImdb}`
-            : null
+          ? discoverKey
           : isHistory && ds && dsImdb
-          ? `discover::${dsImdb}`
+          ? discoverKey
           : !hasSourceBackdrop && targetUrl && targetProvider
             ? `${targetProvider}::${targetUrl}`
             : null;
@@ -950,7 +1058,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         isPosterFallback: !hasSourceBackdrop,
       };
       const baseHero = cachedEnrichment
-        ? applyEnrichment(rawBaseHero, cachedEnrichment, isHistory)
+        ? applyEnrichment(rawBaseHero, cachedEnrichment, isHistory, keepNuvioBackdrop)
         : rawBaseHero;
 
       const applyBaseHero = () => {
@@ -1029,6 +1137,8 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           }
         } catch {}
 
+        if (keepNuvioBackdrop) enrichment.backdrop = null;
+
         // 3. Load the backdrop into the image cache *before* swapping it in,
         //    so the hero never flashes blank while a big image downloads --
         //    and a dead URL just keeps the current image instead of
@@ -1045,7 +1155,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         // in the cache. Only if this is still the hero being shown.
         if (requestId === heroRequestIdRef.current && !isEmptyEnrichment(enrichment)) {
           heroHostRef.current?.set((prev) =>
-            prev ? applyEnrichment(prev, enrichment, isHistory) : prev
+            prev ? applyEnrichment(prev, enrichment, isHistory, keepNuvioBackdrop) : prev
           );
         }
 
@@ -1093,7 +1203,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
         if (info || ds || enrichment.backdrop) writeHeroEnrichment(enrichKey, enrichment);
         if ((completion || tmdbRatingAdded) && requestId === heroRequestIdRef.current) {
           heroHostRef.current?.set((prev) =>
-            prev ? applyEnrichment(prev, enrichment, isHistory) : prev
+            prev ? applyEnrichment(prev, enrichment, isHistory, keepNuvioBackdrop) : prev
           );
         }
       }, 250);
@@ -1162,8 +1272,30 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     return () => onRegisterReturnFocusTrigger?.(null);
   }, [onRegisterReturnFocusTrigger]);
 
+  // Last D-pad key seen by the native key forwarder (it fires before Android
+  // moves focus), used to recognise a stray focus jump between rows.
+  const lastDpadKeyRef = useRef({ code: 0, at: 0 });
+
   const handleCardFocus = useCallback(
-    (rowIndex: number, item: any, itemKey: string, isHistory: boolean = false) => {
+    (rowIndex: number, item: any, itemKey: string, isHistory: boolean = false): boolean => {
+      // Left/Right never changes row. If focus landed on another row while a
+      // Left/Right key is what the user just pressed (held-key overshoot at
+      // the end of a row), it is a stray jump: put focus back instead of
+      // following it.
+      const prevKey = lastFocusedKey;
+      const { code, at } = lastDpadKeyRef.current;
+      if (
+        prevKey &&
+        prevKey !== itemKey &&
+        rowIndex !== lastFocusedRowIndex &&
+        (code === 21 || code === 22) &&
+        Date.now() - at < 350
+      ) {
+        refocusRef.current = { key: prevKey, nonce: refocusRef.current.nonce + 1 };
+        forceRerenderForRefocus();
+        return false;
+      }
+
       lastFocusedKey = itemKey;
       lastFocusedRowIndex = rowIndex;
 
@@ -1205,6 +1337,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
           }
         }, PREFETCH_DELAY_MS);
       }
+      return true;
     },
     [translateY, updateHeroWithBestMetadata, provider?.value]
   );
@@ -1311,6 +1444,9 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
     const RELEASE_GAP_MS = 400;
 
     const handleKeyDown = (e: { keyCode?: number }) => {
+      if (e?.keyCode === 19 || e?.keyCode === 20 || e?.keyCode === 21 || e?.keyCode === 22) {
+        lastDpadKeyRef.current = { code: e.keyCode, at: Date.now() };
+      }
       if (e?.keyCode !== KEYCODE_DPAD_CENTER && e?.keyCode !== KEYCODE_ENTER) return;
       if (!focusedHistoryItemRef.current) return;
 
@@ -1410,6 +1546,7 @@ export const TVHomeScreen: React.FC<TVHomeScreenProps> = ({
                 onCardPress={handleCardPress}
                 onCardLongPress={handleCardLongPress}
                 registerItemRef={registerItemRef}
+                onNeedMore={loadMoreRow}
               />
             );
           })}
@@ -1579,20 +1716,32 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     overflow: 'hidden',
   },
+  // The focused poster is scaled up and has a ring around it; both overflow
+  // the poster's own box. A ScrollView clips to its bounds, so the old tight
+  // bounds cut off the ring on the top (and the left of the first poster).
+  // The scroll area is grown by the padding below and pulled back with equal
+  // negative margins, so posters sit exactly where they did before.
+  rowScroll: {
+    marginLeft: -12,
+    marginTop: -10,
+    marginBottom: -10,
+    flexGrow: 0,
+  },
   horizontalRowScroll: {
+    paddingLeft: 12,
     paddingRight: 60,
     gap: 14,
-    paddingVertical: 2,
+    paddingVertical: 10,
   },
   card: {
-    width: 130,
-    height: 190,
+    width: 132,
+    height: 198,
     backgroundColor: '#16161E',
-    borderRadius: 8,
+    borderRadius: POSTER_RADIUS,
   },
   cardCompact: {
-    width: 125,
-    height: 180,
+    width: 126,
+    height: 189,
   },
   cardLive: {
     width: LIVE_CARD_WIDTH,
@@ -1602,14 +1751,14 @@ const styles = StyleSheet.create({
   },
   cardInner: {
     flex: 1,
-    borderRadius: 8,
+    borderRadius: POSTER_RADIUS - 3,
     overflow: 'hidden',
     position: 'relative',
   },
   cardPoster: {
     width: '100%',
     height: '100%',
-    borderRadius: 8,
+    borderRadius: POSTER_RADIUS - 3,
   },
   historyMetaOverlay: {
     position: 'absolute',
@@ -1637,12 +1786,6 @@ const styles = StyleSheet.create({
   progressBarFill: {
     height: '100%',
     backgroundColor: '#8A5CF6',
-  },
-  focusBorderGlow: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 8,
-    borderWidth: 3,
-    borderColor: '#FFFFFF',
   },
   centerLoading: {
     flex: 1,
