@@ -69,8 +69,8 @@ const EMPTY_ROWS: any[] = [];
 // of what is mounted, so a 40-poster row only pays for ~12 posters (views +
 // decoded bitmaps) until the user actually scrolls into it.
 const INITIAL_CARDS_PER_ROW = 12;
-const CARDS_PAGE = 10;
-const CARDS_LOOKAHEAD = 5;
+const CARDS_PAGE = 12;
+const CARDS_LOOKAHEAD = 8;
 // Same idea vertically: rows are mounted up to this many rows below the row
 // that currently holds focus, and more are appended as focus moves down.
 // Rows are never unmounted again, so scroll offsets / focus memory of rows
@@ -466,6 +466,59 @@ const HomeRow = React.memo(function HomeRow({
   const isHistoryRow = Boolean(row.isHistory);
   const rowId = getRowId(row);
 
+  // Explicit Left/Right chain between the cards of this row. Without it,
+  // Android falls back to a geometric search, and when a held Right key
+  // reaches the last *mounted* card (the next page is still being mounted)
+  // that search picks a card from a neighbouring row -- the focus jump.
+  // Each card points Right at the next card and Left at the previous one;
+  // the last mounted card points at itself, so Right simply stops there
+  // instead of leaving the row. Up/Down are untouched.
+  const nodesRef = useRef<Record<string, View | null>>({});
+  const orderRef = useRef<string[]>([]);
+  const wireTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const wireRowLinks = useCallback(() => {
+    wireTimerRef.current = null;
+    const order = orderRef.current;
+    const handles = order.map((k) => {
+      const n = nodesRef.current[k];
+      return n ? findNodeHandle(n) : null;
+    });
+    for (let i = 0; i < order.length; i++) {
+      const node = nodesRef.current[order[i]] as any;
+      const self = handles[i];
+      if (!node || self == null) continue;
+      const next = i < order.length - 1 ? handles[i + 1] : null;
+      const props: Record<string, number> = { nextFocusRight: next ?? self };
+      if (i > 0) {
+        const prev = handles[i - 1];
+        props.nextFocusLeft = prev ?? self;
+      }
+      node.setNativeProps?.(props);
+    }
+  }, []);
+
+  const scheduleWire = useCallback(() => {
+    if (wireTimerRef.current) return;
+    wireTimerRef.current = setTimeout(wireRowLinks, 0);
+  }, [wireRowLinks]);
+
+  const registerRowItemRef = useCallback(
+    (itemKey: string, el: View | null) => {
+      nodesRef.current[itemKey] = el;
+      registerItemRef(itemKey, el);
+      if (el) scheduleWire();
+    },
+    [registerItemRef, scheduleWire]
+  );
+
+  useEffect(
+    () => () => {
+      if (wireTimerRef.current) clearTimeout(wireTimerRef.current);
+    },
+    []
+  );
+
   const [mountedCount, setMountedCount] = useState(INITIAL_CARDS_PER_ROW);
   const totalRef = useRef(rowPosts.length);
   totalRef.current = rowPosts.length;
@@ -547,6 +600,13 @@ const HomeRow = React.memo(function HomeRow({
     Math.max(mountedCount, focusedIdx >= 0 ? focusedIdx + CARDS_PAGE : 0)
   );
 
+  orderRef.current = rowPosts
+    .slice(0, renderCount)
+    .map((item: any, i: number) => buildItemKey(row, item, i));
+  useEffect(() => {
+    scheduleWire();
+  }, [renderCount, rowPosts, refocusNonce, scheduleWire]);
+
   const handleCardFocus = useCallback<HomeCardProps['onCardFocus']>(
     (rIdx, item, itemKey, isHistory, pIndex) => {
       onCardFocus(rIdx, item, itemKey, isHistory, pIndex);
@@ -592,7 +652,7 @@ const HomeRow = React.memo(function HomeRow({
               onCardFocus={handleCardFocus}
               onCardPress={onCardPress}
               onCardLongPress={onCardLongPress}
-              registerItemRef={registerItemRef}
+              registerItemRef={registerRowItemRef}
               scrollItemIntoView={scrollItemIntoView}
               onCardLayout={handleCardLayout}
             />
