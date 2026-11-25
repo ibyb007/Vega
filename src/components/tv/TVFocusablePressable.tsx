@@ -13,6 +13,8 @@ interface TVFocusablePressableProps extends Omit<PressableProps, 'style' | 'chil
   focusedBorderColor?: string;
   scaleFocused?: number;
   borderRadius?: number;
+  // Width of the (transparent until focused) ring. Defaults to 2.
+  borderWidth?: number;
   hasTVPreferredFocus?: boolean;
   focusable?: boolean;
   onFocusChange?: (focused: boolean) => void;
@@ -40,6 +42,7 @@ export const TVFocusablePressable = React.forwardRef<View, TVFocusablePressableP
       focusedBorderColor = '#8A5CF6',
       scaleFocused = 1.05,
       borderRadius = 8,
+      borderWidth = 2,
       hasTVPreferredFocus = false,
       focusable = true,
       onFocusChange,
@@ -71,7 +74,7 @@ export const TVFocusablePressable = React.forwardRef<View, TVFocusablePressableP
         style={[
           style,
           styles.base,
-          { borderRadius },
+          { borderRadius, borderWidth },
           isFocused && {
             borderColor: focusedBorderColor,
             transform: [{ scale: scaleFocused }],
