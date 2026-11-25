@@ -2067,16 +2067,40 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   // ---- Header data ---------------------------------------------------------
   // Same fields, same precedence as the Discover results header: Cinemeta's
   // canonical data when we have it, the provider's own where we do not.
+  // Titles opened from the Nuvio catalog (Stremio / Nuvio addon rows) already
+  // carry Nuvio's 16:9 backdrop -- the same one Home showed. Use it straight
+  // away instead of waiting for (and then swapping to) Cinemeta's.
+  const catalogBackdrop =
+    isStremioProvider(providerId) || item?.nuvioFallback ? item?.background : undefined;
   const bannerImage =
-    cinemetaMeta?.background || info?.image || item?.background || info?.poster || item?.image;
+    catalogBackdrop ||
+    cinemetaMeta?.background ||
+    info?.image ||
+    item?.background ||
+    info?.poster ||
+    item?.image;
   const logoUrl = cinemetaMeta?.logo || info?.logo;
   useEffect(() => {
     setLogoFailed(false);
   }, [logoUrl]);
   const displayTitle = cinemetaMeta?.name || info?.title || item?.title;
+  // First usable rating wins. An empty/"0" value must not shadow a real one
+  // (`??` only skips null/undefined), and the catalog post's own rating --
+  // the one Home showed -- is a fallback too, since a brand-new title's meta
+  // often has no rating yet.
   const ratingText = (() => {
-    const raw = cinemetaMeta?.imdbRating ?? cinemetaMeta?.rating ?? info?.rating ?? tmdbRating;
-    return raw !== undefined && raw !== null && String(raw).trim() !== '' ? String(raw) : undefined;
+    const candidates = [
+      cinemetaMeta?.imdbRating,
+      cinemetaMeta?.rating,
+      info?.rating,
+      item?.rating,
+      tmdbRating,
+    ];
+    for (const raw of candidates) {
+      const n = parseFloat(String(raw ?? ''));
+      if (Number.isFinite(n) && n > 0) return String(raw).trim();
+    }
+    return undefined;
   })();
   const runtimeText = formatCinemetaRuntime(cinemetaMeta?.runtime);
   const yearText = String(cinemetaMeta?.year ?? cinemetaMeta?.releaseInfo ?? '').match(/(19|20)\d{2}/)?.[0];
