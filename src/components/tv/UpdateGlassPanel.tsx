@@ -156,7 +156,7 @@ const UpdateGlassPanel = () => {
         <View style={styles.glass}>
           {/* Light blur over the whole glass; the tint below stays clear. */}
           <BlurView
-            intensity={18}
+            intensity={28}
             tint="light"
             experimentalBlurMethod="dimezisBlurView"
             style={StyleSheet.absoluteFill}
