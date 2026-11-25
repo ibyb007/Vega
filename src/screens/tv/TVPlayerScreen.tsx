@@ -1284,16 +1284,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
 
   const handleCycleAudioBoost = useCallback(() => {
     resetInactivityTimer();
-    const nextMode = cycleAudioBoostProfile();
-    const label =
-      nextMode === 'rich'
-        ? 'Audio Boost: Rich & Immersive (+12dB)'
-        : nextMode === 'cinematic'
-        ? 'Audio Boost: Cinematic Sound (+13dB, Low-Level Detail Lift)'
-        : nextMode === 'dialogue'
-        ? 'Audio Boost: Dialogue / Night Mode (+6dB)'
-        : 'Audio Boost: Standard (Off)';
-    ToastAndroid.show(label, ToastAndroid.SHORT);
+    cycleAudioBoostProfile();
   }, [cycleAudioBoostProfile, resetInactivityTimer]);
 
   const audioBoostGain = useMemo(() => AUDIO_BOOST_GAIN_DB[audioBoostProfile], [audioBoostProfile]);
@@ -2335,6 +2326,7 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                 ]}
               >
                 {() => (
+                  <View style={styles.boostBtnInner}>
                   <MaterialCommunityIcons
                     name={
                       audioBoostProfile === 'rich'
@@ -2348,6 +2340,22 @@ export const TVPlayerScreen: React.FC<TVPlayerScreenProps> = ({
                     size={22}
                     color={audioBoostProfile !== 'off' ? '#A78BFA' : '#9CA3AF'}
                   />
+                  <Text
+                    style={[
+                      styles.boostLabel,
+                      audioBoostProfile !== 'off' && styles.boostLabelActive,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {audioBoostProfile === 'rich'
+                      ? 'Immersive'
+                      : audioBoostProfile === 'cinematic'
+                      ? 'Cinematic'
+                      : audioBoostProfile === 'dialogue'
+                      ? 'Dialogue'
+                      : 'Off'}
+                  </Text>
+                  </View>
                 )}
               </TVFocusablePressable>
 
@@ -3320,6 +3328,19 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(245, 158, 11, 0.4)',
     paddingHorizontal: 10,
     paddingVertical: 8,
+  },
+  boostBtnInner: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  boostLabel: {
+    color: '#9CA3AF',
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  boostLabelActive: {
+    color: '#A78BFA',
   },
   vlcBtnInner: {
     flexDirection: 'row',
