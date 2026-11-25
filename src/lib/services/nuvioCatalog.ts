@@ -14,8 +14,9 @@ import {
   loadDiscoverCatalogs,
 } from './stremioCatalog';
 
-export const NUVIO_MANIFEST_URL =
-  'https://catalog.nuvio.tv/%7B%22language%22%3A%22en-GB%22%2C%22region%22%3A%22IN%22%7D/manifest.json';
+import { NUVIO_CATALOG_MANIFEST_URL } from '../storage/StremioCatalogStorage';
+
+export const NUVIO_MANIFEST_URL = NUVIO_CATALOG_MANIFEST_URL;
 
 // Rows fetched for the fallback Home page, and how many posters each keeps.
 const MAX_ROWS = 10;
