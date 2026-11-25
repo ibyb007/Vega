@@ -749,19 +749,28 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const reloadCatalogs = useCallback(async (keepSelection = true) => {
     setCatalogsLoading(true);
     setCatalogsError(null);
-    const list = stremioCatalogStorage.getManifests();
-    setManifests(list);
+    const all = stremioCatalogStorage.getManifests();
+    setManifests(all);
     setHiddenCatalogs(stremioCatalogStorage.getHiddenCatalogs());
+    // Only sources switched on in the Catalogs dialog are loaded.
+    const list = all.filter((m) => m.enabled !== false);
     if (list.length === 0) {
       setCatalogs([]);
       setSelectedCatalog(null);
+      setCatalogsError(
+        all.length > 0 ? 'All catalogs are turned off. Open Catalogs to turn one on.' : null,
+      );
       setCatalogsLoading(false);
       return;
     }
-    const loaded = await loadDiscoverCatalogs(list);
+    // A catalog that must be given a search text / genre can't be browsed.
+    const needsExtra = (c: DiscoverCatalog) =>
+      (Array.isArray(c.extraRequired) && c.extraRequired.length > 0) ||
+      (Array.isArray(c.extra) && c.extra.some((e) => e?.isRequired));
+    const loaded = (await loadDiscoverCatalogs(list)).filter((c) => !needsExtra(c));
     setCatalogs(loaded);
     if (loaded.length === 0) {
-      setCatalogsError('None of your added catalogs could be loaded.');
+      setCatalogsError('None of your enabled catalogs could be loaded.');
       setSelectedCatalog(null);
     } else {
       setSelectedCatalog((prev) => {
@@ -1837,6 +1846,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   }, [manifestInput, reloadCatalogs]);
 
+  const handleToggleManifest = useCallback(
+    async (url: string, enabled: boolean) => {
+      stremioCatalogStorage.setManifestEnabled(url, enabled);
+      setManifests(stremioCatalogStorage.getManifests());
+      // Dropping the selected catalog's source must not leave a stale tab.
+      await reloadCatalogs(true);
+    },
+    [reloadCatalogs],
+  );
+
   const handleRemoveManifest = useCallback(
     async (url: string) => {
       clearManifestCache(url);
@@ -2187,7 +2206,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Catalogs</Text>
             <Text style={styles.modalSubtitle}>
-              Add a Stremio addon manifest URL, e.g. https://v3-cinemeta.strem.io/manifest.json.
+              Turn catalogs on or off, or add a Stremio addon manifest URL.
             </Text>
 
             <View style={styles.addRow}>
@@ -2231,6 +2250,31 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                         {m.url}
                       </Text>
                     </View>
+                    <TVFocusablePressable
+                      scaleFocused={1.06}
+                      focusedBorderColor={m.enabled !== false ? '#8A5CF6' : '#9CA3AF'}
+                      borderRadius={8}
+                      onPress={() => handleToggleManifest(m.url, m.enabled === false)}
+                      style={styles.toggleBtn}
+                    >
+                      {() => (
+                        <View style={styles.toggleInner}>
+                          <MaterialCommunityIcons
+                            name={m.enabled !== false ? 'toggle-switch' : 'toggle-switch-off-outline'}
+                            size={30}
+                            color={m.enabled !== false ? '#8A5CF6' : '#6B7280'}
+                          />
+                          <Text
+                            style={[
+                              styles.toggleText,
+                              m.enabled !== false && styles.toggleTextOn,
+                            ]}
+                          >
+                            {m.enabled !== false ? 'ON' : 'OFF'}
+                          </Text>
+                        </View>
+                      )}
+                    </TVFocusablePressable>
                     <TVFocusablePressable
                       scaleFocused={1.06}
                       focusedBorderColor="#EF4444"
@@ -2321,6 +2365,14 @@ export const styles = StyleSheet.create({
     paddingRight: CONTAINER_PADDING_RIGHT,
     alignItems: 'center',
   },
+  toggleBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginRight: 8,
+  },
+  toggleInner: {flexDirection: 'row', alignItems: 'center', gap: 4},
+  toggleText: {color: '#6B7280', fontSize: 12, fontWeight: '800', minWidth: 24},
+  toggleTextOn: {color: '#C4B5FD'},
   manageBtn: {
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     paddingHorizontal: 14,
