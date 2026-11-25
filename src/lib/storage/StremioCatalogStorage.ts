@@ -1,17 +1,27 @@
 import {mainStorage} from './StorageService';
 
+// Kept here (not imported from services/nuvioCatalog) so storage stays a leaf
+// module; nuvioCatalog.ts re-uses the same URL.
+export const NUVIO_CATALOG_MANIFEST_URL =
+  'https://catalog.nuvio.tv/%7B%22language%22%3A%22en-GB%22%2C%22region%22%3A%22IN%22%7D/manifest.json';
+export const CINEMETA_MANIFEST_URL = 'https://v3-cinemeta.strem.io/manifest.json';
+
 /**
  * Storage keys for Stremio catalog manifests (used by the TV Discover tab).
  */
 export enum StremioCatalogKeys {
   MANIFESTS = 'stremioCatalogManifests',
   HIDDEN_CATALOGS = 'stremioHiddenCatalogs',
+  // One-time migration marker: Nuvio added, Cinemeta switched off by default.
+  DEFAULTS_V2 = 'stremioCatalogDefaultsV2',
 }
 
 export interface StremioManifestEntry {
   url: string;
   name: string;
   addedAt: number;
+  // Catalog sources can be switched off without removing them. Missing = on.
+  enabled?: boolean;
 }
 
 export interface HiddenCatalogEntry {
@@ -20,11 +30,20 @@ export interface HiddenCatalogEntry {
   manifestName: string;
 }
 
+// Nuvio is on out of the box; Cinemeta is listed but off (turn it on from the
+// Catalogs dialog in Discover).
 const DEFAULT_MANIFESTS: StremioManifestEntry[] = [
   {
-    url: 'https://v3-cinemeta.strem.io/manifest.json',
+    url: NUVIO_CATALOG_MANIFEST_URL,
+    name: 'Nuvio',
+    addedAt: 0,
+    enabled: true,
+  },
+  {
+    url: CINEMETA_MANIFEST_URL,
     name: 'Cinemeta',
     addedAt: 0,
+    enabled: false,
   },
 ];
 
@@ -43,9 +62,41 @@ export class StremioCatalogStorage {
     );
     if (!saved || saved.length === 0) {
       this.setManifests(DEFAULT_MANIFESTS);
+      mainStorage.setBool(StremioCatalogKeys.DEFAULTS_V2, true);
       return DEFAULT_MANIFESTS;
     }
-    return saved;
+    return this.migrateDefaults(saved);
+  }
+
+  /**
+   * Existing installs only have Cinemeta (on). Once: add Nuvio (on) at the
+   * front and switch Cinemeta off. Anything the user added is left alone, and
+   * after this the toggles are entirely theirs.
+   */
+  private migrateDefaults(saved: StremioManifestEntry[]): StremioManifestEntry[] {
+    if (mainStorage.getBool(StremioCatalogKeys.DEFAULTS_V2)) return saved;
+    let next = saved.map(m =>
+      m.url === CINEMETA_MANIFEST_URL ? {...m, enabled: false} : m,
+    );
+    if (!next.some(m => m.url === NUVIO_CATALOG_MANIFEST_URL)) {
+      next = [DEFAULT_MANIFESTS[0], ...next];
+    }
+    this.setManifests(next);
+    mainStorage.setBool(StremioCatalogKeys.DEFAULTS_V2, true);
+    return next;
+  }
+
+  /** Manifests whose catalogs should appear in Discover. */
+  getEnabledManifests(): StremioManifestEntry[] {
+    return this.getManifests().filter(m => m.enabled !== false);
+  }
+
+  setManifestEnabled(url: string, enabled: boolean): StremioManifestEntry[] {
+    const next = this.getManifests().map(m =>
+      m.url === url ? {...m, enabled} : m,
+    );
+    this.setManifests(next);
+    return next;
   }
 
   setManifests(manifests: StremioManifestEntry[]): void {
@@ -62,7 +113,7 @@ export class StremioCatalogStorage {
     if (current.some((m) => m.url === trimmed)) {
       throw new Error('This catalog is already added');
     }
-    const next = [...current, {url: trimmed, name, addedAt: Date.now()}];
+    const next = [...current, {url: trimmed, name, addedAt: Date.now(), enabled: true}];
     this.setManifests(next);
     return next;
   }
