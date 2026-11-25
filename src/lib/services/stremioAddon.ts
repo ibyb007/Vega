@@ -495,17 +495,41 @@ const fetchRawMeta = (providerValue: string, type: string, id: string): Promise<
     } catch {}
     if (/^tt\d+/i.test(id) && isMediaType(type)) bases.push(CINEMETA_BASE);
 
-    for (const base of bases) {
+    const metaUrl = (base: string) =>
+      `${base}/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`;
+    const hasRating = (m: any) => {
+      const n = parseFloat(String(m?.imdbRating ?? m?.rating ?? ''));
+      return Number.isFinite(n) && n > 0;
+    };
+
+    let primary: any = null;
+    let primaryIdx = -1;
+    for (let i = 0; i < bases.length; i++) {
       try {
-        const data = await fetchJson(
-          `${base}/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`,
-          undefined,
-          15000,
-        );
-        if (data?.meta?.name) return data.meta;
+        const data = await fetchJson(metaUrl(bases[i]), undefined, 15000);
+        if (data?.meta?.name) {
+          primary = data.meta;
+          primaryIdx = i;
+          break;
+        }
       } catch {}
     }
-    throw new Error('No metadata found for this title');
+    if (!primary) throw new Error('No metadata found for this title');
+
+    // New releases often have no rating in the first source that answers
+    // (an addon's own meta, say) while Nuvio / Cinemeta do: fill it in.
+    if (!hasRating(primary)) {
+      for (const base of bases.slice(primaryIdx + 1)) {
+        try {
+          const data = await fetchJson(metaUrl(base), undefined, 8000);
+          if (hasRating(data?.meta)) {
+            primary = {...primary, imdbRating: data.meta.imdbRating ?? data.meta.rating};
+            break;
+          }
+        } catch {}
+      }
+    }
+    return primary;
   })();
 
   metaCache.set(key, request);
