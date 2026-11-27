@@ -184,6 +184,9 @@ const EPISODE_ROW_PAD_H = 8;
 // Credits strip: photo size and the strip's explicit height.
 const CREDIT_PHOTO = 104;
 const CREDIT_ROW_H = 190;
+// Title fanart / clearlogo bounds -- matches TVDiscoverResultsView's targetLogo.
+const LOGO_MAX_W = 320;
+const LOGO_MAX_H = 100;
 
 // "125" -> "2h 5m", "59" -> "59m".
 const formatMinutes = (min: number | undefined): string | undefined => {
@@ -849,6 +852,7 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const [cinemetaMeta, setCinemetaMeta] = useState<CinemetaMeta | null>(restored?.cinemeta ?? null);
   const [cinemetaSettled, setCinemetaSettled] = useState<boolean>(restored?.cinemetaSettled ?? false);
   const [logoFailed, setLogoFailed] = useState(false);
+  const [logoAspect, setLogoAspect] = useState<number | null>(null);
 
   // When the default player is set to something other than the inbuilt
   // one, `resolveAndPlay` stops short of launching anything and instead
@@ -2082,7 +2086,12 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
   const logoUrl = cinemetaMeta?.logo || info?.logo;
   useEffect(() => {
     setLogoFailed(false);
+    setLogoAspect(null);
   }, [logoUrl]);
+  const logoWidth =
+    logoAspect && logoAspect > 0
+      ? Math.min(LOGO_MAX_W, Math.max(120, Math.round(LOGO_MAX_H * logoAspect)))
+      : LOGO_MAX_W;
   const displayTitle = cinemetaMeta?.name || info?.title || item?.title;
   // First usable rating wins. An empty/"0" value must not shadow a real one
   // (`??` only skips null/undefined), and the catalog post's own rating --
@@ -2289,8 +2298,15 @@ export const TVDetailsScreen: React.FC<TVDetailsScreenProps> = ({
           {logoUrl && !logoFailed ? (
             <Image
               source={{ uri: logoUrl }}
-              style={styles.targetLogo}
+              style={[styles.targetLogo, { width: logoWidth }]}
               resizeMode="contain"
+              onLoad={(e) => {
+                const src = e.nativeEvent?.source;
+                if (src && src.width > 0 && src.height > 0) {
+                  const ratio = src.width / src.height;
+                  setLogoAspect((prev) => (prev === ratio ? prev : ratio));
+                }
+              }}
               onError={() => setLogoFailed(true)}
             />
           ) : (
@@ -2937,9 +2953,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   targetLogo: {
-    width: 260,
-    height: 64,
-    marginBottom: 6,
+    width: LOGO_MAX_W,
+    height: LOGO_MAX_H,
+    marginBottom: 10,
     alignSelf: 'flex-start',
   },
   targetTitle: {
