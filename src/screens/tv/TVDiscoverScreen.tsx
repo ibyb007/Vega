@@ -308,6 +308,10 @@ export const openDiscoverResultFor = (
 // moment; each hero change swaps up to three (blurred) full-screen images.
 // Same value Home uses.
 const HERO_APPLY_DELAY_MS = 80;
+// While a D-pad key is held (focus moving faster than this), wait longer so
+// the hero's full-screen images aren't swapped for every poster flown past.
+const HERO_RAPID_GAP_MS = 160;
+const HERO_RAPID_APPLY_DELAY_MS = 240;
 // Posters ahead of the focused one whose images are warmed into the disk cache.
 const POSTER_PREFETCH_AHEAD = 8;
 
@@ -619,6 +623,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const heroRequestIdRef = useRef(0);
   const heroEnrichTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heroApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastHeroFocusAtRef = useRef(0);
   useEffect(
     () => () => {
       if (heroEnrichTimerRef.current) clearTimeout(heroEnrichTimerRef.current);
@@ -737,11 +742,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       const requestId = ++heroRequestIdRef.current;
       // Applied once focus has rested for a moment (see HERO_APPLY_DELAY_MS).
       if (heroApplyTimerRef.current) clearTimeout(heroApplyTimerRef.current);
+      const nowMs = Date.now();
+      const rapid = nowMs - lastHeroFocusAtRef.current < HERO_RAPID_GAP_MS;
+      lastHeroFocusAtRef.current = nowMs;
       heroApplyTimerRef.current = setTimeout(() => {
         heroApplyTimerRef.current = null;
         if (heroRequestIdRef.current !== requestId) return;
         setActiveHero(heroFor(item));
-      }, HERO_APPLY_DELAY_MS);
+      }, rapid ? HERO_RAPID_APPLY_DELAY_MS : HERO_APPLY_DELAY_MS);
       // Held D-pad keys sweep across many posters; only the one focus settles
       // on should cost network calls.
       if (heroEnrichTimerRef.current) clearTimeout(heroEnrichTimerRef.current);
