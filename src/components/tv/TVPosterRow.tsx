@@ -19,7 +19,11 @@ export const POSTER_CARD_HEIGHT = 198;
 const POSTER_RADIUS = 12;
 
 const INITIAL_CARDS = 12;
-const CARDS_PAGE = 12;
+// Smaller pages than before: each page is one React commit that mounts this
+// many Pressables + Images, and a held D-pad key keeps moving focus while it
+// is being processed. Shorter commits = shorter stalls. (Lookahead below still
+// keeps several posters mounted ahead of focus.)
+const CARDS_PAGE = 6;
 const CARDS_LOOKAHEAD = 8;
 // Within this many posters of the end of what is loaded, ask for the next page.
 const LOAD_MORE_LOOKAHEAD = 10;
@@ -96,6 +100,10 @@ const PosterCard = memo(function PosterCard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const preferFocus = useMemo(() => shouldFocus, [refocusNonce]);
 
+  // Last `nextFocusUp` pushed to the native view. Every setNativeProps is a
+  // full shadow-tree commit, so only issue one when the value really changed
+  // (this ran on *every* focus move in the top row before).
+  const appliedUpRef = useRef<number | null>(null);
   const applyUpLink = useCallback(() => {
     // Top row: Up goes to the "Catalogs" button (or nowhere) -- never to the
     // nav rail, which Android's geometric search would otherwise pick.
@@ -103,11 +111,14 @@ const PosterCard = memo(function PosterCard({
     if (!isTopRow || !node) return;
     const self = findNodeHandle(node);
     const up = getUpHandle?.() ?? self;
-    if (up != null) node.setNativeProps?.({ nextFocusUp: up });
+    if (up == null || appliedUpRef.current === up) return;
+    appliedUpRef.current = up;
+    node.setNativeProps?.({ nextFocusUp: up });
   }, [isTopRow, getUpHandle]);
 
   const setRef = useCallback(
     (el: View | null) => {
+      if (el !== nodeRef.current) appliedUpRef.current = null; // new native view
       nodeRef.current = el;
       registerItemRef(itemKey, el);
       if (!el) return;
@@ -223,6 +234,10 @@ export const TVPosterRow = memo(function TVPosterRow({
   const nodesRef = useRef<Record<string, View | null>>({});
   const orderRef = useRef<string[]>([]);
   const wireTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Links already pushed to each card's native view, so a page of new posters
+  // only touches the new cards (+ the previous last card) instead of
+  // re-committing every card in the row.
+  const appliedLinksRef = useRef<Record<string, { l?: number; r: number }>>({});
 
   const wireLinks = useCallback(() => {
     wireTimerRef.current = null;
@@ -236,8 +251,14 @@ export const TVPosterRow = memo(function TVPosterRow({
       const self = handles[i];
       if (!node || self == null) continue;
       const next = i < order.length - 1 ? handles[i + 1] : null;
-      const props: Record<string, number> = { nextFocusRight: next ?? self };
-      if (i > 0) props.nextFocusLeft = handles[i - 1] ?? self;
+      const right = next ?? self;
+      const left = i > 0 ? handles[i - 1] ?? self : undefined;
+      const applied = appliedLinksRef.current[order[i]];
+      const props: Record<string, number> = {};
+      if (!applied || applied.r !== right) props.nextFocusRight = right;
+      if (left !== undefined && (!applied || applied.l !== left)) props.nextFocusLeft = left;
+      if (Object.keys(props).length === 0) continue;
+      appliedLinksRef.current[order[i]] = { l: left ?? applied?.l, r: right };
       node.setNativeProps?.(props);
     }
   }, []);
@@ -247,6 +268,9 @@ export const TVPosterRow = memo(function TVPosterRow({
   }, [wireLinks]);
   const registerRowItemRef = useCallback(
     (itemKey: string, el: View | null) => {
+      // A different native view under the same key (remount) has none of the
+      // links the cache thinks it has.
+      if (el !== nodesRef.current[itemKey]) delete appliedLinksRef.current[itemKey];
       nodesRef.current[itemKey] = el;
       registerItemRef(itemKey, el);
       if (el) scheduleWire();
