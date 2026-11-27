@@ -1,5 +1,13 @@
 import { getPlaybackPrefs, pickPreferredStream } from '../../lib/zustand/playbackPrefsStore';
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import {
   View,
   Text,
@@ -296,6 +304,39 @@ export const openDiscoverResultFor = (
   pendingDiscoverResumeHint = resumeHint || null;
 };
 
+// Quick D-pad presses only update the hero once focus has rested for a
+// moment; each hero change swaps up to three (blurred) full-screen images.
+// Same value Home uses.
+const HERO_APPLY_DELAY_MS = 80;
+// Posters ahead of the focused one whose images are warmed into the disk cache.
+const POSTER_PREFETCH_AHEAD = 8;
+
+// ---------------------------------------------------------------------------
+// Hero host
+//
+// The hero used to live in TVDiscoverScreen's own state, so *every* D-pad move
+// -> setActiveHero -> re-rendered this whole (very large) screen. That kept
+// the JS thread busy while a held Left/Right key was sweeping across posters,
+// so JS-side focus bookkeeping lagged behind the native focus and the row
+// felt slow / glitched. The hero state now lives here and the screen drives it
+// imperatively (exactly like TVHomeScreen's HeroHost), so a hero change only
+// re-renders this tiny component.
+// ---------------------------------------------------------------------------
+type HeroSetter = React.Dispatch<React.SetStateAction<TVHeroMedia | null>>;
+interface HeroHostHandle {
+  set: HeroSetter;
+  get: () => TVHeroMedia | null;
+}
+const HeroHost = React.memo(
+  forwardRef<HeroHostHandle, { initial: TVHeroMedia | null }>(({ initial }, ref) => {
+    const [media, setMedia] = useState<TVHeroMedia | null>(initial);
+    const mediaRef = useRef<TVHeroMedia | null>(media);
+    mediaRef.current = media;
+    useImperativeHandle(ref, () => ({ set: setMedia, get: () => mediaRef.current }), []);
+    return <TVHeroMeta media={media} />;
+  }),
+);
+
 export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   onSelectItem,
   onNavigateRoute,
@@ -568,12 +609,20 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   );
   const rowDataRef = useRef(rowData);
   rowDataRef.current = rowData;
-  const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(savedDiscoverState?.activeHero ?? null);
+  const heroHostRef = useRef<HeroHostHandle>(null);
+  const initialHeroRef = useRef<TVHeroMedia | null>(savedDiscoverState?.activeHero ?? null);
+  // Drop-in replacement for the old `setActiveHero` state setter.
+  const setActiveHero = useCallback<HeroSetter>((update) => {
+    heroHostRef.current?.set(update);
+  }, []);
+  const getActiveHero = useCallback(() => heroHostRef.current?.get() ?? null, []);
   const heroRequestIdRef = useRef(0);
   const heroEnrichTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heroApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
       if (heroEnrichTimerRef.current) clearTimeout(heroEnrichTimerRef.current);
+      if (heroApplyTimerRef.current) clearTimeout(heroApplyTimerRef.current);
     },
     [],
   );
@@ -684,9 +733,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const enrichHeroRef = useRef<(item: CatalogMediaItem, be: string, id: string | undefined, rid: number) => void>(() => {});
   const focusHero = useCallback(
     (item: CatalogMediaItem, baseEndpoint: string) => {
-      setActiveHero(heroFor(item));
       const metaId = item.imdb_id || item.id;
       const requestId = ++heroRequestIdRef.current;
+      // Applied once focus has rested for a moment (see HERO_APPLY_DELAY_MS).
+      if (heroApplyTimerRef.current) clearTimeout(heroApplyTimerRef.current);
+      heroApplyTimerRef.current = setTimeout(() => {
+        heroApplyTimerRef.current = null;
+        if (heroRequestIdRef.current !== requestId) return;
+        setActiveHero(heroFor(item));
+      }, HERO_APPLY_DELAY_MS);
       // Held D-pad keys sweep across many posters; only the one focus settles
       // on should cost network calls.
       if (heroEnrichTimerRef.current) clearTimeout(heroEnrichTimerRef.current);
@@ -696,7 +751,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         enrichHeroRef.current(item, baseEndpoint, metaId, requestId);
       }, 250);
     },
-    [heroFor],
+    [heroFor, setActiveHero],
   );
 
   const enrichHero = useCallback(
@@ -732,7 +787,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         });
       }
     },
-    [],
+    [setActiveHero],
   );
 
   enrichHeroRef.current = enrichHero;
@@ -943,7 +998,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         catalogs,
         selectedCatalog,
         rowData: rowDataRef.current,
-        activeHero,
+        activeHero: getActiveHero(),
         screenMode: 'results',
         resultsTarget: item,
         matchedAddonPosts: [],
@@ -1178,7 +1233,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       publishMatches();
       setResultsLoading(false);
     },
-    [installedProviders, catalogs, activeHero],
+    [installedProviders, catalogs, getActiveHero],
   );
 
   // Consumes a pending "open this item's results view" request set by
@@ -1822,6 +1877,44 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     topFirstCardRef.current = node;
   }, []);
 
+  // Pins the Catalogs button's own focus links: Up/Right have nothing beyond
+  // the button (point at itself so they are no-ops), Down goes to the first
+  // poster of the first row. Left is handled natively -- see `nativeID`
+  // on the button below. Safe to call repeatedly.
+  const wireCatalogsBtnLinks = useCallback(() => {
+    const node = manageBtnRef.current as any;
+    if (!node) return;
+    const selfHandle = findNodeHandle(node);
+    if (selfHandle == null) return;
+    const firstCard = topFirstCardRef.current;
+    const downHandle = firstCard ? findNodeHandle(firstCard) : null;
+    node.setNativeProps?.({
+      nextFocusUp: selfHandle,
+      nextFocusRight: selfHandle,
+      ...(downHandle != null ? { nextFocusDown: downHandle } : {}),
+    });
+  }, []);
+
+  // Stable (an inline arrow was re-created every render, so React detached and
+  // re-attached the ref -- and re-fired the native bridge calls -- each time).
+  const catalogsBtnRef = useCallback(
+    (el: View | null) => {
+      manageBtnRef.current = el;
+      setItemRef('manage-btn', el);
+      if (el) wireCatalogsBtnLinks();
+    },
+    [setItemRef, wireCatalogsBtnLinks],
+  );
+
+  // `hasTVPreferredFocus` makes Android call requestFocus() every time the prop
+  // flips to true on a mounted view. Re-deriving it on every render meant that
+  // a re-render landing while a key was held could drag focus back to a stale
+  // item. Evaluate it only when the button is (re)mounted -- the remount nonce
+  // in `keyFor` changes exactly when focus must be reclaimed.
+  const manageBtnKey = keyFor('manage-btn');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const manageBtnPreferFocus = useMemo(() => shouldPreferFocus('manage-btn', false), [manageBtnKey]);
+
   const handleAddManifest = useCallback(async () => {
     const url = manifestInput.trim();
     if (!url) return;
@@ -1927,7 +2020,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   return (
     <View style={styles.container}>
       <View style={styles.heroWrapper}>
-        <TVHeroMeta media={activeHero} />
+        <HeroHost ref={heroHostRef} initial={initialHeroRef.current} />
       </View>
 
       {/* Rows (one per visible catalog), laid out and navigated like Home. */}
@@ -1982,20 +2075,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       {/* The only control on this screen besides the rows. */}
       <View style={styles.catalogsBtnWrap}>
         <TVFocusablePressable
-          key={keyFor('manage-btn')}
-          ref={(el) => {
-            manageBtnRef.current = el;
-            setItemRef('manage-btn', el);
-            // Nothing above this button: make Up a no-op instead of letting
-            // Android's geometric search find the side rail.
-            if (el) {
-              const selfHandle = findNodeHandle(el);
-              if (selfHandle != null) {
-                (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
-              }
-            }
-          }}
-          hasTVPreferredFocus={shouldPreferFocus('manage-btn', false)}
+          key={manageBtnKey}
+          ref={catalogsBtnRef}
+          // Left from here always goes to the rail's Discover button. The
+          // native DPAD_LEFT handler (NavRailManager.handleDpadLeft) honours
+          // this ID before Android's geometric search can pick the Search
+          // row or a poster instead.
+          nativeID="rail-left-exit"
+          hasTVPreferredFocus={manageBtnPreferFocus}
           scaleFocused={1.04}
           focusedBorderColor="#8A5CF6"
           borderRadius={20}
@@ -2003,14 +2090,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
             lastFocusedDiscoverBrowseKey = 'manage-btn';
             lastFocusedDiscoverRowKey = null;
             registerRailLeftEdge('discover', manageBtnRef.current);
-            const node = manageBtnRef.current as any;
-            const selfHandle = node ? findNodeHandle(node) : null;
-            const firstCard = topFirstCardRef.current;
-            const downHandle = firstCard ? findNodeHandle(firstCard) : null;
-            node?.setNativeProps?.({
-              ...(selfHandle != null ? { nextFocusUp: selfHandle } : {}),
-              ...(downHandle != null ? { nextFocusDown: downHandle } : {}),
-            });
+            wireCatalogsBtnLinks();
           }}
           onPress={() => setManageVisible(true)}
           style={styles.manageBtn}
