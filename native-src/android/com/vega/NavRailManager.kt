@@ -116,6 +116,11 @@ object NavRailManager {
         if (rail.hasFocus()) return rail.requestRightNavigation()
         val activity = activityRef?.get() ?: return false
         if (rail.hasWindowFocus() && activity.window.decorView.findFocus() == null) {
+            if (rail.restoreContentFocusNative()) {
+                // Focus is back on the last content view; let DPAD_RIGHT
+                // proceed normally to advance to its right neighbour.
+                return false
+            }
             return rail.recoverLostFocus()
         }
         return false
@@ -167,7 +172,13 @@ object NavRailManager {
         val rail = railRef?.get() ?: return false
         if (rail.visibility != View.VISIBLE) return false // hidden behind fullscreen player/details
 
-        val current = activity.window.decorView.findFocus() ?: return false
+        var current = activity.window.decorView.findFocus()
+        if (current == null) {
+            if (rail.hasWindowFocus() && rail.restoreContentFocusNative()) {
+                current = activity.window.decorView.findFocus()
+            }
+            if (current == null) return false
+        }
         if (isDescendantOf(current, rail)) {
             return true // already in the rail -- swallow, do nothing
         }

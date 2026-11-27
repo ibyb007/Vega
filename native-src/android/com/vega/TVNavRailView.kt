@@ -16,6 +16,7 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.lang.ref.WeakReference
 
 data class NavItem(val id: String, val label: String, val icon: NavIcon)
 
@@ -80,6 +81,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     // left without focus).
     private var explicitFocus = false
     private var lastContentFocusAt = 0L
+    private var lastContentFocusView: WeakReference<View>? = null
 
     private fun isInRail(v: View): Boolean {
         var p: View? = v
@@ -99,6 +101,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     private val globalFocusListener = ViewTreeObserver.OnGlobalFocusChangeListener { _, newFocus ->
         if (newFocus != null && !isInRail(newFocus)) {
             lastContentFocusAt = SystemClock.uptimeMillis()
+            lastContentFocusView = WeakReference(newFocus)
         }
     }
 
@@ -498,6 +501,17 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         rows.firstOrNull { it.hasFocus() } ?: return false
         listener?.onRouteReselected(activeRoute)
         return true
+    }
+
+    /**
+     * Synchronously restores native focus to the last content View that held
+     * focus (without crossing the JS bridge or remounting React views) when
+     * focus was dropped mid-scroll. Returns true if native focus was restored.
+     */
+    fun restoreContentFocusNative(): Boolean {
+        val view = lastContentFocusView?.get() ?: return false
+        if (!view.isAttachedToWindow || !view.isFocusable || !view.isShown) return false
+        return view.requestFocus()
     }
 
     /**
