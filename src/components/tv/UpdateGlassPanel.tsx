@@ -40,7 +40,7 @@ const toPlainNotes = (notes?: string): string => {
 };
 
 // Glass look (tvBuddy playlist menu): panel fill opacity and blur strength.
-const GLASS_FILL_OPACITY = 0.3;
+const GLASS_FILL_OPACITY = 0.6;
 const GLASS_BLUR = 70;
 const ACCENT = '138,92,246';
 
