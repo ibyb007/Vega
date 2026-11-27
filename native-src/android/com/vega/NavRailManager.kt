@@ -113,8 +113,12 @@ object NavRailManager {
     fun handleDpadRight(): Boolean {
         val rail = railRef?.get() ?: return false
         if (rail.visibility != View.VISIBLE) return false
-        if (!rail.hasFocus()) return false
-        return rail.requestRightNavigation()
+        if (rail.hasFocus()) return rail.requestRightNavigation()
+        val activity = activityRef?.get() ?: return false
+        if (rail.hasWindowFocus() && activity.window.decorView.findFocus() == null) {
+            return rail.recoverLostFocus()
+        }
+        return false
     }
 
     fun setActiveRoute(route: String) {

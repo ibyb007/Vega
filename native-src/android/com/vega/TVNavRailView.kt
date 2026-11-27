@@ -90,9 +90,11 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         return false
     }
 
-    private fun shouldVetoFocus(): Boolean =
-        !explicitFocus && !hasFocus() &&
-            SystemClock.uptimeMillis() - lastContentFocusAt < FOCUS_VETO_MS
+    private fun shouldVetoFocus(direction: Int): Boolean {
+        if (explicitFocus || hasFocus()) return false
+        if (direction == View.FOCUS_RIGHT && lastContentFocusAt > 0L) return true
+        return SystemClock.uptimeMillis() - lastContentFocusAt < FOCUS_VETO_MS
+    }
 
     private val globalFocusListener = ViewTreeObserver.OnGlobalFocusChangeListener { _, newFocus ->
         if (newFocus != null && !isInRail(newFocus)) {
@@ -115,7 +117,7 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         lateinit var labelView: TextView
 
         override fun requestFocus(direction: Int, previouslyFocusedRect: Rect?): Boolean {
-            if (shouldVetoFocus()) return false
+            if (shouldVetoFocus(direction)) return false
             return super.requestFocus(direction, previouslyFocusedRect)
         }
 
@@ -494,6 +496,18 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
      */
     fun requestRightNavigation(): Boolean {
         rows.firstOrNull { it.hasFocus() } ?: return false
+        listener?.onRouteReselected(activeRoute)
+        return true
+    }
+
+    /**
+     * Re-claims focus for the active screen's content when focus was lost
+     * inside content (decorView.findFocus() == null) and the user pressed
+     * DPAD_RIGHT, instead of letting Android's FocusFinder fall back to the
+     * rail's Search row.
+     */
+    fun recoverLostFocus(): Boolean {
+        if (lastContentFocusAt == 0L) return false
         listener?.onRouteReselected(activeRoute)
         return true
     }

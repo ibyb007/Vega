@@ -396,9 +396,10 @@ export const TVPosterRow = memo(function TVPosterRow({
     (rKey, rIdx, item, itemKey, pIndex) => {
       if (!onCardFocus(rKey, rIdx, item, itemKey, pIndex)) return false;
       schedulePrefetch(pIndex);
-      setMountedCount((c) =>
-        c < totalRef.current && pIndex >= c - CARDS_LOOKAHEAD ? c + CARDS_PAGE : c
-      );
+      setMountedCount((c) => {
+        if (c >= totalRef.current || pIndex < c - CARDS_LOOKAHEAD) return c;
+        return Math.min(totalRef.current, pIndex + CARDS_LOOKAHEAD + 1);
+      });
       if (pIndex >= totalRef.current - LOAD_MORE_LOOKAHEAD) onNeedMore(rKey);
       return true;
     },
