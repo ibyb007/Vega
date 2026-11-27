@@ -13,9 +13,16 @@ import {
   ToastAndroid,
   findNodeHandle,
 } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import KeyEvent from 'react-native-keyevent';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
+import { TVPosterRow, POSTER_ROW_HEIGHT } from '../../components/tv/TVPosterRow';
 import { TVDiscoverResultsView } from './TVDiscoverResultsView';
 import { TVStreamPickerModal, StreamPickerOption } from '../../components/tv/TVStreamPickerModal';
 import { getStremioDirectMatch, isStremioProvider } from '../../lib/services/stremioAddon';
@@ -158,6 +165,9 @@ interface TVDiscoverScreenProps {
 // had actually left on page 1. Keeping the two keyed independently means
 // returning to browse mode always finds the real last-focused poster.
 let lastFocusedDiscoverBrowseKey: string | null = null;
+// Catalog key of the row that key belongs to (null while the Catalogs button
+// or nothing is focused).
+let lastFocusedDiscoverRowKey: string | null = null;
 // Tracks whichever page-2 (results) item -- the Back button, a source
 // card, a link, an episode, a direct-stream button -- last had real focus,
 // independently of the page-1 browse key above.
@@ -171,21 +181,6 @@ let lastFocusedDiscoverResultsKey: string | null = null;
 // Restoring this offset (see handleResultsContentSizeChange) puts that item
 // back inside the viewport before focus is re-requested.
 let lastResultsScrollY = 0;
-// Same idea, but for the page-1 (browse) poster grid. `screenMode` flips
-// between 'browse' and 'results' via an early-return in this component's
-// render (see the `if (screenMode === 'results') return (...)` below), so
-// the grid ScrollView actually unmounts and remounts fresh -- at y=0 --
-// every time the user backs out of page 2. Rows 1-2 sit inside that
-// initial y=0 viewport so their `hasTVPreferredFocus` request always
-// lands fine; a poster in row 3+ does not, and because the grid uses
-// `removeClippedSubviews`, nothing below the fold has a live native view
-// for focus to attach to -- Android's default search then takes over and
-// (observed) lands on the rail's Discover button instead. Restoring this
-// offset (see handleBrowseContentSizeChange) puts the remembered poster
-// back inside the viewport before focus is re-requested, exactly like
-// lastResultsScrollY does for page 2.
-let lastDiscoverBrowseScrollY = 0;
-
 const catalogKey = (c: Pick<DiscoverCatalog, 'manifestUrl' | 'type' | 'id'>) =>
   `${c.manifestUrl}::${c.type}::${c.id}`;
 
@@ -223,12 +218,28 @@ const normalizeSearchResult = (data: any, providerValue: string): Post[] => {
     }));
 };
 
+interface DiscoverRowData {
+  items: CatalogMediaItem[];
+  loading: boolean;
+  loaded: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+}
+
+// Rows used to stop at the first catalog page; they now keep paging as focus
+// nears the end, up to this many posters.
+const MAX_ROW_POSTS = 300;
+const EMPTY_ITEMS: CatalogMediaItem[] = [];
+const ROW_LOOKAHEAD = 3;
+// Top of the rows' viewport (the hero shows above it).
+const ROW_TOP = 220;
+
 interface SavedDiscoverState {
   catalogs?: DiscoverCatalog[];
   selectedCatalog?: DiscoverCatalog | null;
-  items?: CatalogMediaItem[];
-  skip?: number;
-  hasMore?: boolean;
+  // Every Discover row's loaded posters, so coming back from a title's page
+  // (or the player) shows the rows exactly as they were.
+  rowData?: Record<string, DiscoverRowData>;
   activeHero?: TVHeroMedia | null;
 
   screenMode: 'browse' | 'results';
@@ -329,24 +340,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // scroll-restore below.
   const mountedResultsKeysRef = useRef<Set<string>>(new Set());
   const resultsScrollRef = useRef<ScrollView | null>(null);
-  // The page-1 grid's ScrollView, plus a flag saying "the grid is about to
-  // remount because we just backed out of page 2 -- restore its scroll
-  // position on the next content-size pass" (see backToBrowse and
-  // handleBrowseContentSizeChange below).
-  const browseScrollRef = useRef<ScrollView | null>(null);
-  const pendingBrowseScrollRestoreRef = useRef(false);
-  // Backing out of page 2 remounts the grid at y=0; while it is scrolled back
-  // to the remembered row and focus is re-claimed, the grid stays invisible
-  // and stray focus hops (Android's default search landing on a neighbouring
-  // poster before the real target is attached) are ignored, so the person
-  // sees one clean landing on the right poster instead of a visible
-  // double-tap. See handleBrowseContentSizeChange / backToBrowse.
-  const browseRestoringRef = useRef(false);
-  const [browseHidden, setBrowseHidden] = useState(false);
-  const finishBrowseRestore = useCallback(() => {
-    browseRestoringRef.current = false;
-    setBrowseHidden(false);
-  }, []);
   // Resume flow (Home -> Continue Watching -> here): until the person moves
   // focus themselves, focus is steered to the resume source/episode/play
   // button as each one appears; see shouldPreferResultsFocus.
@@ -400,6 +393,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     keyFor,
     shouldPreferFocus,
     requestRefocus,
+    refocusKey,
+    refocusNonce,
   } = useTVEntryFocus(
     () =>
       screenModeRef.current === 'results'
@@ -412,8 +407,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       lastFocusedDiscoverBrowseKey = null;
       lastFocusedDiscoverResultsKey = null;
       lastResultsScrollY = 0;
-      lastDiscoverBrowseScrollY = 0;
-      pendingBrowseScrollRestoreRef.current = false;
+      lastFocusedDiscoverRowKey = null;
     }
   );
 
@@ -554,36 +548,12 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     lastResultsScrollY = e.nativeEvent.contentOffset.y;
   };
 
-  // Mirrors handleResultsContentSizeChange above, for the page-1 grid.
-  // Fires on every content-size pass of the browse ScrollView, but only
-  // acts the one time `pendingBrowseScrollRestoreRef` is armed (set by
-  // backToBrowse, right before the grid remounts at y=0).
-  const handleBrowseContentSizeChange = useCallback(() => {
-    if (!pendingBrowseScrollRestoreRef.current) return;
-    pendingBrowseScrollRestoreRef.current = false;
-    const y = lastDiscoverBrowseScrollY;
-    if (y <= 0) {
-      finishBrowseRestore();
-      return;
-    }
-    const key = lastFocusedDiscoverBrowseKey;
-    // `mountedResultsKeysRef` (despite the name) tracks every currently
-    // rendered item's key, browse or results -- see setItemRef below.
-    const resolvable = !!key && mountedResultsKeysRef.current.has(key);
-    browseScrollRef.current?.scrollTo({ x: 0, y: resolvable ? y : 0, animated: false });
-    // Give the scroll a beat to bring the target row back into the
-    // ScrollView's clipping window, then re-issue the real focus request
-    // for the poster the person left off on.
-    setTimeout(() => {
-      requestRefocus();
-      // One more beat for the focus request to settle, then reveal.
-      setTimeout(finishBrowseRestore, 50);
-    }, 60);
-  }, [requestRefocus, finishBrowseRestore]);
   const installedProviders = useContentStore((state) => state.installedProviders);
   const [manifests, setManifests] = useState<StremioManifestEntry[]>([]);
   const [catalogs, setCatalogs] = useState<DiscoverCatalog[]>(savedDiscoverState?.catalogs || []);
-  const [hiddenCatalogs, setHiddenCatalogs] = useState<HiddenCatalogEntry[]>([]);
+  const [hiddenCatalogs, setHiddenCatalogs] = useState<HiddenCatalogEntry[]>(() =>
+    stremioCatalogStorage.getHiddenCatalogs(),
+  );
   const [catalogsLoading, setCatalogsLoading] = useState(
     savedDiscoverState?.catalogs && savedDiscoverState.catalogs.length > 0 ? false : true,
   );
@@ -591,13 +561,22 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const [selectedCatalog, setSelectedCatalog] = useState<DiscoverCatalog | null>(
     savedDiscoverState?.selectedCatalog ?? null,
   );
-  const [items, setItems] = useState<CatalogMediaItem[]>(savedDiscoverState?.items || []);
-  const [itemsLoading, setItemsLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [skip, setSkip] = useState(savedDiscoverState?.skip ?? 0);
-  const [hasMore, setHasMore] = useState(savedDiscoverState?.hasMore ?? true);
+  const selectedCatalogRef = useRef(selectedCatalog);
+  selectedCatalogRef.current = selectedCatalog;
+  const [rowData, setRowData] = useState<Record<string, DiscoverRowData>>(
+    savedDiscoverState?.rowData || {},
+  );
+  const rowDataRef = useRef(rowData);
+  rowDataRef.current = rowData;
   const [activeHero, setActiveHero] = useState<TVHeroMedia | null>(savedDiscoverState?.activeHero ?? null);
   const heroRequestIdRef = useRef(0);
+  const heroEnrichTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (heroEnrichTimerRef.current) clearTimeout(heroEnrichTimerRef.current);
+    },
+    [],
+  );
 
   const [screenMode, setScreenMode] = useState<'browse' | 'results'>(
     startInResults ? 'results' : savedDiscoverState?.screenMode || 'browse',
@@ -675,15 +654,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const [addingManifest, setAddingManifest] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
-  const focusedPillRef = useRef<DiscoverCatalog | null>(null);
-  const selectHoldStreakRef = useRef(0);
-  const lastSelectKeyTimeRef = useRef(0);
-
   // Left-edge refs for the native nav rail's Left-key/entry-focus link
   const manageBtnRef = useRef<View | null>(null);
-  const gridItemRefs = useRef<Record<number, View | null>>({});
+  const topFirstCardRef = useRef<View | null>(null);
   const sourcesRowFirstRef = useRef<View | null>(null);
-  const [catalogToHide, setCatalogToHide] = useState<DiscoverCatalog | null>(null);
 
   const excludedQualities = useMemo(
     () => settingsStorage.getExcludedQualities() || [],
@@ -707,11 +681,26 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     [],
   );
 
+  const enrichHeroRef = useRef<(item: CatalogMediaItem, be: string, id: string | undefined, rid: number) => void>(() => {});
   const focusHero = useCallback(
     (item: CatalogMediaItem, baseEndpoint: string) => {
       setActiveHero(heroFor(item));
       const metaId = item.imdb_id || item.id;
       const requestId = ++heroRequestIdRef.current;
+      // Held D-pad keys sweep across many posters; only the one focus settles
+      // on should cost network calls.
+      if (heroEnrichTimerRef.current) clearTimeout(heroEnrichTimerRef.current);
+      heroEnrichTimerRef.current = setTimeout(() => {
+        heroEnrichTimerRef.current = null;
+        if (heroRequestIdRef.current !== requestId) return;
+        enrichHeroRef.current(item, baseEndpoint, metaId, requestId);
+      }, 250);
+    },
+    [heroFor],
+  );
+
+  const enrichHero = useCallback(
+    (item: CatalogMediaItem, baseEndpoint: string, metaId: string | undefined, requestId: number) => {
       if (!item.banner && metaId) {
         fetchItemMeta(baseEndpoint, item.type, metaId).then((meta) => {
           if (!meta?.background) return;
@@ -743,8 +732,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         });
       }
     },
-    [heroFor],
+    [],
   );
+
+  enrichHeroRef.current = enrichHero;
 
   const reloadCatalogs = useCallback(async (keepSelection = true) => {
     setCatalogsLoading(true);
@@ -756,7 +747,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     const list = all.filter((m) => m.enabled !== false);
     if (list.length === 0) {
       setCatalogs([]);
-      setSelectedCatalog(null);
       setCatalogsError(
         all.length > 0 ? 'All catalogs are turned off. Open Catalogs to turn one on.' : null,
       );
@@ -771,20 +761,14 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     setCatalogs(loaded);
     if (loaded.length === 0) {
       setCatalogsError('None of your enabled catalogs could be loaded.');
-      setSelectedCatalog(null);
-    } else {
-      setSelectedCatalog((prev) => {
-        const target = prev || savedDiscoverState?.selectedCatalog;
-        if (keepSelection && target) {
-          const stillThere = loaded.find((c) => catalogKey(c) === catalogKey(target));
-          if (stillThere) return stillThere;
-        }
-        const available = loaded.filter(
-          (c) => !stremioCatalogStorage.getHiddenCatalogs().some((h) => h.key === catalogKey(c)),
-        );
-        return available[0] || loaded[0];
-      });
     }
+    // Forget rows of catalogs that are gone.
+    const alive = new Set(loaded.map((c) => catalogKey(c)));
+    setRowData((prev) => {
+      const next: Record<string, DiscoverRowData> = {};
+      for (const k of Object.keys(prev)) if (alive.has(k)) next[k] = prev[k];
+      return next;
+    });
     setCatalogsLoading(false);
   }, []);
 
@@ -792,107 +776,149 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     reloadCatalogs(true);
   }, [reloadCatalogs]);
 
-  useEffect(() => {
-    if (!selectedCatalog) {
-      setItems([]);
-      setActiveHero(null);
-      return;
-    }
-    if (savedDiscoverState?.screenMode === 'results' && items.length > 0) {
-      return;
-    }
-    if (
-      savedDiscoverState?.selectedCatalog &&
-      catalogKey(selectedCatalog) === catalogKey(savedDiscoverState.selectedCatalog) &&
-      items.length > 0
-    ) {
-      return;
-    }
-    let isMounted = true;
-    async function loadCatalogData() {
-      setItemsLoading(true);
-      setSkip(0);
-      setHasMore(true);
-      // A genuinely new catalog's item list is about to replace the old
-      // one -- any remembered browse scroll offset belongs to the old
-      // list and would be meaningless (or out of range) here.
-      lastDiscoverBrowseScrollY = 0;
-      pendingBrowseScrollRestoreRef.current = false;
-      const res = await fetchCatalogItems(
-        selectedCatalog!.baseEndpoint,
-        selectedCatalog!.type,
-        selectedCatalog!.id,
-        0,
-      );
-      if (!isMounted) return;
-      setItems(res);
-      setHasMore(res.length > 0);
-      if (savedDiscoverState) {
-        savedDiscoverState.selectedCatalog = selectedCatalog;
-        savedDiscoverState.items = res;
-        savedDiscoverState.skip = 0;
-        savedDiscoverState.hasMore = res.length > 0;
-      }
-      if (res.length > 0) {
-        focusHero(res[0], selectedCatalog!.baseEndpoint);
-      } else {
-        setActiveHero(null);
-      }
-      setItemsLoading(false);
-    }
-    loadCatalogData();
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedCatalog, focusHero]);
+  // --- rows ---------------------------------------------------------------
+  // One row per visible catalog. Rows load as focus approaches them (the
+  // focused row plus ROW_LOOKAHEAD below), and each keeps paging as focus nears
+  // the end of its posters.
+  const [visibleRowCount, setVisibleRowCount] = useState(
+    () => (savedDiscoverState?.rowData ? Object.keys(savedDiscoverState.rowData).length : 0) + ROW_LOOKAHEAD + 1,
+  );
+  const catalogByKeyRef = useRef<Record<string, DiscoverCatalog>>({});
+  catalogByKeyRef.current = Object.fromEntries(catalogs.map((c) => [catalogKey(c), c]));
+
+  const patchRow = useCallback((key: string, patch: Partial<DiscoverRowData>) => {
+    setRowData((prev) => {
+      const cur = prev[key] || { items: [], loading: false, loaded: false, loadingMore: false, hasMore: true };
+      const next = { ...prev, [key]: { ...cur, ...patch } };
+      if (savedDiscoverState) savedDiscoverState.rowData = next;
+      return next;
+    });
+  }, []);
+
+  const loadRow = useCallback(
+    async (cat: DiscoverCatalog) => {
+      const key = catalogKey(cat);
+      patchRow(key, { loading: true });
+      let res: CatalogMediaItem[] = [];
+      try {
+        res = (await fetchCatalogItems(cat.baseEndpoint, cat.type, cat.id, 0)) || [];
+      } catch {}
+      patchRow(key, {
+        items: res.slice(0, MAX_ROW_POSTS),
+        loading: false,
+        loaded: true,
+        hasMore: res.length > 0 && res.length < MAX_ROW_POSTS,
+      });
+    },
+    [patchRow],
+  );
+
+  const loadMoreRow = useCallback(
+    async (key: string) => {
+      const cat = catalogByKeyRef.current[key];
+      const cur = rowDataRef.current[key];
+      if (!cat || !cur || !cur.loaded || cur.loadingMore || !cur.hasMore) return;
+      patchRow(key, { loadingMore: true });
+      let more: CatalogMediaItem[] = [];
+      try {
+        // Stremio catalogs page by "skip" = how many posters we already have.
+        more = (await fetchCatalogItems(cat.baseEndpoint, cat.type, cat.id, cur.items.length)) || [];
+      } catch {}
+      const have = new Set(cur.items.map((i) => i.id));
+      const fresh = more.filter((i) => !have.has(i.id));
+      const merged = [...rowDataRef.current[key].items, ...fresh].slice(0, MAX_ROW_POSTS);
+      patchRow(key, {
+        items: merged,
+        loadingMore: false,
+        // A catalog that ignores `skip` just repeats itself: stop asking.
+        hasMore: fresh.length > 0 && merged.length < MAX_ROW_POSTS,
+      });
+    },
+    [patchRow],
+  );
 
   useEffect(() => {
-    const KEYCODE_DPAD_CENTER = 23;
-    const KEYCODE_ENTER = 66;
+    visibleCatalogs.slice(0, visibleRowCount).forEach((cat) => {
+      const d = rowData[catalogKey(cat)];
+      if (!d || (!d.loaded && !d.loading)) loadRow(cat);
+    });
+  }, [visibleCatalogs.length, hiddenCatalogs, visibleRowCount, rowData, loadRow]);
+
+  // Rows on screen: not-yet-loaded ones (skeleton) and ones with posters; a
+  // catalog that came back empty has nothing to show and is left out.
+  const browseRows = useMemo(
+    () =>
+      visibleCatalogs.slice(0, visibleRowCount).filter((cat) => {
+        const d = rowData[catalogKey(cat)];
+        return !d || !d.loaded || d.items.length > 0;
+      }),
+    [catalogs, hiddenCatalogs, visibleRowCount, rowData],
+  );
+
+  // Vertical position: the focused row slides to the top of the viewport.
+  const rowIndexOfKey = (key: string | null) =>
+    key ? Math.max(0, browseRows.findIndex((c) => catalogKey(c) === key)) : 0;
+  const translateY = useSharedValue(-rowIndexOfKey(lastFocusedDiscoverRowKey) * POSTER_ROW_HEIGHT);
+  const animatedRowsStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
+  // A row above the focused one appearing/disappearing shifts its index.
+  useEffect(() => {
+    if (!lastFocusedDiscoverRowKey) return;
+    translateY.value = withTiming(-rowIndexOfKey(lastFocusedDiscoverRowKey) * POSTER_ROW_HEIGHT, {
+      duration: 160,
+      easing: Easing.out(Easing.quad),
+    });
+  }, [browseRows]);
+
+  // Last D-pad key seen by the native key forwarder (it fires before Android
+  // moves focus), used to recognise a stray focus jump between rows.
+  const lastDpadKeyRef = useRef({ code: 0, at: 0 });
+  useEffect(() => {
     const handleKeyDown = (e: { keyCode?: number }) => {
-      if (e?.keyCode !== KEYCODE_DPAD_CENTER && e?.keyCode !== KEYCODE_ENTER) return;
-      if (!focusedPillRef.current || screenMode === 'results') return;
-      const now = Date.now();
-      if (now - lastSelectKeyTimeRef.current > 400) {
-        selectHoldStreakRef.current = 0;
-      }
-      lastSelectKeyTimeRef.current = now;
-      selectHoldStreakRef.current += 1;
-      if (selectHoldStreakRef.current >= 3) {
-        selectHoldStreakRef.current = 0;
-        setCatalogToHide(focusedPillRef.current);
+      const k = e?.keyCode;
+      if (k === 19 || k === 20 || k === 21 || k === 22) {
+        lastDpadKeyRef.current = { code: k, at: Date.now() };
       }
     };
     KeyEvent.onKeyDownListener(handleKeyDown);
     return () => KeyEvent.removeKeyDownListener();
-  }, [screenMode]);
+  }, []);
 
-  const handleLoadMore = useCallback(async () => {
-    if (!selectedCatalog || loadingMore || !hasMore) return;
-    setLoadingMore(true);
-    const nextSkip = skip + items.length;
-    const more = await fetchCatalogItems(
-      selectedCatalog.baseEndpoint,
-      selectedCatalog.type,
-      selectedCatalog.id,
-      nextSkip,
-    );
-    setItems((prev) => {
-      const next = [...prev, ...more];
-      if (savedDiscoverState) {
-        savedDiscoverState.items = next;
-        savedDiscoverState.skip = nextSkip;
-        savedDiscoverState.hasMore = more.length > 0;
+  const handleRowCardFocus = useCallback(
+    (rowKey: string, rowIndex: number, item: CatalogMediaItem, itemKey: string): boolean => {
+      // Left/Right never changes row. If focus landed on another row right
+      // after one of those keys (held-key overshoot at the end of a row), put
+      // focus back instead of following it.
+      const { code, at } = lastDpadKeyRef.current;
+      if (
+        lastFocusedDiscoverBrowseKey &&
+        lastFocusedDiscoverRowKey &&
+        rowKey !== lastFocusedDiscoverRowKey &&
+        (code === 21 || code === 22) &&
+        Date.now() - at < 350
+      ) {
+        requestRefocus();
+        return false;
       }
-      return next;
-    });
-    setHasMore(more.length > 0);
-    setSkip(nextSkip);
-    setLoadingMore(false);
-  }, [selectedCatalog, loadingMore, hasMore, skip, items.length]);
+      lastFocusedDiscoverBrowseKey = itemKey;
+      lastFocusedDiscoverRowKey = rowKey;
+      setVisibleRowCount((c) => (rowIndex + ROW_LOOKAHEAD + 1 > c ? rowIndex + ROW_LOOKAHEAD + 1 : c));
+      translateY.value = withTiming(-rowIndex * POSTER_ROW_HEIGHT, {
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+      });
+      const cat = catalogByKeyRef.current[rowKey];
+      if (cat) focusHero(item, cat.baseEndpoint);
+      return true;
+    },
+    [requestRefocus, translateY, focusHero],
+  );
 
   const handleItemPress = useCallback(
-    async (item: CatalogMediaItem) => {
+    async (item: CatalogMediaItem, cat?: DiscoverCatalog) => {
+      const selectedCatalog = cat ?? selectedCatalogRef.current;
+      if (cat) setSelectedCatalog(cat);
       if (resolveAbortRef.current) {
         resolveAbortRef.current.abort();
       }
@@ -916,9 +942,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       savedDiscoverState = {
         catalogs,
         selectedCatalog,
-        items,
-        skip,
-        hasMore,
+        rowData: rowDataRef.current,
         activeHero,
         screenMode: 'results',
         resultsTarget: item,
@@ -1154,7 +1178,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       publishMatches();
       setResultsLoading(false);
     },
-    [installedProviders, selectedCatalog, catalogs, items, skip, hasMore, activeHero],
+    [installedProviders, catalogs, activeHero],
   );
 
   // Consumes a pending "open this item's results view" request set by
@@ -1720,18 +1744,6 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     if (resolveAbortRef.current) resolveAbortRef.current.abort();
     lastFocusedDiscoverResultsKey = null;
     lastResultsScrollY = 0;
-    // The grid ScrollView is about to remount at y=0 (see the
-    // `screenMode === 'results'` early-return in render) -- arm the
-    // restore so handleBrowseContentSizeChange scrolls the remembered
-    // poster back into view once the grid's items are laid out again.
-    pendingBrowseScrollRestoreRef.current = true;
-    if (lastDiscoverBrowseScrollY > 0) {
-      browseRestoringRef.current = true;
-      setBrowseHidden(true);
-      // Safety net: never leave the grid hidden if the restore pass
-      // doesn't run for any reason.
-      setTimeout(finishBrowseRestore, 900);
-    }
     setScreenMode('browse');
     setResultsTarget(null);
     setMatchedAddonPosts([]);
@@ -1748,17 +1760,13 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       savedDiscoverState.activeLinkIndex = 0;
       savedDiscoverState.episodes = [];
     }
-  }, [activeSourcePost, handleBackToSources, finishBrowseRestore]);
+  }, [activeSourcePost, handleBackToSources]);
 
   // Hardware Back Key: only handle this screen's own back-stack
   useEffect(() => {
     const handleBack = () => {
       if (manageVisible) {
         setManageVisible(false);
-        return true;
-      }
-      if (catalogToHide) {
-        setCatalogToHide(null);
         return true;
       }
       if (screenMode === 'results') {
@@ -1770,7 +1778,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
 
     onRegisterBackHandler?.(handleBack);
     return () => onRegisterBackHandler?.(null);
-  }, [screenMode, manageVisible, catalogToHide, backToBrowse, onRegisterBackHandler]);
+  }, [screenMode, manageVisible, backToBrowse, onRegisterBackHandler]);
 
   useEffect(() => {
     return () => {
@@ -1778,52 +1786,40 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     };
   }, []);
 
-  // Hiding a pill unmounts the very view that holds focus, and Android's
-  // default focus search then often jumps to the side nav rail. Before the
-  // pill goes away, pick where focus should land instead -- the category
-  // just before it, or the "Catalogs" button when it was the first one --
-  // and re-issue a real focus request on that item once the bar has
-  // re-rendered.
-  const refocusBrowseKey = useCallback(
-    (targetKey: string) => {
-      lastFocusedDiscoverBrowseKey = targetKey;
-      // Let the hidden pill unmount / the Modal finish dismissing first, so
-      // this request is the last one to land and isn't overridden.
-      setTimeout(() => requestRefocus(), 150);
-    },
-    [requestRefocus],
-  );
-
-  const handleHideCatalog = useCallback((cat: DiscoverCatalog) => {
-    const hiddenKey = catalogKey(cat);
-    const visibleBefore = catalogs.filter((c) => !hiddenKeySet.has(catalogKey(c)));
-    const hiddenIdx = visibleBefore.findIndex((c) => catalogKey(c) === hiddenKey);
-    const previous = hiddenIdx > 0 ? visibleBefore[hiddenIdx - 1] : undefined;
-    refocusBrowseKey(previous ? `pill-${catalogKey(previous)}` : 'manage-btn');
-
-    stremioCatalogStorage.hideCatalog({
-      key: catalogKey(cat),
-      name: catalogDisplayName(cat),
-      manifestName: cat.manifestName,
-    });
-    setHiddenCatalogs(stremioCatalogStorage.getHiddenCatalogs());
-    setSelectedCatalog((prev) => {
-      if (prev && catalogKey(prev) === catalogKey(cat)) {
-        const stillVisible = catalogs.find(
-          (c) => catalogKey(c) !== catalogKey(cat) && !hiddenKeySet.has(catalogKey(c)),
-        );
-        return stillVisible || null;
+  // Show/hide one category (row) from the Catalogs popup.
+  const handleToggleCategory = useCallback((cat: DiscoverCatalog) => {
+    const key = catalogKey(cat);
+    if (stremioCatalogStorage.getHiddenCatalogs().some((h) => h.key === key)) {
+      stremioCatalogStorage.unhideCatalog(key);
+    } else {
+      stremioCatalogStorage.hideCatalog({
+        key,
+        name: catalogDisplayName(cat),
+        manifestName: cat.manifestName,
+      });
+      // If focus was last on the row that just went away, come back to the
+      // Catalogs button instead of a poster that no longer exists.
+      if (lastFocusedDiscoverRowKey === key) {
+        lastFocusedDiscoverBrowseKey = 'manage-btn';
+        lastFocusedDiscoverRowKey = null;
       }
-      return prev;
-    });
-    try {
-      ToastAndroid.show(`Hidden "${catalogDisplayName(cat)}"`, ToastAndroid.SHORT);
-    } catch {}
-  }, [catalogs, hiddenKeySet, refocusBrowseKey]);
-
-  const handleRestoreCatalog = useCallback((key: string) => {
-    stremioCatalogStorage.unhideCatalog(key);
+    }
     setHiddenCatalogs(stremioCatalogStorage.getHiddenCatalogs());
+  }, []);
+
+  const handleRowCardPress = useCallback(
+    (rowKey: string, item: CatalogMediaItem) => {
+      handleItemPress(item, catalogByKeyRef.current[rowKey]);
+    },
+    [handleItemPress],
+  );
+  const getBrowseKey = useCallback(() => lastFocusedDiscoverBrowseKey, []);
+  const getCatalogsBtnHandle = useCallback(
+    () => (manageBtnRef.current ? findNodeHandle(manageBtnRef.current) : null),
+    [],
+  );
+  const setTopFirstCard = useCallback((node: View | null) => {
+    topFirstCardRef.current = node;
   }, []);
 
   const handleAddManifest = useCallback(async () => {
@@ -1934,267 +1930,99 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         <TVHeroMeta media={activeHero} />
       </View>
 
-      <View style={styles.browseBodyWrapper}>
-        <View style={styles.catalogsBar}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.catalogsScroll}
-            scrollEventThrottle={16}
-          >
-            <TVFocusablePressable
-              key={keyFor('manage-btn')}
-              ref={(el) => {
-                manageBtnRef.current = el;
-                setItemRef('manage-btn', el);
-                // This bar is the topmost row of the Browse screen -- Hero
-                // above it isn't focusable, but the side nav rail spans the
-                // full screen height, so Android's default geometric search
-                // still finds "Sources" as the nearest thing Up from here.
-                // Self-pointing nextFocusUp makes Up a no-op for this row
-                // without touching Left/Right/Down.
-                if (el) {
-                  const selfHandle = findNodeHandle(el);
-                  if (selfHandle != null) {
-                    (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
-                  }
-                }
-              }}
-              hasTVPreferredFocus={shouldPreferFocus('manage-btn', false)}
-              scaleFocused={1.04}
-              focusedBorderColor="#8A5CF6"
-              borderRadius={20}
-              onFocus={() => {
-                if (browseRestoringRef.current) return;
-                lastFocusedDiscoverBrowseKey = 'manage-btn';
-                registerRailLeftEdge('discover', manageBtnRef.current);
-                const node = manageBtnRef.current as any;
-                const selfHandle = node ? findNodeHandle(node) : null;
-                if (selfHandle != null) {
-                  node.setNativeProps?.({ nextFocusUp: selfHandle });
-                }
-              }}
-              onPress={() => setManageVisible(true)}
-              style={styles.manageBtn}
-            >
-              {() => (
-                <View style={styles.manageBtnInner}>
-                  <MaterialCommunityIcons name="plus" size={16} color="#FFFFFF" />
-                  <Text style={styles.manageBtnText}>Catalogs</Text>
-                </View>
-              )}
-            </TVFocusablePressable>
-
-            {visibleCatalogs.map((cat) => {
-              const isSelected = selectedCatalog ? catalogKey(cat) === catalogKey(selectedCatalog) : false;
-              const pillKey = `pill-${catalogKey(cat)}`;
-              return (
-                <TVFocusablePressable
-                  key={keyFor(pillKey)}
-                  ref={(el) => {
-                    setItemRef(pillKey, el);
-                    // Same self-pointing nextFocusUp as the "Catalogs"
-                    // button above -- every pill in this top row needs it,
-                    // not just the first, since Up can be pressed from
-                    // whichever pill currently has focus.
-                    if (el) {
-                      const selfHandle = findNodeHandle(el);
-                      if (selfHandle != null) {
-                        (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
-                      }
-                    }
-                  }}
-                  hasTVPreferredFocus={shouldPreferFocus(pillKey, false)}
-                  scaleFocused={1.04}
-                  focusedBorderColor="#8A5CF6"
-                  borderRadius={20}
-                  onFocus={() => {
-                    focusedPillRef.current = cat;
-                    if (browseRestoringRef.current) return;
-                    lastFocusedDiscoverBrowseKey = pillKey;
-                  }}
-                  onBlur={() => {
-                    focusedPillRef.current = null;
-                  }}
-                  onPress={() => setSelectedCatalog(cat)}
-                  onLongPress={() => handleHideCatalog(cat)}
-                  style={[styles.catalogPill, isSelected && styles.catalogPillActive]}
-                >
-                  {() => (
-                    <Text style={[styles.catalogText, isSelected && styles.catalogTextActive]}>
-                      {catalogDisplayName(cat)}
-                    </Text>
-                  )}
-                </TVFocusablePressable>
-              );
-            })}
-          </ScrollView>
+      {/* Rows (one per visible catalog), laid out and navigated like Home. */}
+      {catalogsLoading && catalogs.length === 0 ? (
+        <View style={styles.centerLoading}>
+          <ActivityIndicator size="large" color="#8A5CF6" />
         </View>
-
-        {catalogsLoading ? (
-          <View style={styles.centerLoading}>
-            <ActivityIndicator size="large" color="#8A5CF6" />
-          </View>
-        ) : visibleCatalogs.length === 0 ? (
-          <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="view-grid-plus-outline" size={56} color="#4B5563" />
-            <Text style={styles.emptyTitle}>
-              {catalogsError || (catalogs.length > 0 ? 'All catalogs are hidden' : 'No catalogs added yet')}
-            </Text>
-            <Text style={styles.emptySubtitle}>
-              {catalogs.length > 0
-                ? 'Restore a hidden category from the Catalogs menu.'
-                : 'Add a Stremio addon manifest URL (like Cinemeta) to populate this tab.'}
-            </Text>
-            <TVFocusablePressable
-              hasTVPreferredFocus
-              scaleFocused={1.04}
-              focusedBorderColor="#8A5CF6"
-              borderRadius={10}
-              onPress={() => setManageVisible(true)}
-              style={styles.emptyAddBtn}
-            >
-              {() => <Text style={styles.emptyAddBtnText}>Open Catalogs</Text>}
-            </TVFocusablePressable>
-          </View>
-        ) : itemsLoading ? (
-          <View style={styles.centerLoading}>
-            <ActivityIndicator size="large" color="#8A5CF6" />
-          </View>
-        ) : (
-          <ScrollView
-            ref={browseScrollRef}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.gridContainer}
-            style={browseHidden ? { opacity: 0 } : undefined}
-            scrollEventThrottle={16}
-            removeClippedSubviews={true}
-            onScroll={(e) => {
-              lastDiscoverBrowseScrollY = e.nativeEvent.contentOffset.y;
-            }}
-            onContentSizeChange={handleBrowseContentSizeChange}
-          >
-            {items.map((item, index) => {
-              const isLeftEdge = index % GRID_COLUMNS === 0;
-              const gridKey = `grid-${item.id}-${index}`;
+      ) : visibleCatalogs.length === 0 ? (
+        <View style={styles.emptyState}>
+          <MaterialCommunityIcons name="view-grid-plus-outline" size={56} color="#4B5563" />
+          <Text style={styles.emptyTitle}>
+            {catalogsError || (catalogs.length > 0 ? 'All categories are hidden' : 'No catalogs added yet')}
+          </Text>
+          <Text style={styles.emptySubtitle}>
+            {catalogs.length > 0
+              ? 'Show a category again from the Catalogs menu.'
+              : 'Add a Stremio addon manifest URL (like Cinemeta) to populate this tab.'}
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.stageViewport}>
+          <Animated.View style={[styles.slidingRows, animatedRowsStyle]}>
+            {browseRows.map((cat, rowIndex) => {
+              const key = catalogKey(cat);
+              const d = rowData[key];
+              const ownsRefocus = Boolean(refocusKey && refocusKey.startsWith(`${key}@@`));
               return (
-                <TVFocusablePressable
-                  key={keyFor(gridKey)}
-                  ref={(el) => {
-                    setItemRef(gridKey, el);
-                    if (isLeftEdge) {
-                      gridItemRefs.current[index] = el;
-                    }
-                  }}
-                  hasTVPreferredFocus={shouldPreferFocus(gridKey, index === 0)}
-                  scaleFocused={1.05}
-                  focusedBorderColor="#FFFFFF"
-                  borderRadius={8}
-                  onFocus={() => {
-                    // Mid-restore, a hop onto anything but the remembered
-                    // poster is transient: don't overwrite the target or
-                    // swap the hero for it.
-                    if (
-                      browseRestoringRef.current &&
-                      gridKey !== lastFocusedDiscoverBrowseKey
-                    ) {
-                      return;
-                    }
-                    lastFocusedDiscoverBrowseKey = gridKey;
-                    selectedCatalog && focusHero(item, selectedCatalog.baseEndpoint);
-                    if (isLeftEdge) {
-                      registerRailLeftEdge('discover', gridItemRefs.current[index]);
-                    }
-                  }}
-                  onPress={() => handleItemPress(item)}
-                  style={[styles.card, { width: CARD_WIDTH, height: CARD_HEIGHT }]}
-                >
-                  {({ focused }) => (
-                    <View style={styles.cardInner}>
-                      <Image
-                        source={{
-                          uri: item.poster || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
-                        }}
-                        style={styles.cardPoster}
-                        resizeMode="cover"
-                      />
-                      {focused && <View style={styles.focusBorderGlow} />}
-                    </View>
-                  )}
-                </TVFocusablePressable>
+                <TVPosterRow
+                  key={key}
+                  rowKey={key}
+                  title={catalogDisplayName(cat)}
+                  sourceLabel={cat.manifestName}
+                  items={d ? d.items : EMPTY_ITEMS}
+                  loading={!d || d.loading || !d.loaded}
+                  rowIndex={rowIndex}
+                  getLastFocusedKey={getBrowseKey}
+                  refocusKey={ownsRefocus ? refocusKey : null}
+                  refocusNonce={ownsRefocus ? refocusNonce : 0}
+                  onCardFocus={handleRowCardFocus}
+                  onCardPress={handleRowCardPress}
+                  registerItemRef={setItemRef}
+                  onNeedMore={loadMoreRow}
+                  getUpHandle={getCatalogsBtnHandle}
+                  onTopFirstCard={setTopFirstCard}
+                />
               );
             })}
+          </Animated.View>
+        </View>
+      )}
 
-            {hasMore && items.length > 0 && (
-              <TVFocusablePressable
-                scaleFocused={1.04}
-                focusedBorderColor="#FFFFFF"
-                borderRadius={8}
-                onPress={handleLoadMore}
-                style={[styles.card, styles.loadMoreCard, { width: CARD_WIDTH, height: CARD_HEIGHT }]}
-              >
-                {() =>
-                  loadingMore ? (
-                    <ActivityIndicator size="small" color="#8A5CF6" />
-                  ) : (
-                    <View style={styles.loadMoreInner}>
-                      <MaterialCommunityIcons name="dots-horizontal" size={28} color="#9CA3AF" />
-                      <Text style={styles.loadMoreText}>More</Text>
-                    </View>
-                  )
-                }
-              </TVFocusablePressable>
-            )}
-          </ScrollView>
-        )}
-      </View>
-
-      <Modal
-        visible={Boolean(catalogToHide)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCatalogToHide(null)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <MaterialCommunityIcons name="eye-off-outline" size={40} color="#8A5CF6" />
-            <Text style={styles.modalTitle}>Hide Catalog?</Text>
-            <Text style={styles.modalSubtitle}>
-              Hide "{catalogToHide ? catalogDisplayName(catalogToHide) : ''}" from your Discover screen?
-            </Text>
-            <View style={styles.modalActions}>
-              <TVFocusablePressable
-                hasTVPreferredFocus
-                scaleFocused={1.04}
-                focusedBorderColor="#8A5CF6"
-                borderRadius={8}
-                onPress={() => {
-                  const keep = catalogToHide;
-                  setCatalogToHide(null);
-                  if (keep) refocusBrowseKey(`pill-${catalogKey(keep)}`);
-                }}
-                style={styles.cancelBtn}
-              >
-                {() => <Text style={styles.cancelBtnText}>Cancel</Text>}
-              </TVFocusablePressable>
-              <TVFocusablePressable
-                scaleFocused={1.04}
-                focusedBorderColor="#FFFFFF"
-                borderRadius={8}
-                onPress={() => {
-                  if (catalogToHide) {
-                    handleHideCatalog(catalogToHide);
-                  }
-                  setCatalogToHide(null);
-                }}
-                style={styles.confirmBtn}
-              >
-                {() => <Text style={styles.confirmBtnText}>Hide</Text>}
-              </TVFocusablePressable>
+      {/* The only control on this screen besides the rows. */}
+      <View style={styles.catalogsBtnWrap}>
+        <TVFocusablePressable
+          key={keyFor('manage-btn')}
+          ref={(el) => {
+            manageBtnRef.current = el;
+            setItemRef('manage-btn', el);
+            // Nothing above this button: make Up a no-op instead of letting
+            // Android's geometric search find the side rail.
+            if (el) {
+              const selfHandle = findNodeHandle(el);
+              if (selfHandle != null) {
+                (el as any).setNativeProps?.({ nextFocusUp: selfHandle });
+              }
+            }
+          }}
+          hasTVPreferredFocus={shouldPreferFocus('manage-btn', false)}
+          scaleFocused={1.04}
+          focusedBorderColor="#8A5CF6"
+          borderRadius={20}
+          onFocus={() => {
+            lastFocusedDiscoverBrowseKey = 'manage-btn';
+            lastFocusedDiscoverRowKey = null;
+            registerRailLeftEdge('discover', manageBtnRef.current);
+            const node = manageBtnRef.current as any;
+            const selfHandle = node ? findNodeHandle(node) : null;
+            const firstCard = topFirstCardRef.current;
+            const downHandle = firstCard ? findNodeHandle(firstCard) : null;
+            node?.setNativeProps?.({
+              ...(selfHandle != null ? { nextFocusUp: selfHandle } : {}),
+              ...(downHandle != null ? { nextFocusDown: downHandle } : {}),
+            });
+          }}
+          onPress={() => setManageVisible(true)}
+          style={styles.manageBtn}
+        >
+          {() => (
+            <View style={styles.manageBtnInner}>
+              <MaterialCommunityIcons name="plus" size={16} color="#FFFFFF" />
+              <Text style={styles.manageBtnText}>Catalogs</Text>
             </View>
-          </View>
-        </View>
-      </Modal>
+          )}
+        </TVFocusablePressable>
+      </View>
 
       <Modal
         visible={manageVisible}
@@ -2206,7 +2034,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Catalogs</Text>
             <Text style={styles.modalSubtitle}>
-              Turn catalogs on or off, or add a Stremio addon manifest URL.
+              Turn catalogs on or off, show or hide their categories, or add a Stremio addon manifest URL.
             </Text>
 
             <View style={styles.addRow}>
@@ -2285,36 +2113,45 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                       {() => <MaterialCommunityIcons name="trash-can-outline" size={18} color="#EF4444" />}
                     </TVFocusablePressable>
                   </View>
+
+                  {m.enabled !== false &&
+                    catalogs
+                      .filter((c) => c.manifestUrl === m.url)
+                      .map((cat) => {
+                        const hidden = hiddenKeySet.has(catalogKey(cat));
+                        return (
+                          <View key={catalogKey(cat)} style={styles.categoryRow}>
+                            <Text
+                              numberOfLines={1}
+                              style={[styles.categoryName, hidden && styles.categoryNameHidden]}
+                            >
+                              {catalogDisplayName(cat)}
+                            </Text>
+                            <TVFocusablePressable
+                              scaleFocused={1.06}
+                              focusedBorderColor={hidden ? '#9CA3AF' : '#8A5CF6'}
+                              borderRadius={8}
+                              onPress={() => handleToggleCategory(cat)}
+                              style={styles.toggleBtn}
+                            >
+                              {() => (
+                                <View style={styles.toggleInner}>
+                                  <MaterialCommunityIcons
+                                    name={hidden ? 'eye-off-outline' : 'eye-outline'}
+                                    size={22}
+                                    color={hidden ? '#6B7280' : '#8A5CF6'}
+                                  />
+                                  <Text style={[styles.toggleText, !hidden && styles.toggleTextOn]}>
+                                    {hidden ? 'HIDDEN' : 'SHOWN'}
+                                  </Text>
+                                </View>
+                              )}
+                            </TVFocusablePressable>
+                          </View>
+                        );
+                      })}
                 </View>
               ))}
-
-              {hiddenCatalogs.length > 0 && (
-                <>
-                  <Text style={styles.hiddenSectionHeader}>Hidden categories</Text>
-                  {hiddenCatalogs.map((h) => (
-                    <View key={h.key} style={styles.sourceItem}>
-                      <View style={styles.sourceItemContent}>
-                        <MaterialCommunityIcons name="eye-off-outline" size={20} color="#6B7280" />
-                        <View style={{ flex: 1, marginLeft: 10 }}>
-                          <Text style={styles.sourceProviderName}>{h.manifestName}</Text>
-                          <Text numberOfLines={1} style={styles.sourceItemTitle}>
-                            {h.name}
-                          </Text>
-                        </View>
-                        <TVFocusablePressable
-                          scaleFocused={1.06}
-                          focusedBorderColor="#8A5CF6"
-                          borderRadius={8}
-                          onPress={() => handleRestoreCatalog(h.key)}
-                          style={styles.removeBtn}
-                        >
-                          {() => <MaterialCommunityIcons name="eye-outline" size={18} color="#8A5CF6" />}
-                        </TVFocusablePressable>
-                      </View>
-                    </View>
-                  ))}
-                </>
-              )}
             </ScrollView>
 
             <TVFocusablePressable
@@ -2351,14 +2188,41 @@ export const styles = StyleSheet.create({
     height: 380,
     zIndex: 0,
   },
-  browseBodyWrapper: {
-    flex: 1,
-    marginTop: 240,
+  // Rows viewport + sliding stack, same geometry as Home.
+  stageViewport: {
+    position: 'absolute',
+    top: ROW_TOP,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    overflow: 'hidden',
     zIndex: 2,
   },
-  catalogsBar: {
+  slidingRows: {
     paddingLeft: CONTAINER_PADDING_LEFT,
-    marginBottom: 12,
+  },
+  catalogsBtnWrap: {
+    position: 'absolute',
+    top: 12,
+    right: 24,
+    zIndex: 4,
+  },
+  categoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    paddingLeft: 30,
+  },
+  categoryName: {
+    flex: 1,
+    color: '#E5E7EB',
+    fontSize: 14,
+    fontWeight: '600',
+    marginRight: 8,
+  },
+  categoryNameHidden: {
+    color: '#6B7280',
   },
   catalogsScroll: {
     gap: 10,
