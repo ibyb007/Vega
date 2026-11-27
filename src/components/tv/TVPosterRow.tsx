@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View, findNodeHandle } from 'react-native';
 import { TVFocusablePressable } from './TVFocusablePressable';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
@@ -25,6 +25,12 @@ const CARDS_LOOKAHEAD = 8;
 const LOAD_MORE_LOOKAHEAD = 10;
 const SCROLL_SETTLE_MS = 2500;
 const SKELETON_COUNT = 8;
+// Once focus has rested on a poster for this long, the next few posters'
+// images are warmed into the disk cache so they appear instantly as the row
+// scrolls (instead of popping in after the card is already on screen).
+const PREFETCH_SETTLE_MS = 150;
+const PREFETCH_AHEAD = 8;
+const prefetchedPosters = new Set<string>();
 
 export const posterItemKey = (rowKey: string, index: number, id: string) =>
   `${rowKey}@@${index}@@${id}`;
@@ -79,6 +85,17 @@ const PosterCard = memo(function PosterCard({
   const isFirstInRow = pIndex === 0;
   const nodeRef = useRef<View | null>(null);
 
+  // `hasTVPreferredFocus` makes Android call requestFocus() every time the
+  // prop flips to true on an already-mounted view. `shouldFocus` follows the
+  // module-level "last focused key", so any re-render of the row while a key
+  // was held (a page of posters mounting, rows paging in, ...) flipped it on
+  // whichever card JS had most recently *heard about* -- which is behind where
+  // native focus already is -- and focus snapped back to it, producing the
+  // "looping between two posters" glitch. Only evaluate it when this card's
+  // focusable is (re)mounted: first mount, or the refocus-nonce remount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const preferFocus = useMemo(() => shouldFocus, [refocusNonce]);
+
   const applyUpLink = useCallback(() => {
     // Top row: Up goes to the "Catalogs" button (or nowhere) -- never to the
     // nav rail, which Android's geometric search would otherwise pick.
@@ -131,7 +148,7 @@ const PosterCard = memo(function PosterCard({
     <TVFocusablePressable
       key={refocusNonce != null ? `${itemKey}-r${refocusNonce}` : itemKey}
       ref={setRef}
-      hasTVPreferredFocus={shouldFocus}
+      hasTVPreferredFocus={preferFocus}
       scaleFocused={1.05}
       focusedBorderColor="#FFFFFF"
       borderRadius={POSTER_RADIUS}
@@ -297,16 +314,41 @@ export const TVPosterRow = memo(function TVPosterRow({
     scheduleWire();
   }, [renderCount, items, refocusNonce, scheduleWire]);
 
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
+    },
+    []
+  );
+  const schedulePrefetch = useCallback((fromIndex: number) => {
+    if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
+    prefetchTimerRef.current = setTimeout(() => {
+      prefetchTimerRef.current = null;
+      const list = itemsRef.current;
+      const end = Math.min(list.length, fromIndex + 1 + PREFETCH_AHEAD);
+      for (let i = fromIndex + 1; i < end; i++) {
+        const uri = list[i]?.poster;
+        if (!uri || prefetchedPosters.has(uri)) continue;
+        prefetchedPosters.add(uri);
+        Image.prefetch(uri).catch(() => prefetchedPosters.delete(uri));
+      }
+    }, PREFETCH_SETTLE_MS);
+  }, []);
+
   const handleCardFocus = useCallback<CardProps['onCardFocus']>(
     (rKey, rIdx, item, itemKey, pIndex) => {
       if (!onCardFocus(rKey, rIdx, item, itemKey, pIndex)) return false;
+      schedulePrefetch(pIndex);
       setMountedCount((c) =>
         c < totalRef.current && pIndex >= c - CARDS_LOOKAHEAD ? c + CARDS_PAGE : c
       );
       if (pIndex >= totalRef.current - LOAD_MORE_LOOKAHEAD) onNeedMore(rKey);
       return true;
     },
-    [onCardFocus, onNeedMore]
+    [onCardFocus, onNeedMore, schedulePrefetch]
   );
 
   return (
