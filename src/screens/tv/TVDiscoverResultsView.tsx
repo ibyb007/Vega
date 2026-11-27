@@ -284,7 +284,7 @@ export interface TVDiscoverResultsViewProps {
   // Actions.
   onSelectLink: (idx: number) => void;
   backToBrowse: () => void;
-  handleSelectSourceCard: (sourcePost: Post) => void | Promise<void>;
+  handleSelectSourceCard: (sourcePost: Post, userInitiated?: boolean) => void | Promise<void>;
   handleResolveAndPlay: (
     link: string,
     title: string,
@@ -293,6 +293,10 @@ export interface TVDiscoverResultsViewProps {
     customEpisodes?: EpisodeLink[],
     episodeKey?: string,
   ) => void | Promise<void>;
+  focusResultsItem: (key: string) => void;
+  shouldAutoFocusFirstSource: () => boolean;
+  markAutoFocusedFirstSource: () => void;
+  consumePendingPickerFocus: () => boolean;
 }
 
 export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
@@ -323,10 +327,16 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
   backToBrowse,
   handleSelectSourceCard,
   handleResolveAndPlay,
+  focusResultsItem,
+  shouldAutoFocusFirstSource,
+  markAutoFocusedFirstSource,
+  consumePendingPickerFocus,
 }) => {
   // Controls the season/quality picker popup -- purely local to this page,
   // nothing outside it reads this.
   const [seasonPickerVisible, setSeasonPickerVisible] = useState(false);
+  const backFocusedRef = useRef(false);
+  const hasMovedFromBackRef = useRef(false);
 
   const banner = resultsTarget?.banner || resultsTarget?.poster;
   const rawLinkList: Link[] = sourceInfo?.linkList || [];
@@ -357,7 +367,53 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
     Boolean(usableDirectItems.length > 1 && resultsTarget?.type !== 'movie');
 
   const isAwaitingEpisodes = isSeries && episodesLoading && episodes.length === 0;
+  const hasSeasonPicker =
+    usableLinkList.length > 1 &&
+    (!isSeries ||
+      usableLinkList.some((l) => Boolean(l.episodesLink)) ||
+      parseSeasonNumber(usableLinkList[0]?.title) !== null);
   const logoUrl = resultsTarget?.logo || (sourceCinemetaMeta as any)?.logo;
+
+  useEffect(() => {
+    if (matchedAddonPosts.length === 0 || activeSourcePost) return;
+    if (!shouldAutoFocusFirstSource()) return;
+    if (!backFocusedRef.current && hasMovedFromBackRef.current) return;
+    markAutoFocusedFirstSource();
+    focusResultsItem(`results:source:${matchedAddonPosts[0].link}:0`);
+  }, [
+    matchedAddonPosts,
+    activeSourcePost,
+    shouldAutoFocusFirstSource,
+    markAutoFocusedFirstSource,
+    focusResultsItem,
+  ]);
+
+  useEffect(() => {
+    if (
+      !activeSourcePost ||
+      !sourceInfo ||
+      loadingSourceInfo ||
+      extractingLink ||
+      isAwaitingEpisodes ||
+      episodesLoading
+    ) {
+      return;
+    }
+    if (!consumePendingPickerFocus()) return;
+    if (hasSeasonPicker) {
+      focusResultsItem('results:linkPicker');
+    }
+  }, [
+    activeSourcePost,
+    sourceInfo,
+    loadingSourceInfo,
+    extractingLink,
+    isAwaitingEpisodes,
+    episodesLoading,
+    hasSeasonPicker,
+    consumePendingPickerFocus,
+    focusResultsItem,
+  ]);
 
 
   // ---- Episode cards: base list -------------------------------------------------
@@ -612,6 +668,10 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
   // render; each focusable below adds itself, in visual order, via
   // `chain.propsFor(key)`.
   chain.beginRender();
+  const firstSourceHandle =
+    matchedAddonPosts.length > 0 && sourcesRowFirstRef.current
+      ? findNodeHandle(sourcesRowFirstRef.current) ?? undefined
+      : undefined;
 
 
   return (
@@ -641,10 +701,15 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
         key={keyFor('results:back')}
         ref={(el) => setItemRef('results:back', el)}
         {...chain.propsFor('results:back')}
+        nextFocusDown={firstSourceHandle}
         hasTVPreferredFocus={shouldPreferResultsFocus('results:back', true)}
         onFocus={() => {
+          backFocusedRef.current = true;
           noteResultsFocus('results:back');
           resultsScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+        }}
+        onBlur={() => {
+          backFocusedRef.current = false;
         }}
         scaleFocused={1.1}
         focusedBorderColor="#FFFFFF"
@@ -746,6 +811,7 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
+              style={styles.sourcesRowScroll}
               contentContainerStyle={styles.sourcesRow}
               scrollEventThrottle={16}
             >
@@ -770,18 +836,25 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                         ? shouldPreferResultsFocus(sourceKey, isResumeSource)
                         : shouldPreferResultsFocus(sourceKey, false)
                     }
-                    scaleFocused={1.04}
-                    focusedBorderColor="#8A5CF6"
-                    borderRadius={10}
+                    scaleFocused={1.05}
+                    focusedBorderColor="#FFFFFF"
+                    borderRadius={12}
+                    borderWidth={3}
                     onFocus={() => {
+                      hasMovedFromBackRef.current = true;
                       noteResultsFocus(sourceKey, isResumeSource);
                       if (isFirst) registerRailLeftEdge('discover', sourcesRowFirstRef.current);
                     }}
-                    onPress={() => handleSelectSourceCard(post)}
-                    style={[styles.sourceCard, isSelected && styles.sourceCardActive]}
+                    onPress={() => handleSelectSourceCard(post, true)}
+                    style={styles.sourceCard}
                   >
                     {({ focused }) => (
-                      <View style={styles.sourceCardInner}>
+                      <View
+                        style={[
+                          styles.sourceCardInner,
+                          isSelected && !focused && styles.sourceCardActive,
+                        ]}
+                      >
                         <Image
                           source={{
                             uri: post.image || resultsTarget?.poster || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
@@ -799,7 +872,6 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                             {getProviderDisplayName(post.provider)}
                           </Text>
                         </View>
-                        {focused && <View style={styles.focusBorderGlow} />}
                       </View>
                     )}
                   </TVFocusablePressable>
@@ -839,10 +911,7 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
               </Text>
             ) : (
               <View style={styles.pickerSection}>
-                {usableLinkList.length > 1 &&
-                  (!isSeries ||
-                    usableLinkList.some((l) => Boolean(l.episodesLink)) ||
-                    parseSeasonNumber(usableLinkList[0]?.title) !== null) && (
+                {hasSeasonPicker && (
                   <View style={styles.subBlock}>
                     <Text style={styles.subHeader}>Seasons &amp; Quality</Text>
                     {/* Single trigger button that opens the season/quality
@@ -1131,7 +1200,13 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                       creditLayoutsRef.current[key] = { x: e.nativeEvent.layout.x, w: e.nativeEvent.layout.width };
                     }}
                   >
-                    <CreditItem person={p} onFocus={() => focusCredit(key)} />
+                    <CreditItem
+                      person={p}
+                      onFocus={() => {
+                        hasMovedFromBackRef.current = true;
+                        focusCredit(key);
+                      }}
+                    />
                   </View>
                 );
               })}
@@ -1147,7 +1222,13 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                       creditLayoutsRef.current[key] = { x: e.nativeEvent.layout.x, w: e.nativeEvent.layout.width };
                     }}
                   >
-                    <CreditItem person={p} onFocus={() => focusCredit(key)} />
+                    <CreditItem
+                      person={p}
+                      onFocus={() => {
+                        hasMovedFromBackRef.current = true;
+                        focusCredit(key);
+                      }}
+                    />
                   </View>
                 );
               })}

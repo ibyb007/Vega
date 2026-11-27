@@ -35,6 +35,8 @@ import {
   TVPosterRow,
   TVPosterRowHandle,
   POSTER_ROW_HEIGHT,
+  POSTER_CARD_WIDTH,
+  POSTER_CARD_HEIGHT,
   PosterCursorStore,
   createPosterCursorStore,
   posterItemKey,
@@ -718,6 +720,38 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // once on mount alongside `pendingDiscoverOpenItem` below.
   const [resumeHint, setResumeHint] = useState<DiscoverResumeHint | null>(null);
   const autoSelectedResumeSourceRef = useRef(false);
+  // One-shot results-view auto-focus guards:
+  // - autoFocusedFirstSourceRef: moves focus from Back to the 1st matched
+  //   source poster once results arrive (skipped on resume / restore).
+  // - pendingPickerFocusRef: moves focus to Seasons & Quality when a user
+  //   clicks a matched source poster and its details/episodes finish loading.
+  const autoFocusedFirstSourceRef = useRef<boolean>(
+    Boolean(restoredState?.matchedAddonPosts?.length || restoredState?.activeSourcePost),
+  );
+  const pendingPickerFocusRef = useRef<boolean>(false);
+
+  const focusResultsItem = useCallback(
+    (key: string) => {
+      lastFocusedDiscoverResultsKey = key;
+      requestRefocus();
+    },
+    [requestRefocus],
+  );
+  const shouldAutoFocusFirstSource = useCallback(
+    () =>
+      !autoFocusedFirstSourceRef.current &&
+      !resumeFocusPendingRef.current &&
+      (!lastFocusedDiscoverResultsKey || lastFocusedDiscoverResultsKey === 'results:back'),
+    [],
+  );
+  const markAutoFocusedFirstSource = useCallback(() => {
+    autoFocusedFirstSourceRef.current = true;
+  }, []);
+  const consumePendingPickerFocus = useCallback(() => {
+    const pending = pendingPickerFocusRef.current;
+    pendingPickerFocusRef.current = false;
+    return pending;
+  }, []);
 
   const [manageVisible, setManageVisible] = useState(false);
   const manageVisibleRef = useRef(manageVisible);
@@ -1109,6 +1143,8 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
       lastFocusedDiscoverResultsKey = null;
       lastResultsScrollY = 0;
       resumeFocusPendingRef.current = false;
+      autoFocusedFirstSourceRef.current = false;
+      pendingPickerFocusRef.current = false;
       setResultsTarget(item);
       setScreenMode('results');
       setResultsLoading(true);
@@ -1380,35 +1416,58 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     }
   }, [handleItemPress]);
 
-  const handleSelectSourceCard = useCallback(async (sourcePost: Post) => {
-    setActiveSourcePost(sourcePost);
-    setSourceInfo(null);
-    setActiveLinkIndex(0);
-    setEpisodes([]);
-    setLoadingSourceInfo(true);
-    if (savedDiscoverState) {
-      savedDiscoverState.activeSourcePost = sourcePost;
-      savedDiscoverState.sourceInfo = null;
-      savedDiscoverState.activeLinkIndex = 0;
-      savedDiscoverState.episodes = [];
-    }
-    try {
-      const info = await providerManager.getMetaData({
-        link: sourcePost.link,
-        provider: sourcePost.provider || '',
-      });
-      setSourceInfo(info);
-      if (savedDiscoverState) {
-        savedDiscoverState.sourceInfo = info;
+  const handleSelectSourceCard = useCallback(
+    async (sourcePost: Post, userInitiated: boolean = false) => {
+      if (userInitiated) {
+        resumeFocusPendingRef.current = false;
+        pendingPickerFocusRef.current = true;
+      } else {
+        pendingPickerFocusRef.current = false;
       }
-    } catch (err) {
-      console.warn('[Discover] getMetaData error:', err);
+      setActiveSourcePost(sourcePost);
       setSourceInfo(null);
-      ToastAndroid.show('Could not load details from this source.', ToastAndroid.SHORT);
-    } finally {
-      setLoadingSourceInfo(false);
-    }
-  }, []);
+      setActiveLinkIndex(0);
+      setEpisodes([]);
+      setLoadingSourceInfo(true);
+      if (savedDiscoverState) {
+        savedDiscoverState.activeSourcePost = sourcePost;
+        savedDiscoverState.sourceInfo = null;
+        savedDiscoverState.activeLinkIndex = 0;
+        savedDiscoverState.episodes = [];
+      }
+      try {
+        const info = await providerManager.getMetaData({
+          link: sourcePost.link,
+          provider: sourcePost.provider || '',
+        });
+        const rawLinks = info?.linkList || [];
+        const filteredLinks = rawLinks.filter(
+          (l) =>
+            !isQualityExcluded(l?.quality, excludedQualities) &&
+            !isQualityExcluded(l?.title, excludedQualities),
+        );
+        const usableLinks = filteredLinks.length > 0 ? filteredLinks : rawLinks;
+        // Pre-arm episodesLoading before clearing loadingSourceInfo so
+        // pickerSection does not mount for 1 frame and unmount into
+        // "Loading episodes...".
+        if (usableLinks[0]?.episodesLink) {
+          setEpisodesLoading(true);
+        }
+        setSourceInfo(info);
+        if (savedDiscoverState) {
+          savedDiscoverState.sourceInfo = info;
+        }
+      } catch (err) {
+        console.warn('[Discover] getMetaData error:', err);
+        pendingPickerFocusRef.current = false;
+        setSourceInfo(null);
+        ToastAndroid.show('Could not load details from this source.', ToastAndroid.SHORT);
+      } finally {
+        setLoadingSourceInfo(false);
+      }
+    },
+    [excludedQualities],
+  );
 
   // Once the matching addon sources finish loading for a resumed item,
   // jump straight to the same source it was originally played from
@@ -1466,6 +1525,7 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     // the Back button (scrolled into view) instead of letting Android pick.
     lastFocusedDiscoverResultsKey = null;
     lastResultsScrollY = 0;
+    pendingPickerFocusRef.current = false;
     resultsScrollRef.current?.scrollTo({ x: 0, y: 0, animated: false });
     setActiveSourcePost(null);
     setSourceInfo(null);
@@ -2195,6 +2255,10 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         backToBrowse={backToBrowse}
         handleSelectSourceCard={handleSelectSourceCard}
         handleResolveAndPlay={handleResolveAndPlay}
+        focusResultsItem={focusResultsItem}
+        shouldAutoFocusFirstSource={shouldAutoFocusFirstSource}
+        markAutoFocusedFirstSource={markAutoFocusedFirstSource}
+        consumePendingPickerFocus={consumePendingPickerFocus}
       />
       </>
     );
@@ -2796,34 +2860,40 @@ export const styles = StyleSheet.create({
     color: '#9CA3AF',
     fontSize: 14,
   },
+  // Expanded scroll bounds + matching padding (same trick as TVPosterRow) so
+  // focused cards' scale + 3px border are never clipped on top/bottom/left/right.
+  sourcesRowScroll: {
+    marginLeft: -12,
+    marginRight: -12,
+    marginTop: -10,
+    marginBottom: -10,
+    flexGrow: 0,
+  },
   sourcesRow: {
     gap: 14,
-    paddingVertical: 4,
-    // Was missing trailing padding entirely, unlike Home's equivalent
-    // horizontal rows (see horizontalRowScroll) -- the last source card
-    // ended exactly at the scroll content's edge, so focusing it and
-    // triggering its scaleFocused growth pushed it straight off-screen.
-    paddingRight: 40,
+    paddingLeft: 12,
+    paddingVertical: 10,
+    paddingRight: 60,
   },
   sourcesLoadingTail: {
     width: 44,
-    height: 180,
+    height: POSTER_CARD_HEIGHT,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sourceCard: {
-    width: 125,
-    height: 180,
+    width: POSTER_CARD_WIDTH,
+    height: POSTER_CARD_HEIGHT,
     backgroundColor: '#16161E',
-    borderRadius: 8,
+    borderRadius: 12,
   },
   sourceCardActive: {
-    borderWidth: 2.5,
+    borderWidth: 2,
     borderColor: '#8A5CF6',
   },
   sourceCardInner: {
     flex: 1,
-    borderRadius: 8,
+    borderRadius: 9,
     overflow: 'hidden',
   },
   sourcePoster: {
