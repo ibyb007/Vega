@@ -4,11 +4,14 @@ import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -66,9 +69,55 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     private val fastInterpolator = DecelerateInterpolator(2.0f)
     private var expandAnimator: ValueAnimator? = null
 
+    // ---- involuntary-focus veto --------------------------------------------
+    // While a D-pad key is held, content (poster rows) can momentarily lose
+    // its focused view (a card re-mounting / being replaced). Android then
+    // hands focus to the first focusable view it finds -- the rail's Search
+    // row -- the rail expands, and focus bounces back a moment later. A row
+    // only accepts focus when it is asked for explicitly (Left from content,
+    // Back, re-select), when focus is already inside the rail (Up/Down), or
+    // when content has not held focus for a while (so nothing can ever be
+    // left without focus).
+    private var explicitFocus = false
+    private var lastContentFocusAt = 0L
+
+    private fun isInRail(v: View): Boolean {
+        var p: View? = v
+        while (p != null) {
+            if (p === this) return true
+            p = p.parent as? View
+        }
+        return false
+    }
+
+    private fun shouldVetoFocus(): Boolean =
+        !explicitFocus && !hasFocus() &&
+            SystemClock.uptimeMillis() - lastContentFocusAt < FOCUS_VETO_MS
+
+    private val globalFocusListener = ViewTreeObserver.OnGlobalFocusChangeListener { _, newFocus ->
+        if (newFocus != null && !isInRail(newFocus)) {
+            lastContentFocusAt = SystemClock.uptimeMillis()
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        viewTreeObserver.addOnGlobalFocusChangeListener(globalFocusListener)
+    }
+
+    override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnGlobalFocusChangeListener(globalFocusListener)
+        super.onDetachedFromWindow()
+    }
+
     private inner class NavItemRow(ctx: Context, val item: NavItem) : LinearLayout(ctx) {
         lateinit var iconView: NavIconView
         lateinit var labelView: TextView
+
+        override fun requestFocus(direction: Int, previouslyFocusedRect: Rect?): Boolean {
+            if (shouldVetoFocus()) return false
+            return super.requestFocus(direction, previouslyFocusedRect)
+        }
 
         // The default geometric focus-search for Up/Down inside a vertical
         // rail is already correct, but we pin it explicitly via
@@ -405,7 +454,12 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
     }
 
     fun focusRoute(route: String) {
-        rows.firstOrNull { it.item.id == route }?.requestFocus()
+        explicitFocus = true
+        try {
+            rows.firstOrNull { it.item.id == route }?.requestFocus()
+        } finally {
+            explicitFocus = false
+        }
     }
 
     /** Always lands on the row for whichever route is currently displayed.[cite: 10] */
@@ -458,6 +512,8 @@ class TVNavRailView(context: Context) : FrameLayout(context) {
         const val COLLAPSE_DELAY_MS = 35L
         const val INDICATOR_DURATION_MS = 65L
         const val EXPAND_DURATION_MS = 75L
+        // See shouldVetoFocus().
+        const val FOCUS_VETO_MS = 700L
 
         val ACCENT = Color.parseColor("#8A5CF6")
         val COLLAPSED_BG = Color.parseColor("#F20A0A0E")
