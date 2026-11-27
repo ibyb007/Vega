@@ -109,5 +109,14 @@ export function useTVEntryFocus(
     [getLastFocusedKey]
   );
 
-  return { setItemRef, keyFor, shouldPreferFocus, requestRefocus };
+  // Read at render time: lets memoised rows learn which item (if any) must
+  // remount to reclaim focus, without every row re-rendering for it.
+  return {
+    setItemRef,
+    keyFor,
+    shouldPreferFocus,
+    requestRefocus,
+    refocusKey: refocusRef.current.key,
+    refocusNonce: refocusRef.current.nonce,
+  };
 }
