@@ -937,6 +937,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   // Last D-pad key seen by the native key forwarder (it fires before Android
   // moves focus), used to recognise a stray focus jump between rows.
   const lastDpadKeyRef = useRef({ code: 0, at: 0 });
+  // Pending "put focus back" after a stray sideways jump -- see
+  // handleRowCardFocus. Cleared on unmount and whenever focus is legitimate.
+  const strayRefocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (strayRefocusTimerRef.current) clearTimeout(strayRefocusTimerRef.current);
+    },
+    [],
+  );
   useEffect(() => {
     const handleKeyDown = (e: { keyCode?: number }) => {
       const k = e?.keyCode;
@@ -961,8 +970,22 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
         (code === 21 || code === 22) &&
         Date.now() - at < 350
       ) {
-        requestRefocus();
+        // Do NOT re-mount the remembered poster right now: while Right is
+        // still held, native focus keeps moving, and the re-mount (a poster
+        // view being detached and re-attached) is what let Android drop focus
+        // onto the nav rail's Search row for a moment. Wait until the key has
+        // stopped, then put focus back once. Any legitimate focus event in
+        // the meantime cancels it (see below).
+        if (strayRefocusTimerRef.current) clearTimeout(strayRefocusTimerRef.current);
+        strayRefocusTimerRef.current = setTimeout(() => {
+          strayRefocusTimerRef.current = null;
+          requestRefocus();
+        }, 220);
         return false;
+      }
+      if (strayRefocusTimerRef.current) {
+        clearTimeout(strayRefocusTimerRef.current);
+        strayRefocusTimerRef.current = null;
       }
       lastFocusedDiscoverBrowseKey = itemKey;
       lastFocusedDiscoverRowKey = rowKey;
