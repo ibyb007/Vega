@@ -12,7 +12,9 @@ import {
 } from '../../lib/services/AppUpdater';
 
 /**
- * "Update available" pop-up: clear, transparent glass with a light blur.
+ * "Update available" pop-up. Glass styled after tvBuddy's floating-navbar
+ * playlist menu: a dark panel at ~30% opacity over a strong blur, large
+ * rounded corners, a thin light rim, and soft rounded pill rows/buttons.
  *
  * Like Nuvio TV's update banner, the panel itself is the progress bar: while
  * the APK downloads, an accent fill sweeps across the whole glass from left
@@ -36,6 +38,11 @@ const toPlainNotes = (notes?: string): string => {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 };
+
+// Glass look (tvBuddy playlist menu): panel fill opacity and blur strength.
+const GLASS_FILL_OPACITY = 0.3;
+const GLASS_BLUR = 70;
+const ACCENT = '138,92,246';
 
 const formatBytes = (n: number): string => {
   if (!Number.isFinite(n) || n <= 0) return '0 MB';
@@ -67,7 +74,7 @@ const GlassButton = ({
     hasTVPreferredFocus={preferred}
     scaleFocused={1.05}
     focusedBorderColor="#FFFFFF"
-    borderRadius={14}
+    borderRadius={20}
     onPress={onPress}
     style={[styles.btn, primary && styles.btnPrimary]}>
     {({focused}) => (
@@ -154,17 +161,17 @@ const UpdateGlassPanel = () => {
       }}>
       <View style={styles.scrim}>
         <View style={styles.glass}>
-          {/* Light blur over the whole glass; the tint below stays clear. */}
+          {/* Strong blur under a dark ~30% fill (see styles.glass / tint). */}
           <BlurView
-            intensity={28}
-            tint="light"
+            intensity={GLASS_BLUR}
+            tint="dark"
             experimentalBlurMethod="dimezisBlurView"
             style={StyleSheet.absoluteFill}
           />
           <View pointerEvents="none" style={styles.tint} />
           <LinearGradient
             pointerEvents="none"
-            colors={['rgba(255,255,255,0.20)', 'rgba(255,255,255,0.04)', 'rgba(255,255,255,0.10)']}
+            colors={['rgba(255,255,255,0.10)', 'rgba(255,255,255,0.02)', 'rgba(255,255,255,0.05)']}
             start={{x: 0, y: 0}}
             end={{x: 1, y: 1}}
             style={StyleSheet.absoluteFill}
@@ -173,7 +180,7 @@ const UpdateGlassPanel = () => {
           {/* Download progress: the glass fills left to right. */}
           <Animated.View pointerEvents="none" style={[styles.fillClip, {width: fillWidth}]}>
             <LinearGradient
-              colors={['rgba(138,92,246,0.42)', 'rgba(167,139,250,0.30)']}
+              colors={[`rgba(${ACCENT},0.42)`, 'rgba(167,139,250,0.30)']}
               start={{x: 0, y: 0}}
               end={{x: 1, y: 0}}
               style={StyleSheet.absoluteFill}
@@ -214,6 +221,8 @@ const UpdateGlassPanel = () => {
               </View>
             </View>
           </View>
+
+          <View pointerEvents="none" style={styles.divider} />
 
           <View style={styles.statusBlock}>
             <Text style={styles.statusLine}>{statusLine}</Text>
@@ -284,21 +293,26 @@ const UpdateGlassPanel = () => {
 const styles = StyleSheet.create({
   scrim: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.32)',
+    backgroundColor: 'rgba(0, 0, 0, 0.28)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   glass: {
     width: 640,
     maxWidth: '88%',
-    borderRadius: 26,
+    borderRadius: 28,
     overflow: 'hidden',
     padding: 28,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    backgroundColor: `rgba(18, 22, 34, ${GLASS_FILL_OPACITY})`,
   },
   tint: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    backgroundColor: `rgba(18, 22, 34, ${GLASS_FILL_OPACITY})`,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    marginBottom: 14,
   },
   fillClip: {
     position: 'absolute',
@@ -321,13 +335,13 @@ const styles = StyleSheet.create({
     left: 18,
     right: 18,
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.55)',
+    backgroundColor: 'rgba(255,255,255,0.30)',
   },
   rim: {
     ...StyleSheet.absoluteFillObject,
-    borderRadius: 26,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.26)',
+    borderRadius: 28,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.34)',
   },
   header: {flexDirection: 'row', alignItems: 'center', marginBottom: 18},
   iconBubble: {
@@ -374,12 +388,10 @@ const styles = StyleSheet.create({
   detailError: {color: '#FCA5A5'},
   notes: {
     marginTop: 12,
-    borderRadius: 14,
+    borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: 'rgba(255,255,255,0.07)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   notesText: {
     color: '#F3F4F6',
@@ -401,20 +413,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 22,
-    borderRadius: 14,
+    paddingVertical: 13,
+    paddingHorizontal: 24,
+    borderRadius: 20,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.26)',
-    backgroundColor: 'rgba(255,255,255,0.10)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
-  btnInnerFocused: {backgroundColor: 'rgba(255,255,255,0.26)'},
+  btnInnerFocused: {backgroundColor: 'rgba(255,255,255,0.24)'},
   btnInnerPrimary: {
-    backgroundColor: 'rgba(138,92,246,0.45)',
-    borderColor: 'rgba(255,255,255,0.35)',
+    backgroundColor: `rgba(${ACCENT},0.30)`,
   },
-  btnInnerPrimaryFocused: {backgroundColor: 'rgba(138,92,246,0.70)'},
+  btnInnerPrimaryFocused: {backgroundColor: `rgba(${ACCENT},0.55)`},
   btnText: {color: '#FFFFFF', fontSize: 16, fontWeight: '800'},
 });
 
