@@ -2887,18 +2887,27 @@ export const styles = StyleSheet.create({
     backgroundColor: '#16161E',
     borderRadius: 12,
   },
-  sourceCardActive: {
-    borderWidth: 2,
-    borderColor: '#8A5CF6',
-  },
+  // Explicit pixel dimensions on inner/poster (matching hCardInner/hCardImage)
+  // because Fabric collapses flex:1 / 100% children inside Pressable on re-render.
   sourceCardInner: {
-    flex: 1,
+    width: POSTER_CARD_WIDTH - 6,
+    height: POSTER_CARD_HEIGHT - 6,
     borderRadius: 9,
     overflow: 'hidden',
   },
+  sourceCardActive: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: POSTER_CARD_WIDTH - 6,
+    height: POSTER_CARD_HEIGHT - 6,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: '#8A5CF6',
+  },
   sourcePoster: {
-    width: '100%',
-    height: '100%',
+    width: POSTER_CARD_WIDTH - 6,
+    height: POSTER_CARD_HEIGHT - 6,
   },
   sourceBadge: {
     position: 'absolute',
@@ -2933,17 +2942,19 @@ export const styles = StyleSheet.create({
   seasonPickerBtn: {
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(22, 22, 30, 0.6)',
-    borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.35)',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    overflow: 'hidden',
     // Grows with the label up to this width, then the label wraps.
     maxWidth: 720,
+  },
+  seasonPickerBtnFocused: {
+    backgroundColor: 'rgba(138, 92, 246, 0.28)',
   },
   seasonPickerBtnInner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   seasonPickerBtnText: {
     color: '#FFFFFF',

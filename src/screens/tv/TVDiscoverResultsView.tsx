@@ -337,6 +337,14 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
   const [seasonPickerVisible, setSeasonPickerVisible] = useState(false);
   const backFocusedRef = useRef(false);
   const hasMovedFromBackRef = useRef(false);
+  const episodesSectionYRef = useRef(0);
+  const pickerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (pickerFocusTimerRef.current) clearTimeout(pickerFocusTimerRef.current);
+    },
+    [],
+  );
 
   const banner = resultsTarget?.banner || resultsTarget?.poster;
   const rawLinkList: Link[] = sourceInfo?.linkList || [];
@@ -401,7 +409,16 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
     }
     if (!consumePendingPickerFocus()) return;
     if (hasSeasonPicker) {
-      focusResultsItem('results:linkPicker');
+      if (pickerFocusTimerRef.current) clearTimeout(pickerFocusTimerRef.current);
+      // Scroll Episodes & Streams + Seasons & Quality cleanly into view first,
+      // then focus results:linkPicker once layout/scroll has settled so
+      // hasTVPreferredFocus does not leave the button off-screen.
+      const targetY = Math.max(0, episodesSectionYRef.current - 160);
+      resultsScrollRef.current?.scrollTo({ x: 0, y: targetY, animated: false });
+      pickerFocusTimerRef.current = setTimeout(() => {
+        pickerFocusTimerRef.current = null;
+        focusResultsItem('results:linkPicker');
+      }, 60);
     }
   }, [
     activeSourcePost,
@@ -413,6 +430,7 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
     hasSeasonPicker,
     consumePendingPickerFocus,
     focusResultsItem,
+    resultsScrollRef,
   ]);
 
 
@@ -849,18 +867,14 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                     style={styles.sourceCard}
                   >
                     {({ focused }) => (
-                      <View
-                        style={[
-                          styles.sourceCardInner,
-                          isSelected && !focused && styles.sourceCardActive,
-                        ]}
-                      >
+                      <View collapsable={false} style={styles.sourceCardInner}>
                         <Image
                           source={{
                             uri: post.image || resultsTarget?.poster || 'https://placehold.jp/24/363636/ffffff/200x300.png?text=Vega',
                           }}
                           style={styles.sourcePoster}
                           resizeMode="cover"
+                          fadeDuration={0}
                         />
                         {isResumeSource && (
                           <View style={styles.sourceResumeBadge}>
@@ -872,6 +886,9 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                             {getProviderDisplayName(post.provider)}
                           </Text>
                         </View>
+                        {isSelected && !focused && (
+                          <View pointerEvents="none" style={styles.sourceCardActive} />
+                        )}
                       </View>
                     )}
                   </TVFocusablePressable>
@@ -889,7 +906,12 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
         </View>
 
         {activeSourcePost && (
-          <View style={styles.sectionContainer}>
+          <View
+            style={styles.sectionContainer}
+            onLayout={(e) => {
+              episodesSectionYRef.current = e.nativeEvent.layout.y;
+            }}
+          >
             <Text style={styles.sectionHeader}>
               Episodes & Streams ({getProviderDisplayName(activeSourcePost.provider)})
             </Text>
@@ -928,13 +950,13 @@ export const TVDiscoverResultsView: React.FC<TVDiscoverResultsViewProps> = ({
                         noteResultsFocus('results:linkPicker');
                       }}
                       scaleFocused={1.03}
-                      focusedBorderColor="#8A5CF6"
+                      focusedBorderColor="#FFFFFF"
                       borderRadius={10}
                       onPress={() => setSeasonPickerVisible(true)}
                       style={styles.seasonPickerBtn}
                     >
-                      {() => (
-                        <View style={styles.seasonPickerBtnInner}>
+                      {({ focused }) => (
+                        <View style={[styles.seasonPickerBtnInner, focused && styles.seasonPickerBtnFocused]}>
                           <MaterialCommunityIcons name="playlist-play" size={18} color="#FFFFFF" />
                           <Text style={styles.seasonPickerBtnText}>
                             {activeLink?.title || 'Select'}
