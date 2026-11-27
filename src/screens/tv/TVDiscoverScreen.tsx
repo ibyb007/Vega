@@ -13,11 +13,13 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Pressable,
   Image,
   ActivityIndicator,
   Modal,
   TextInput,
   Dimensions,
+  DeviceEventEmitter,
   ToastAndroid,
   findNodeHandle,
 } from 'react-native';
@@ -28,16 +30,22 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import KeyEvent from 'react-native-keyevent';
 import { TVFocusablePressable } from '../../components/tv/TVFocusablePressable';
-import { TVPosterRow, POSTER_ROW_HEIGHT } from '../../components/tv/TVPosterRow';
+import {
+  TVPosterRow,
+  TVPosterRowHandle,
+  POSTER_ROW_HEIGHT,
+  PosterCursorStore,
+  createPosterCursorStore,
+  posterItemKey,
+} from '../../components/tv/TVPosterRow';
 import { TVDiscoverResultsView } from './TVDiscoverResultsView';
 import { TVStreamPickerModal, StreamPickerOption } from '../../components/tv/TVStreamPickerModal';
 import { getStremioDirectMatch, isStremioProvider } from '../../lib/services/stremioAddon';
 import { TVNoProviderFallback } from '../../components/tv/TVNoProviderFallback';
 import { TVHeroMeta, TVHeroMedia } from '../../components/tv/TVHeroMeta';
 import { TVRoute } from '../../components/tv/TVNavigationRail';
-import { NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
+import { NavRail, NATIVE_RAIL_COLLAPSED_WIDTH } from '../../lib/native/NavRail';
 import { registerRailLeftEdge } from '../../lib/tv/registerRailLeftEdge';
 import { useTVEntryFocus } from '../../lib/tv/useTVEntryFocus';
 import { useReadingOrderFocus } from '../../lib/tv/useReadingOrderFocus';
@@ -176,6 +184,16 @@ let lastFocusedDiscoverBrowseKey: string | null = null;
 // Catalog key of the row that key belongs to (null while the Catalogs button
 // or nothing is focused).
 let lastFocusedDiscoverRowKey: string | null = null;
+
+const BROWSE_HOST_KEY = 'browse-stage';
+
+const parseBrowsePosterKey = (key: string | null): { rowKey: string; col: number } | null => {
+  if (!key || key === 'manage-btn') return null;
+  const parts = key.split('@@');
+  if (parts.length < 2) return null;
+  const col = Number(parts[1]);
+  return Number.isFinite(col) && col >= 0 ? { rowKey: parts[0], col } : null;
+};
 // Tracks whichever page-2 (results) item -- the Back button, a source
 // card, a link, an episode, a direct-stream button -- last had real focus,
 // independently of the page-1 browse key above.
@@ -438,13 +456,11 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     keyFor,
     shouldPreferFocus,
     requestRefocus,
-    refocusKey,
-    refocusNonce,
   } = useTVEntryFocus(
-    () =>
-      screenModeRef.current === 'results'
-        ? lastFocusedDiscoverResultsKey
-        : lastFocusedDiscoverBrowseKey,
+    () => {
+      if (screenModeRef.current === 'results') return lastFocusedDiscoverResultsKey;
+      return lastFocusedDiscoverBrowseKey === 'manage-btn' ? 'manage-btn' : BROWSE_HOST_KEY;
+    },
     onRegisterEntryHandleGetter,
     registerReturnTrigger,
     resetFocusOnMount,
@@ -704,13 +720,16 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const autoSelectedResumeSourceRef = useRef(false);
 
   const [manageVisible, setManageVisible] = useState(false);
+  const manageVisibleRef = useRef(manageVisible);
+  manageVisibleRef.current = manageVisible;
   const [manifestInput, setManifestInput] = useState('');
   const [addingManifest, setAddingManifest] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
   // Left-edge refs for the native nav rail's Left-key/entry-focus link
   const manageBtnRef = useRef<View | null>(null);
-  const topFirstCardRef = useRef<View | null>(null);
+  const browseHostNodeRef = useRef<View | null>(null);
+  const [browseHostHandle, setBrowseHostHandle] = useState<number | null>(null);
   const sourcesRowFirstRef = useRef<View | null>(null);
 
   const excludedQualities = useMemo(
@@ -925,81 +944,155 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
   const animatedRowsStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
   }));
-  // A row above the focused one appearing/disappearing shifts its index.
-  useEffect(() => {
-    if (!lastFocusedDiscoverRowKey) return;
-    translateY.value = withTiming(-rowIndexOfKey(lastFocusedDiscoverRowKey) * POSTER_ROW_HEIGHT, {
-      duration: 160,
-      easing: Easing.out(Easing.quad),
-    });
-  }, [browseRows]);
 
-  // Last D-pad key seen by the native key forwarder (it fires before Android
-  // moves focus), used to recognise a stray focus jump between rows.
-  const lastDpadKeyRef = useRef({ code: 0, at: 0 });
-  // Pending "put focus back" after a stray sideways jump -- see
-  // handleRowCardFocus. Cleared on unmount and whenever focus is legitimate.
-  const strayRefocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (strayRefocusTimerRef.current) clearTimeout(strayRefocusTimerRef.current);
-    },
-    [],
-  );
-  useEffect(() => {
-    const handleKeyDown = (e: { keyCode?: number }) => {
-      const k = e?.keyCode;
-      if (k === 19 || k === 20 || k === 21 || k === 22) {
-        lastDpadKeyRef.current = { code: k, at: Date.now() };
-      }
-    };
-    KeyEvent.onKeyDownListener(handleKeyDown);
-    return () => KeyEvent.removeKeyDownListener();
+  // Single-host JS cursor (same pattern as TVSettingsScreen / TVDetailsScreen):
+  // native focus stays on one stable Pressable covering the browse stage so
+  // held D-pad keys never drop focus between scrolling card Views.
+  const cursorRef = useRef<PosterCursorStore | null>(null);
+  if (!cursorRef.current) {
+    const initialKey =
+      lastFocusedDiscoverBrowseKey && lastFocusedDiscoverBrowseKey !== 'manage-btn'
+        ? lastFocusedDiscoverBrowseKey
+        : null;
+    cursorRef.current = createPosterCursorStore(initialKey);
+  }
+  const cursor = cursorRef.current;
+
+  const initialParsed = parseBrowsePosterKey(lastFocusedDiscoverBrowseKey);
+  const cursorPosRef = useRef<{ rowKey: string | null; col: number }>({
+    rowKey: initialParsed?.rowKey ?? lastFocusedDiscoverRowKey,
+    col: initialParsed?.col ?? 0,
+  });
+  const hostFocusedRef = useRef(false);
+  const browseRowsRef = useRef(browseRows);
+  browseRowsRef.current = browseRows;
+  const rowHandlesRef = useRef<Record<string, TVPosterRowHandle | null>>({});
+  const registerRowHandle = useCallback((rowKey: string, handle: TVPosterRowHandle | null) => {
+    rowHandlesRef.current[rowKey] = handle;
   }, []);
 
-  const handleRowCardFocus = useCallback(
-    (rowKey: string, rowIndex: number, item: CatalogMediaItem, itemKey: string): boolean => {
-      // Left/Right never changes row. If focus landed on another row right
-      // after one of those keys (held-key overshoot at the end of a row), put
-      // focus back instead of following it.
-      const { code, at } = lastDpadKeyRef.current;
-      if (
-        lastFocusedDiscoverBrowseKey &&
-        lastFocusedDiscoverRowKey &&
-        rowKey !== lastFocusedDiscoverRowKey &&
-        (code === 21 || code === 22) &&
-        Date.now() - at < 350
-      ) {
-        // Do NOT re-mount the remembered poster right now: while Right is
-        // still held, native focus keeps moving, and the re-mount (a poster
-        // view being detached and re-attached) is what let Android drop focus
-        // onto the nav rail's Search row for a moment. Wait until the key has
-        // stopped, then put focus back once. Any legitimate focus event in
-        // the meantime cancels it (see below).
-        if (strayRefocusTimerRef.current) clearTimeout(strayRefocusTimerRef.current);
-        strayRefocusTimerRef.current = setTimeout(() => {
-          strayRefocusTimerRef.current = null;
-          requestRefocus();
-        }, 220);
-        return false;
-      }
-      if (strayRefocusTimerRef.current) {
-        clearTimeout(strayRefocusTimerRef.current);
-        strayRefocusTimerRef.current = null;
-      }
-      lastFocusedDiscoverBrowseKey = itemKey;
+  const selectPoster = useCallback(
+    (rowKey: string, col: number, rowIndex: number, updateHero = true) => {
+      const items = rowDataRef.current[rowKey]?.items ?? [];
+      const clampedCol = items.length > 0 ? Math.max(0, Math.min(items.length - 1, col)) : 0;
+      cursorPosRef.current = { rowKey, col: clampedCol };
       lastFocusedDiscoverRowKey = rowKey;
-      setVisibleRowCount((c) => (rowIndex + ROW_LOOKAHEAD + 1 > c ? rowIndex + ROW_LOOKAHEAD + 1 : c));
+
+      setVisibleRowCount((c) =>
+        rowIndex + ROW_LOOKAHEAD + 1 > c ? rowIndex + ROW_LOOKAHEAD + 1 : c,
+      );
       translateY.value = withTiming(-rowIndex * POSTER_ROW_HEIGHT, {
         duration: 160,
         easing: Easing.out(Easing.quad),
       });
-      const cat = catalogByKeyRef.current[rowKey];
-      if (cat) focusHero(item, cat.baseEndpoint);
-      return true;
+
+      if (items.length === 0) {
+        cursor.setKey(null);
+        return;
+      }
+
+      const item = items[clampedCol];
+      const itemKey = posterItemKey(rowKey, clampedCol, String(item?.id ?? clampedCol));
+      lastFocusedDiscoverBrowseKey = itemKey;
+      cursor.setKey(itemKey);
+      rowHandlesRef.current[rowKey]?.selectCol(clampedCol);
+
+      if (updateHero) {
+        const cat = catalogByKeyRef.current[rowKey];
+        if (cat) focusHero(item, cat.baseEndpoint);
+      }
     },
-    [requestRefocus, translateY, focusHero],
+    [cursor, translateY, focusHero],
   );
+
+  // Keep cursor anchored to a valid row and populate initial / newly-loaded row
+  // selection (and hero) once catalog items arrive.
+  useEffect(() => {
+    if (screenMode !== 'browse' || browseRows.length === 0) return;
+    const { rowKey, col } = cursorPosRef.current;
+    const foundIdx = rowKey ? browseRows.findIndex((c) => catalogKey(c) === rowKey) : -1;
+    if (foundIdx < 0) {
+      const firstKey = catalogKey(browseRows[0]);
+      selectPoster(firstKey, 0, 0, true);
+      return;
+    }
+    translateY.value = withTiming(-foundIdx * POSTER_ROW_HEIGHT, {
+      duration: 160,
+      easing: Easing.out(Easing.quad),
+    });
+    const activeKey = catalogKey(browseRows[foundIdx]);
+    const items = rowData[activeKey]?.items ?? [];
+    if (items.length > 0 && (!cursor.key || !cursor.key.startsWith(`${activeKey}@@`) || col >= items.length)) {
+      selectPoster(activeKey, Math.min(col, items.length - 1), foundIdx, !cursor.key);
+    }
+  }, [browseRows, rowData, screenMode, cursor, selectPoster, translateY]);
+
+  const moveCursor = useCallback(
+    (dRow: number, dCol: number) => {
+      const rows = browseRowsRef.current;
+      if (rows.length === 0) return;
+      const curRowKey = cursorPosRef.current.rowKey ?? catalogKey(rows[0]);
+      let rowIdx = rows.findIndex((c) => catalogKey(c) === curRowKey);
+      if (rowIdx < 0) rowIdx = 0;
+      const activeRowKey = catalogKey(rows[rowIdx]);
+      const items = rowDataRef.current[activeRowKey]?.items ?? [];
+      let colIdx = Math.max(0, Math.min(Math.max(0, items.length - 1), cursorPosRef.current.col));
+
+      if (dCol !== 0) {
+        const nextCol = colIdx + dCol;
+        if (nextCol < 0) {
+          NavRail.focusRoute('discover');
+          return;
+        }
+        if (nextCol >= items.length) return;
+        selectPoster(activeRowKey, nextCol, rowIdx, true);
+        return;
+      }
+
+      const nextRowIdx = rowIdx + dRow;
+      if (nextRowIdx < 0) {
+        lastFocusedDiscoverBrowseKey = 'manage-btn';
+        lastFocusedDiscoverRowKey = null;
+        requestRefocus();
+        return;
+      }
+      if (nextRowIdx >= rows.length) return;
+      const nextRowKey = catalogKey(rows[nextRowIdx]);
+      const nextItems = rowDataRef.current[nextRowKey]?.items ?? [];
+      const visualX = rowHandlesRef.current[activeRowKey]?.getVisualX(colIdx) ?? 12;
+      const nextCol =
+        rowHandlesRef.current[nextRowKey]?.findColNearVisualX(visualX, nextItems.length) ?? 0;
+      selectPoster(nextRowKey, nextCol, nextRowIdx, true);
+    },
+    [requestRefocus, selectPoster],
+  );
+
+  useEffect(() => {
+    const KEYCODE_DPAD_UP = 19;
+    const KEYCODE_DPAD_DOWN = 20;
+    const KEYCODE_DPAD_LEFT = 21;
+    const KEYCODE_DPAD_RIGHT = 22;
+    const sub = DeviceEventEmitter.addListener('onKeyDown', (e: { keyCode?: number }) => {
+      if (!hostFocusedRef.current || screenModeRef.current !== 'browse' || manageVisibleRef.current) {
+        return;
+      }
+      switch (e?.keyCode) {
+        case KEYCODE_DPAD_RIGHT:
+          moveCursor(0, 1);
+          break;
+        case KEYCODE_DPAD_LEFT:
+          moveCursor(0, -1);
+          break;
+        case KEYCODE_DPAD_DOWN:
+          moveCursor(1, 0);
+          break;
+        case KEYCODE_DPAD_UP:
+          moveCursor(-1, 0);
+          break;
+      }
+    });
+    return () => sub.remove();
+  }, [moveCursor]);
 
   const handleItemPress = useCallback(
     async (item: CatalogMediaItem, cat?: DiscoverCatalog) => {
@@ -1899,26 +1992,17 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     },
     [handleItemPress],
   );
-  const getBrowseKey = useCallback(() => lastFocusedDiscoverBrowseKey, []);
-  const getCatalogsBtnHandle = useCallback(
-    () => (manageBtnRef.current ? findNodeHandle(manageBtnRef.current) : null),
-    [],
-  );
-  const setTopFirstCard = useCallback((node: View | null) => {
-    topFirstCardRef.current = node;
-  }, []);
 
   // Pins the Catalogs button's own focus links: Up/Right have nothing beyond
-  // the button (point at itself so they are no-ops), Down goes to the first
-  // poster of the first row. Left is handled natively -- see `nativeID`
-  // on the button below. Safe to call repeatedly.
+  // the button (point at itself so they are no-ops), Down goes to the browse
+  // stage host. Left is handled natively -- see `nativeID` on the button.
   const wireCatalogsBtnLinks = useCallback(() => {
     const node = manageBtnRef.current as any;
     if (!node) return;
     const selfHandle = findNodeHandle(node);
     if (selfHandle == null) return;
-    const firstCard = topFirstCardRef.current;
-    const downHandle = firstCard ? findNodeHandle(firstCard) : null;
+    const hostNode = browseHostNodeRef.current;
+    const downHandle = hostNode ? findNodeHandle(hostNode) : null;
     node.setNativeProps?.({
       nextFocusUp: selfHandle,
       nextFocusRight: selfHandle,
@@ -1937,14 +2021,85 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
     [setItemRef, wireCatalogsBtnLinks],
   );
 
+  const handleStageFocus = useCallback(() => {
+    hostFocusedRef.current = true;
+    cursor.setFocused(true);
+    registerRailLeftEdge('discover', browseHostNodeRef.current);
+    const rows = browseRowsRef.current;
+    if (rows.length > 0) {
+      const curRowKey = cursorPosRef.current.rowKey ?? catalogKey(rows[0]);
+      let rowIdx = rows.findIndex((c) => catalogKey(c) === curRowKey);
+      if (rowIdx < 0) rowIdx = 0;
+      const activeKey = catalogKey(rows[rowIdx]);
+      selectPoster(activeKey, cursorPosRef.current.col, rowIdx, true);
+    }
+  }, [cursor, selectPoster]);
+
+  const handleStageBlur = useCallback(() => {
+    hostFocusedRef.current = false;
+    cursor.setFocused(false);
+  }, [cursor]);
+
+  const handleStagePress = useCallback(() => {
+    const rows = browseRowsRef.current;
+    if (rows.length === 0) return;
+    const curRowKey = cursorPosRef.current.rowKey ?? catalogKey(rows[0]);
+    const items = rowDataRef.current[curRowKey]?.items ?? [];
+    const item = items[cursorPosRef.current.col];
+    if (item) handleRowCardPress(curRowKey, item);
+  }, [handleRowCardPress]);
+
+  const browseHostRef = useCallback(
+    (el: View | null) => {
+      browseHostNodeRef.current = el;
+      setItemRef(BROWSE_HOST_KEY, el);
+      if (el) {
+        registerRailLeftEdge('discover', el);
+        const handle = findNodeHandle(el);
+        if (handle != null) {
+          (el as any).setNativeProps?.({
+            nextFocusUp: handle,
+            nextFocusDown: handle,
+            nextFocusLeft: handle,
+            nextFocusRight: handle,
+          });
+          setBrowseHostHandle((prev) => (prev === handle ? prev : handle));
+        }
+        wireCatalogsBtnLinks();
+      } else {
+        hostFocusedRef.current = false;
+        cursor.setFocused(false);
+        setBrowseHostHandle(null);
+      }
+    },
+    [setItemRef, wireCatalogsBtnLinks, cursor],
+  );
+
   // `hasTVPreferredFocus` makes Android call requestFocus() every time the prop
   // flips to true on a mounted view. Re-deriving it on every render meant that
   // a re-render landing while a key was held could drag focus back to a stale
-  // item. Evaluate it only when the button is (re)mounted -- the remount nonce
-  // in `keyFor` changes exactly when focus must be reclaimed.
+  // item. Evaluate it only when the host/button is (re)mounted -- the remount
+  // nonce in `keyFor` changes exactly when focus must be reclaimed.
   const manageBtnKey = keyFor('manage-btn');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const manageBtnPreferFocus = useMemo(() => shouldPreferFocus('manage-btn', false), [manageBtnKey]);
+
+  const browseHostKey = keyFor(BROWSE_HOST_KEY);
+  const preferredBrowseOnMountRef = useRef<Record<string, boolean>>({});
+  if (!(browseHostKey in preferredBrowseOnMountRef.current)) {
+    preferredBrowseOnMountRef.current[browseHostKey] =
+      lastFocusedDiscoverBrowseKey !== 'manage-btn';
+  }
+  const browseHostPreferFocus = preferredBrowseOnMountRef.current[browseHostKey];
+
+  useEffect(() => {
+    if (screenMode !== 'browse') {
+      delete preferredBrowseOnMountRef.current[browseHostKey];
+    }
+    return () => {
+      delete preferredBrowseOnMountRef.current[browseHostKey];
+    };
+  }, [screenMode, browseHostKey]);
 
   const handleAddManifest = useCallback(async () => {
     const url = manifestInput.trim();
@@ -2072,12 +2227,30 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
           </Text>
         </View>
       ) : (
-        <View style={styles.stageViewport}>
+        <Pressable
+          key={browseHostKey}
+          ref={browseHostRef}
+          focusable
+          hasTVPreferredFocus={browseHostPreferFocus}
+          onFocus={handleStageFocus}
+          onBlur={handleStageBlur}
+          onPress={handleStagePress}
+          {...(browseHostHandle != null
+            ? ({
+                nextFocusUp: browseHostHandle,
+                nextFocusDown: browseHostHandle,
+                nextFocusLeft: browseHostHandle,
+                nextFocusRight: browseHostHandle,
+              } as any)
+            : {})}
+          style={styles.stageViewport}
+        >
           <Animated.View style={[styles.slidingRows, animatedRowsStyle]}>
-            {browseRows.map((cat, rowIndex) => {
+            {browseRows.map((cat) => {
               const key = catalogKey(cat);
               const d = rowData[key];
-              const ownsRefocus = Boolean(refocusKey && refocusKey.startsWith(`${key}@@`));
+              const initCol =
+                cursorPosRef.current.rowKey === key ? cursorPosRef.current.col : 0;
               return (
                 <TVPosterRow
                   key={key}
@@ -2086,21 +2259,15 @@ export const TVDiscoverScreen: React.FC<TVDiscoverScreenProps> = ({
                   sourceLabel={cat.manifestName}
                   items={d ? d.items : EMPTY_ITEMS}
                   loading={!d || d.loading || !d.loaded}
-                  rowIndex={rowIndex}
-                  getLastFocusedKey={getBrowseKey}
-                  refocusKey={ownsRefocus ? refocusKey : null}
-                  refocusNonce={ownsRefocus ? refocusNonce : 0}
-                  onCardFocus={handleRowCardFocus}
-                  onCardPress={handleRowCardPress}
-                  registerItemRef={setItemRef}
+                  cursor={cursor}
+                  initialCol={initCol}
                   onNeedMore={loadMoreRow}
-                  getUpHandle={getCatalogsBtnHandle}
-                  onTopFirstCard={setTopFirstCard}
+                  registerRowHandle={registerRowHandle}
                 />
               );
             })}
           </Animated.View>
-        </View>
+        </Pressable>
       )}
 
       {/* The only control on this screen besides the rows. */}
