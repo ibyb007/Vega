@@ -266,16 +266,46 @@ export const TVPosterRow = memo(function TVPosterRow({
     if (wireTimerRef.current) return;
     wireTimerRef.current = setTimeout(wireLinks, 0);
   }, [wireLinks]);
+  // A poster that has just mounted has no Left/Right links until `wireLinks`
+  // runs (a timer, after the commit). While a D-pad key is held, the key
+  // events keep arriving natively during that gap -- and with no link on the
+  // newest poster Android falls back to its geometric search, which can pick a
+  // poster of ANOTHER row (or, once that view is gone, the nav rail's Search
+  // row). So pin the links in the same tick the native view appears: the
+  // neighbours if they exist, otherwise the poster itself (a no-op).
+  const pinLinksOnMount = useCallback((itemKey: string, el: View) => {
+    const self = findNodeHandle(el);
+    if (self == null) return;
+    const order = orderRef.current;
+    const idx = order.indexOf(itemKey);
+    const nextNode = idx >= 0 ? nodesRef.current[order[idx + 1]] : null;
+    const prevNode = idx > 0 ? nodesRef.current[order[idx - 1]] : null;
+    const right = (nextNode ? findNodeHandle(nextNode) : null) ?? self;
+    const props: Record<string, number> = { nextFocusRight: right };
+    let left: number | undefined;
+    // The first poster's Left belongs to the rail (handled natively).
+    if (idx !== 0) {
+      left = (prevNode ? findNodeHandle(prevNode) : null) ?? self;
+      props.nextFocusLeft = left;
+    }
+    (el as any).setNativeProps?.(props);
+    appliedLinksRef.current[itemKey] = { l: left, r: right };
+  }, []);
+
   const registerRowItemRef = useCallback(
     (itemKey: string, el: View | null) => {
       // A different native view under the same key (remount) has none of the
       // links the cache thinks it has.
-      if (el !== nodesRef.current[itemKey]) delete appliedLinksRef.current[itemKey];
+      const isNewView = el !== nodesRef.current[itemKey];
+      if (isNewView) delete appliedLinksRef.current[itemKey];
       nodesRef.current[itemKey] = el;
       registerItemRef(itemKey, el);
-      if (el) scheduleWire();
+      if (el) {
+        if (isNewView) pinLinksOnMount(itemKey, el);
+        scheduleWire();
+      }
     },
-    [registerItemRef, scheduleWire]
+    [registerItemRef, scheduleWire, pinLinksOnMount]
   );
   useEffect(
     () => () => {
